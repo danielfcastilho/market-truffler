@@ -35,13 +35,15 @@ function unavailableRow(label: string): VitalRow {
  * The SYSTEM section reflects real, currently-running infrastructure, and
  * every row in MARKET is real: "Bybit connectivity"/"Symbols tracked" come
  * from a REST call to Bybit, "Market data"/"Last market update"/"Data
- * freshness" come from the MARKET WebSocket collector, and "Historical
- * coverage" is a read-only snapshot of the background history reconciler's
- * persisted progress — the fraction of the active universe's promised
- * rolling history that is currently reconciled (see
- * `app.services.historical_coverage` in the backend for exact semantics).
- * All of it runs continuously in the background; this page only observes
- * it, never drives it. Sniffer/Warhog/OINK CORP lay out the shape Vitals
+ * freshness" come from the MARKET WebSocket collector, "Historical
+ * coverage" from the background history reconciler's persisted progress,
+ * and "Latest market frame"/"Frame completeness" from the background frame
+ * synchronizer's most recently finalized Market Frame (see
+ * `app.services.frame_synchronizer` in the backend — a frame is a
+ * synchronized, temporally-legal cross-section of the whole market,
+ * produced once per closed UTC minute). All of it runs continuously in the
+ * background; this page only observes it, never drives it — reading Vitals
+ * never creates a frame. Sniffer/Warhog/OINK CORP lay out the shape Vitals
  * will eventually report on, but every row in them is a hardcoded "N/A":
  * there is no live signal for any of it yet, so none is invented.
  */
@@ -133,6 +135,21 @@ export function buildVitalsSections({
               : NOT_AVAILABLE,
           status: market?.historical_coverage != null ? "ok" : "unavailable",
         },
+        {
+          label: "Latest market frame",
+          value: market?.latest_market_frame
+            ? formatFrameTimeUtc(market.latest_market_frame)
+            : NOT_AVAILABLE,
+          status: market?.latest_market_frame ? "ok" : "unavailable",
+        },
+        {
+          label: "Frame completeness",
+          value:
+            market?.frame_completeness != null
+              ? formatCoveragePercent(market.frame_completeness)
+              : NOT_AVAILABLE,
+          status: market?.frame_completeness != null ? "ok" : "unavailable",
+        },
       ],
     },
     {
@@ -200,6 +217,16 @@ export function formatFreshness(totalSeconds: number): string {
 
 function formatTimestampUtc(iso: string): string {
   return `${new Date(iso).toISOString().slice(0, 19).replace("T", " ")} UTC`;
+}
+
+/** Market Frames are always exactly on a UTC minute boundary, so
+ * "HH:MM UTC" is unambiguous and matches how frame_time is described
+ * throughout the backend (e.g. "FRAME 14:37"). */
+function formatFrameTimeUtc(iso: string): string {
+  const date = new Date(iso);
+  const hh = String(date.getUTCHours()).padStart(2, "0");
+  const mm = String(date.getUTCMinutes()).padStart(2, "0");
+  return `${hh}:${mm} UTC`;
 }
 
 export function formatCoveragePercent(fraction: number): string {

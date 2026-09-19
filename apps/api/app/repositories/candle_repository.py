@@ -15,10 +15,11 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.models.candle import Candle
 
@@ -76,3 +77,50 @@ class CandleRepository:
             .order_by(Candle.open_time)
         )
         return list(result.scalars().all())
+
+    async def fetch_latest_closed_per_instrument(
+        self, timeframe: str, instrument_ids: Sequence[int], max_open_time: datetime
+    ) -> dict[int, Candle]:
+        """The single latest legally-closed candle per instrument, for one
+        timeframe, as of `max_open_time` (inclusive) — one set-oriented
+        query for the whole given instrument set, never a per-instrument
+        loop.
+
+        `max_open_time` is expected to already encode the timeframe's
+        duration (e.g. `frame_time - 1h` for the "1h" timeframe), so a
+        plain `open_time <= max_open_time` comparison is exactly equivalent
+        to "this candle's close_time was <= frame_time" without needing an
+        index on `close_time` at all — the composite primary key
+        `(instrument_id, timeframe, open_time)` serves this directly.
+
+        Implemented with a portable `ROW_NUMBER() OVER (PARTITION BY
+        instrument_id ORDER BY open_time DESC)` window function (standard
+        SQL, not PostgreSQL-specific `DISTINCT ON`) so it runs identically
+        against SQLite in tests and PostgreSQL in production.
+        """
+        if not instrument_ids:
+            return {}
+
+        row_number = (
+            func.row_number()
+            .over(partition_by=Candle.instrument_id, order_by=Candle.open_time.desc())
+            .label("rn")
+        )
+        ranked = (
+            select(Candle, row_number)
+            .where(
+                Candle.timeframe == timeframe,
+                Candle.instrument_id.in_(instrument_ids),
+                Candle.open_time <= max_open_time,
+            )
+            .subquery()
+        )
+        # Re-map the subquery's columns back onto the Candle entity (rather
+        # than leaving plain Row tuples) so callers use the same `.open_time`
+        # / `.close` / etc. attribute access as every other repository
+        # method here.
+        ranked_candle = aliased(Candle, ranked)
+        latest = select(ranked_candle).where(ranked.c.rn == 1)
+
+        result = await self._session.execute(latest)
+        return {candle.instrument_id: candle for candle in result.scalars()}

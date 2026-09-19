@@ -19,6 +19,17 @@ async def test_drop_expired_partitions_is_a_noop_on_sqlite(db_session):
     assert dropped == []
 
 
+async def test_partition_functions_accept_a_table_override_and_still_noop_on_sqlite(db_session):
+    created = await partition_manager.ensure_partitions(
+        db_session, months_back=13, table="market_frame_members", partition_column="frame_time"
+    )
+    dropped = await partition_manager.drop_expired_partitions(
+        db_session, retention_days=365, table="market_frame_members"
+    )
+    assert created == []
+    assert dropped == []
+
+
 def test_month_arithmetic_wraps_year_boundary():
     from datetime import UTC, datetime
 
@@ -29,5 +40,11 @@ def test_month_arithmetic_wraps_year_boundary():
     assert _add_months(start, 2).year == 2027
     assert _add_months(start, -12).year == 2025
 
-    assert _partition_name(datetime(2026, 1, 1, tzinfo=UTC)) == "market_candles_2026_01"
-    assert _partition_name(datetime(2026, 12, 1, tzinfo=UTC)) == "market_candles_2026_12"
+    assert (
+        _partition_name("market_candles", datetime(2026, 1, 1, tzinfo=UTC))
+        == "market_candles_2026_01"
+    )
+    assert (
+        _partition_name("market_frame_members", datetime(2026, 12, 1, tzinfo=UTC))
+        == "market_frame_members_2026_12"
+    )

@@ -74,6 +74,12 @@ export interface MarketStatus {
   /** Fraction in [0, 1] of the active universe's promised rolling history
    * that is currently reconciled. Null when it can't be determined yet. */
   historical_coverage: number | null;
+  /** The most recently finalized (COMPLETE or PARTIAL) Market Frame's
+   * frame_time. Null when no frame has finalized yet. */
+  latest_market_frame: string | null;
+  /** That frame's available_instruments / expected_instruments, in [0, 1].
+   * Null alongside latest_market_frame === null. */
+  frame_completeness: number | null;
 }
 
 export async function getMarketStatus(): Promise<MarketStatus | null> {

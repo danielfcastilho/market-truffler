@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     # (to pick up new listings/delistings) and rolls candle partitions.
     market_universe_refresh_interval_seconds: float = 900.0
 
+    # How long the frame synchronizer waits after each UTC minute boundary
+    # before finalizing that minute's Market Frame, to let normal WebSocket
+    # delivery jitter across hundreds of symbols/several connections settle.
+    # 5s is comfortably above what M2/M3 real-network testing observed (live
+    # candles typically land within ~1-2s of the boundary).
+    market_frame_grace_period_seconds: float = 5.0
+
     @property
     def allowed_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.allowed_origins.split(",") if origin.strip()]

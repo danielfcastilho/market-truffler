@@ -11,6 +11,7 @@ from app.core.logging import configure_logging
 from app.db.session import get_session_factory
 from app.integrations.bybit.client import BybitClient
 from app.routers import auth, market, system
+from app.services.frame_synchronizer import FrameSynchronizer
 from app.services.history_reconciler import HistoryReconciler
 from app.services.live_candle_sink import PersistingCandleSink
 from app.services.market_collector import MarketCollector
@@ -52,14 +53,23 @@ async def lifespan(app: FastAPI):
     )
     app.state.history_reconciler = history_reconciler
 
+    frame_synchronizer = FrameSynchronizer(
+        session_factory, grace_period_seconds=settings.market_frame_grace_period_seconds
+    )
+    app.state.frame_synchronizer = frame_synchronizer
+
     # The reconciler's first universe pass populates `instruments` (which the
     # live sink and the collector's own discovery both then rely on), so it
-    # must start before the collector.
+    # must start before the collector. The frame synchronizer only reads
+    # already-persisted candles, so its start order relative to the other
+    # two doesn't matter beyond both being up before its first minute tick.
     await history_reconciler.start()
     await market_collector.start()
+    await frame_synchronizer.start()
 
     yield
 
+    await frame_synchronizer.stop()
     await market_collector.stop()
     await history_reconciler.stop()
     logger.info("shutdown")

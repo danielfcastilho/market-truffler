@@ -4,11 +4,13 @@ A crypto trading system, currently at its **foundation milestone** plus a
 real MARKET capability: a clean, containerized, runnable application shell
 — authentication, a database, a typed API, a navigable frontend — that
 discovers its Bybit market universe over REST, continuously watches it over
-Bybit's public WebSocket, and durably remembers it: closed 1-minute candles
-are persisted, backfilled up to a rolling ~1-year history, self-repaired
-after gaps or outages, and locally aggregated into 5m/15m/1h. No trading
-logic, no scoring yet. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-for where this is headed.
+Bybit's public WebSocket, durably remembers it (closed 1-minute candles
+persisted, backfilled up to a rolling ~1-year history, self-repaired after
+gaps or outages, locally aggregated into 5m/15m/1h), and every closed UTC
+minute synchronizes it into one Market Frame — a single, temporally-legal
+cross-sectional snapshot of the whole market a future Sniffer will consume
+without re-deriving alignment itself. No trading logic, no scoring yet. See
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for where this is headed.
 
 ## Repository structure
 
@@ -49,21 +51,29 @@ a rolling ~1-year retention policy applied uniformly across 1m/5m/15m/1h),
 backfills up to a year of history per instrument in the background,
 detects and repairs gaps after a WebSocket hiccup or an extended outage,
 and locally derives 5m/15m/1h candles from complete sets of stored 1m
-candles — no API key required for any of it. Both background capabilities
-start with the application (not with any page view or API call) and keep
-running independently of it; a fresh install becomes usable immediately
-and its historical dataset converges in the background.
+candles, plus a continuously-running MARKET frame synchronizer that, every
+closed UTC minute, snapshots the active universe and resolves each
+instrument's latest legally-closed 1m/5m/15m/1h context into one unified
+Market Frame — truthfully marked COMPLETE or PARTIAL, never faked — no API
+key required for any of it. All three background capabilities start with
+the application (not with any page view or API call) and keep running
+independently of it; a fresh install becomes usable immediately and both
+its historical dataset and its frame history converge/accumulate in the
+background.
 
 What's **not** real: higher-timeframe candles fetched from the exchange
-directly (they're always derived locally from 1m), features, scoring,
-rankings, or trading logic. Sniffer, Warhog, and OINK CORP are reachable in
-the UI and each show a deliberate "in progress" page. Vitals (system
-health)'s SYSTEM section is real, and every row in MARKET is now real:
-"Bybit connectivity"/"Symbols tracked" (REST), "Market data"/"Last market
-update"/"Data freshness" (the live WebSocket collector), and "Historical
-coverage" (the background history reconciler's persisted progress toward
-the promised rolling dataset). Sniffer/Warhog/OINK CORP are laid out for
-the future but every value is an honest "N/A" — nothing is simulated.
+directly (they're always derived locally from 1m), historical frame
+backfill/reconstruction (frames are only ever produced live, going
+forward), features, scoring, rankings, or trading logic. Sniffer, Warhog,
+and OINK CORP are reachable in the UI and each show a deliberate "in
+progress" page. Vitals (system health)'s SYSTEM section is real, and every
+row in MARKET is now real: "Bybit connectivity"/"Symbols tracked" (REST),
+"Market data"/"Last market update"/"Data freshness" (the live WebSocket
+collector), "Historical coverage" (the history reconciler's persisted
+progress), and "Latest market frame"/"Frame completeness" (the frame
+synchronizer's most recently finalized snapshot). Sniffer/Warhog/OINK CORP
+are laid out for the future but every value is an honest "N/A" — nothing is
+simulated.
 
 ## Prerequisites
 
@@ -164,12 +174,14 @@ Vitals shows a SYSTEM section with live operational status (API liveness,
 API readiness, database connectivity, uptime, environment, backend version)
 and a fully-live MARKET section: "Bybit connectivity"/"Symbols tracked"
 come from a live REST call, "Market data"/"Last market update"/"Data
-freshness" come from the MARKET collector, and "Historical coverage" comes
-from the MARKET history reconciler — both have been running in the
-background since the API started; Vitals just reads their status, it
-doesn't trigger either. 🐽 SNIFFER/🐗 WARHOG/🧬 OINK CORP still preview what
-Vitals will eventually report on: every row there is an honest "N/A", never
-a fabricated value, since none of that infrastructure exists yet.
+freshness" come from the MARKET collector, "Historical coverage" comes from
+the MARKET history reconciler, and "Latest market frame"/"Frame
+completeness" come from the MARKET frame synchronizer — all three have been
+running in the background since the API started; Vitals just reads their
+status, it never triggers any of them. 🐽 SNIFFER/🐗 WARHOG/🧬 OINK CORP
+still preview what Vitals will eventually report on: every row there is an
+honest "N/A", never a fabricated value, since none of that infrastructure
+exists yet.
 
 ## 6. Run tests
 

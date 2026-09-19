@@ -9,6 +9,7 @@ from app.db.session import get_db
 from app.integrations.bybit.client import BybitClient
 from app.models.user import User
 from app.repositories.user_repository import UserRepository
+from app.services.frame_synchronizer import FrameSynchronizer
 from app.services.history_reconciler import HistoryReconciler
 from app.services.market_collector import MarketCollector
 from app.services.market_universe import MarketUniverseService
@@ -81,3 +82,13 @@ def get_history_reconciler(request: Request) -> HistoryReconciler:
 
 
 HistoryReconcilerDep = Annotated[HistoryReconciler, Depends(get_history_reconciler)]
+
+
+def get_frame_synchronizer(request: Request) -> FrameSynchronizer:
+    """The continuously-running MARKET frame synchronizer, owned by the
+    app's lifespan. Same rule as the other MARKET singletons: read-only,
+    never starts/stops/drives it — reading a frame must never create one."""
+    return request.app.state.frame_synchronizer
+
+
+FrameSynchronizerDep = Annotated[FrameSynchronizer, Depends(get_frame_synchronizer)]

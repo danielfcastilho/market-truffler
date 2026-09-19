@@ -15,3 +15,9 @@ class MarketStatus(BaseModel):
     # app.services.historical_coverage for exact semantics. None when it
     # can't be determined yet (e.g. no active instruments).
     historical_coverage: float | None
+    # The most recently finalized (COMPLETE or PARTIAL) Market Frame — see
+    # app.services.frame_synchronizer. None when no frame has finalized yet.
+    latest_market_frame: datetime | None
+    # That frame's available_instruments / expected_instruments, in [0, 1].
+    # None alongside latest_market_frame=None.
+    frame_completeness: float | None

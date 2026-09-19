@@ -3,7 +3,9 @@ from datetime import UTC, datetime, timedelta
 from app.core.deps import get_market_collector, get_market_universe_service
 from app.domain.market import Instrument
 from app.main import app
+from app.models.frame import MarketFrame, MarketFrameMember
 from app.models.instrument import Instrument as InstrumentRow
+from app.repositories.frame_repository import FrameRepository
 from app.services.market_collector import MarketCollectorStatus
 from app.services.market_universe import MarketUniverseUnavailable
 
@@ -191,3 +193,87 @@ async def test_market_status_never_writes_to_the_database(client, test_user, db_
 
     rows = (await db_session.execute(select(InstrumentRow))).scalars().all()
     assert rows == []
+
+
+async def test_market_status_reports_na_frame_fields_when_no_frame_exists_yet(client, test_user):
+    await _login(client, test_user)
+    _override()
+    try:
+        response = await client.get("/api/market/status")
+    finally:
+        _clear_overrides()
+
+    body = response.json()
+    assert body["latest_market_frame"] is None
+    assert body["frame_completeness"] is None
+
+
+async def test_market_status_reports_the_real_latest_finalized_frame(client, test_user, db_session):
+    # Login first: FrameRepository's writes expire this session's identity
+    # map (same footgun CandleRepository.upsert_many has — see its
+    # docstring), which would otherwise leave the already-loaded `test_user`
+    # ORM object stale and trigger a lazy-refresh outside async context.
+    await _login(client, test_user)
+
+    frame_time = datetime(2026, 1, 1, 14, 37, tzinfo=UTC)
+    repo = FrameRepository(db_session)
+    await repo.create_building(frame_time, expected_instrument_ids=[1, 2], now=datetime.now(UTC))
+    await repo.finalize(
+        frame_time,
+        [
+            {
+                "frame_time": frame_time,
+                "instrument_id": 1,
+                "open_time_1m": frame_time,
+                "open_time_5m": frame_time,
+                "open_time_15m": frame_time,
+                "open_time_1h": frame_time,
+            }
+        ],
+        now=datetime.now(UTC),
+    )
+
+    _override()
+    try:
+        response = await client.get("/api/market/status")
+    finally:
+        _clear_overrides()
+
+    body = response.json()
+    assert body["latest_market_frame"] == "2026-01-01T14:37:00Z"
+    assert body["frame_completeness"] == 0.5  # 1 of 2 expected — PARTIAL, truthfully reported
+
+
+async def test_market_status_ignores_a_still_building_frame(client, test_user, db_session):
+    await _login(client, test_user)  # login first — see comment above
+
+    frame_time = datetime(2026, 1, 1, 14, 37, tzinfo=UTC)
+    await FrameRepository(db_session).create_building(
+        frame_time, expected_instrument_ids=[1, 2, 3, 4, 5], now=datetime.now(UTC)
+    )
+
+    _override()
+    try:
+        response = await client.get("/api/market/status")
+    finally:
+        _clear_overrides()
+
+    body = response.json()
+    assert body["latest_market_frame"] is None  # not yet finalized — must not surface as "latest"
+    assert body["frame_completeness"] is None
+
+
+async def test_market_status_never_creates_a_frame(client, test_user, db_session):
+    from sqlalchemy import select
+
+    await _login(client, test_user)
+    _override()
+    try:
+        await client.get("/api/market/status")
+    finally:
+        _clear_overrides()
+
+    frames = (await db_session.execute(select(MarketFrame))).scalars().all()
+    members = (await db_session.execute(select(MarketFrameMember))).scalars().all()
+    assert frames == []
+    assert members == []

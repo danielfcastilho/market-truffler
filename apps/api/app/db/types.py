@@ -1,8 +1,11 @@
+import json
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
+from sqlalchemy.dialects.postgresql import ARRAY as PostgresArray
 from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
-from sqlalchemy.types import CHAR, DateTime, TypeDecorator
+from sqlalchemy.types import CHAR, DateTime, Integer, Text, TypeDecorator
 
 
 class GUID(TypeDecorator):
@@ -69,3 +72,41 @@ class UTCDateTime(TypeDecorator):
         if value.tzinfo is None:
             return value.replace(tzinfo=UTC)
         return value.astimezone(UTC)
+
+
+class IntArray(TypeDecorator):
+    """An ordered list of integers, stored compactly and portably.
+
+    Uses PostgreSQL's native `integer[]` array (packed 4-byte elements,
+    directly queryable) in production, and a JSON-encoded text column on
+    SQLite (which has no native array type) for tests — same bridging
+    pattern as `GUID`/`UTCDateTime` above.
+
+    Introduced to give `MarketFrame.expected_instrument_ids` an exact,
+    durable snapshot of which instruments were expected at frame-build
+    time: a count alone can't be re-derived correctly after a crash and
+    restart, once the active universe has since changed (see
+    `app.models.frame.MarketFrame`'s docstring).
+    """
+
+    impl = Text
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == "postgresql":
+            return dialect.type_descriptor(PostgresArray(Integer))
+        return dialect.type_descriptor(Text())
+
+    def process_bind_param(self, value: list[int] | None, dialect) -> object:
+        if value is None:
+            return value
+        if dialect.name == "postgresql":
+            return list(value)
+        return json.dumps(list(value))
+
+    def process_result_value(self, value: Any, dialect) -> list[int] | None:
+        if value is None:
+            return value
+        if dialect.name == "postgresql":
+            return list(value)
+        return json.loads(value)

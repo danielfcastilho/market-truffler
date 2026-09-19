@@ -24,6 +24,8 @@ const healthyMarket: MarketStatus = {
   last_market_update: "2026-09-19T16:42:07.000Z",
   data_freshness_seconds: 12,
   historical_coverage: 0.681,
+  latest_market_frame: "2026-09-19T16:37:00.000Z",
+  frame_completeness: 0.9987,
 };
 
 const noMarketDataYet: MarketStatus = {
@@ -33,6 +35,8 @@ const noMarketDataYet: MarketStatus = {
   last_market_update: null,
   data_freshness_seconds: null,
   historical_coverage: 0.124,
+  latest_market_frame: null,
+  frame_completeness: null,
 };
 
 describe("overallStatus", () => {
@@ -83,6 +87,8 @@ describe("overallStatus", () => {
         last_market_update: null,
         data_freshness_seconds: null,
         historical_coverage: null,
+        latest_market_frame: null,
+        frame_completeness: null,
       },
     };
     expect(overallStatus(input)).toBe("ok");
@@ -206,6 +212,16 @@ describe("buildVitalsSections", () => {
       value: "68.1%",
       status: "ok",
     });
+    expect(market?.rows.find((r) => r.label === "Latest market frame")).toEqual({
+      label: "Latest market frame",
+      value: "16:37 UTC",
+      status: "ok",
+    });
+    expect(market?.rows.find((r) => r.label === "Frame completeness")).toEqual({
+      label: "Frame completeness",
+      value: "99.9%",
+      status: "ok",
+    });
   });
 
   it("reports Bybit connectivity as down and symbols tracked as N/A when Bybit REST is unreachable", () => {
@@ -220,6 +236,8 @@ describe("buildVitalsSections", () => {
         last_market_update: null,
         data_freshness_seconds: null,
         historical_coverage: null,
+        latest_market_frame: null,
+        frame_completeness: null,
       },
     });
     const market = sections.find((s) => s.title === "MARKET");
@@ -269,6 +287,17 @@ describe("buildVitalsSections", () => {
       label: "Historical coverage",
       value: "12.4%",
       status: "ok",
+    });
+    // No frame has finalized yet — must read N/A, never a fabricated value.
+    expect(market?.rows.find((r) => r.label === "Latest market frame")).toEqual({
+      label: "Latest market frame",
+      value: "N/A",
+      status: "unavailable",
+    });
+    expect(market?.rows.find((r) => r.label === "Frame completeness")).toEqual({
+      label: "Frame completeness",
+      value: "N/A",
+      status: "unavailable",
     });
   });
 

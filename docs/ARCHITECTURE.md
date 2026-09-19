@@ -226,6 +226,79 @@ happens to run out) or the current rolling retention cutoff. It never
 queries `market_candles` directly (no scan over hundreds of millions of
 rows on every Vitals load) and never triggers any MARKET work.
 
+### MARKET synchronizes: Market Frames
+
+A candle answers "what happened?" A **Market Frame** answers "what was
+knowable about the whole market at time T?" Every closed UTC minute, a
+third background capability turns `market_candles` (many independent
+per-instrument, per-timeframe time series) into one synchronized
+cross-sectional snapshot future Sniffer can consume without re-deriving
+temporal alignment itself:
+
+```
+app/services/frame_synchronizer.py (FrameSynchronizer)
+   Wakes exactly on UTC minute boundaries. At frame_time = M: snapshots the
+   *active* universe right then (fixing expected_instruments immutably —
+   a later universe change never rewrites an already-finalized frame's
+   expectations), persists a BUILDING row immediately (crash-safe), waits
+   a short configurable grace period for normal WebSocket delivery jitter
+   to settle, then finalizes — never on the first symbol to arrive.
+        │
+        ▼
+app/repositories/candle_repository.py
+   fetch_latest_closed_per_instrument(timeframe, instrument_ids, max_open_time)
+   One set-oriented query (a portable ROW_NUMBER() OVER (PARTITION BY
+   instrument_id ORDER BY open_time DESC) window function — works
+   identically on SQLite in tests and PostgreSQL in production) resolves
+   the whole active universe's latest *legal* candle for one timeframe.
+   Called once per configured timeframe (four total) — never once per
+   instrument. `max_open_time` is `frame_time - duration`, which is exactly
+   equivalent to "close_time <= frame_time" given how M3 already defines
+   close_time, without needing an index on close_time at all.
+        │
+        ▼
+app/repositories/frame_repository.py (FrameRepository)
+   An instrument is a frame "member" only if all four configured
+   timeframes resolved — missing even one means no member row, never a
+   fabricated placeholder. Batch-inserts members and flips
+   BUILDING -> COMPLETE (available == expected) or PARTIAL (available <
+   expected), guarded so a second finalize attempt (a duplicate trigger,
+   or late-arriving recovered data) can never rewrite an already-terminal
+   frame — a finalized frame is an immutable statement of what MARKET
+   actually had available at T.
+```
+
+**Frame time.** `frame_time = M` means "the decision point immediately
+after the M-1..M minute closed." A frame may only reference candles with
+`close_time <= frame_time` — e.g. at `frame_time=14:37`, the legal 1h
+candle is `13:00-13:59` (`14:00-14:59` is still forming); verified directly
+against real data in this milestone's live smoke test.
+
+**Schema.** `market_frames` (frame_time as PK — no surrogate id; small,
+~525,600 rows/year, not partitioned) and `market_frame_members`
+(`(frame_time, instrument_id)` composite PK, partitioned by
+`RANGE(frame_time)` exactly like `market_candles` — same
+`app.services.partition_manager`, generalized to take a `table` parameter
+rather than duplicated). A member stores only four `open_time` datetimes
+(the identifying half of `market_candles`' own
+`(instrument_id, timeframe, open_time)` key, `timeframe` implied by the
+column) — never duplicated OHLCV. The dominant "give me frame T" read
+joins back to `market_candles` four times (one per timeframe); "give me the
+latest finalized frame" is the same, keyed off `MAX(frame_time) WHERE
+status != 'building'`.
+
+**Restart.** A process that crashes between creating a BUILDING row and
+finalizing it leaves that one row inspectable, never silently corrupt. On
+the next startup, `FrameSynchronizer` finalizes exactly that one
+interrupted frame (safe at any delay — the temporal bound is on
+`frame_time`, not on when the query runs) and resumes the per-minute loop
+from there; it never fabricates frames for whatever minutes were missed
+while the process was down.
+
+Vitals reads two new values — "Latest market frame" and "Frame
+completeness" — purely from `FrameRepository.get_latest_finalized()`;
+opening Vitals never creates, advances, or otherwise drives a frame.
+
 ## What's actually implemented (this milestone)
 
 ```
@@ -252,18 +325,22 @@ rows on every Vitals load) and never triggers any MARKET work.
   Owns the `User` model, session issuance/verification, and the
   database-touching endpoints (`/health`, `/ready`, `/api/me`,
   `/api/system`, `/api/auth/login`, `/api/auth/logout`), plus
-  `/api/market/status`, which talks to Bybit's public REST API and reads
-  the MARKET collector's and history reconciler's status. Two long-lived
-  background capabilities are started from the FastAPI `lifespan`, not
-  from any request: `MarketCollector` (`app/services/market_collector.py`,
-  live WebSocket watching) and `HistoryReconciler`
-  (`app/services/history_reconciler.py`, durable history/bootstrap/gap
-  repair) — both run for the life of the process.
-- **`postgres`**: `users`, `instruments` (the instrument dimension), and
+  `/api/market/status` and two minimal read-only inspection endpoints
+  (`/api/market/frames/latest`, `/api/market/frames/{frame_time}`). Three
+  long-lived background capabilities are started from the FastAPI
+  `lifespan`, not from any request: `MarketCollector`
+  (`app/services/market_collector.py`, live WebSocket watching),
+  `HistoryReconciler` (`app/services/history_reconciler.py`, durable
+  history/bootstrap/gap repair), and `FrameSynchronizer`
+  (`app/services/frame_synchronizer.py`, per-minute cross-sectional
+  synchronization) — all three run for the life of the process.
+- **`postgres`**: `users`, `instruments` (the instrument dimension),
   `market_candles` (a native `RANGE`-partitioned table on `open_time`,
-  monthly partitions, holding all four timeframes). No ranking, feature, or
-  trade-related schema exists — those get designed when their requirements
-  are known, not speculatively now.
+  monthly partitions, holding all four timeframes), `market_frames` (one
+  row per synchronized minute), and `market_frame_members`
+  (`RANGE`-partitioned on `frame_time`, same monthly scheme). No ranking,
+  feature, or trade-related schema exists — those get designed when their
+  requirements are known, not speculatively now.
 - **`research/oink_corp`, `packages/shared`, `infra`**: boundaries reserved
   for future work (see each directory's own README). Deliberately empty.
 - **Vitals** (`apps/web/src/app/(protected)/vitals/page.tsx`): reads
@@ -274,10 +351,12 @@ rows on every Vitals load) and never triggers any MARKET work.
   liveness, readiness, database connectivity, uptime, environment, backend
   version); every row in MARKET is real too — "Bybit
   connectivity"/"Symbols tracked" from a REST call, "Market
-  data"/"Last market update"/"Data freshness" from the live collector, and
-  "Historical coverage" from the history reconciler's persisted progress.
-  🐽 SNIFFER, 🐗 WARHOG, and 🧬 OINK CORP stay hardcoded to "N/A": there is
-  no live signal behind any of them yet, so none is invented.
+  data"/"Last market update"/"Data freshness" from the live collector,
+  "Historical coverage" from the history reconciler's persisted progress,
+  and "Latest market frame"/"Frame completeness" from the frame
+  synchronizer's most recently finalized Market Frame. 🐽 SNIFFER,
+  🐗 WARHOG, and 🧬 OINK CORP stay hardcoded to "N/A": there is no live
+  signal behind any of them yet, so none is invented.
 
 ### Why no Sniffer/Warhog services exist yet
 
