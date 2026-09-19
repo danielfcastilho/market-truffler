@@ -25,10 +25,11 @@ class Settings(BaseSettings):
     bybit_timeout_seconds: float = 5.0
     bybit_ws_base_url: str = "wss://stream.bybit.com/v5/public/linear"
 
-    # How much canonical 1m history MARKET tries to keep, end to end: the
-    # bootstrap/recovery target window, and the retention horizon candles
-    # (all timeframes) are pruned to. One rolling policy, not two.
-    market_history_retention_days: int = 365
+    # One rolling horizon for bootstrap/catch-up, coverage, and monthly
+    # candle/member/Sniffer retention. Candle partitions still referenced by
+    # retained members are preserved. Frame headers are not pruned.
+    # Old per-instrument targets/frontiers are not rewritten by policy changes.
+    market_history_retention_days: int = 30
     # How many instruments the history reconciler works on concurrently.
     market_history_max_concurrent_instruments: int = 5
     # Rows requested per Bybit historical kline page (Bybit's documented max).

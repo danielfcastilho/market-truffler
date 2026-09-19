@@ -6,7 +6,7 @@ containerized, runnable application shell — authentication, a database, a
 typed API, a navigable frontend — that discovers its Bybit market universe
 over REST, continuously watches it over Bybit's public WebSocket, durably
 remembers it (closed 1-minute candles persisted, backfilled up to a rolling
-~1-year history, self-repaired after gaps or outages, locally aggregated
+history horizon, self-repaired after gaps or outages, locally aggregated
 into 5m/15m/1h), and every closed UTC minute synchronizes it into one
 Market Frame — a single, temporally-legal cross-sectional snapshot of the
 whole market. Sniffer now reacts to each finalized frame and computes one
@@ -50,9 +50,11 @@ currently tradable instruments), a continuously-running MARKET collector
 that watches that universe over Bybit's public WebSocket, and a
 continuously-running MARKET history reconciler that durably persists every
 closed 1-minute candle (native PostgreSQL partitioning, monthly partitions,
-a rolling ~1-year retention policy applied uniformly across 1m/5m/15m/1h),
-backfills up to a year of history per instrument in the background,
-detects and repairs gaps after a WebSocket hiccup or an extended outage,
+a rolling retention policy — currently **~30 days**, configured by one
+setting, `market_history_retention_days` — applied uniformly across
+1m/5m/15m/1h), backfills that same horizon of history per instrument in
+the background, detects and repairs gaps after a WebSocket hiccup or an
+extended outage,
 and locally derives 5m/15m/1h candles from complete sets of stored 1m
 candles, plus a continuously-running MARKET frame synchronizer that, every
 closed UTC minute, snapshots the active universe and resolves each
@@ -75,6 +77,17 @@ exact historical candle doesn't exist. Results persist to a compact,
 idempotent `sniffer_results` table and are exposed read-only via
 `/api/sniffer/status` and `/api/sniffer/latest`. A Sniffer failure can never
 break MARKET's own background capabilities.
+
+> **A note on the retention horizon.** The architecture built in the MARKET
+> milestone supports an arbitrary rolling retention window — the original
+> design target, and what you'll see described in `docs/ARCHITECTURE.md`'s
+> milestone narrative, was ~1 year. The window is a single runtime setting
+> (`market_history_retention_days` in `apps/api/app/core/config.py`), and it
+> is currently set to **~30 days** to reduce storage/bootstrap depth while
+> the project is under active development — nothing about the mechanism
+> changed in principle; bootstrap and catch-up now clamp old watermarks to
+> the current policy, and retention protects surviving frame references. See "Design notes worth knowing"
+> below for how to change it back.
 
 What's **not** real: higher-timeframe candles fetched from the exchange
 directly (they're always derived locally from 1m), historical frame
@@ -281,3 +294,11 @@ directly on the host, against a Postgres you run yourself. This is optional
   `apps/web/src/app/(protected)/layout.tsx` calls the backend on every
   request before rendering, and every backend endpoint independently checks
   the session.
+- **Changing the history retention horizon**: `market_history_retention_days`
+  in `apps/api/app/core/config.py` defaults to `30` and controls bootstrap,
+  catch-up, coverage, and monthly retention for candles, frame members,
+  and Sniffer results. Existing targets and backward watermarks are not
+  rewritten. Raising the setting does not recover data already pruned when
+  old watermarks still report it reconciled, nor extend an instrument's
+  original target. See [the deployment and verification runbook](docs/HISTORY_RETENTION.md)
+  for cleanup timing, frame-reference exceptions, and read-only SQL.

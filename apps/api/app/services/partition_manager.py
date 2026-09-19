@@ -22,8 +22,10 @@ import logging
 import re
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import text
+from sqlalchemy import exists, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.frame import MarketFrameMember
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +105,21 @@ async def ensure_partitions(
     return created
 
 
+async def _has_candle_references(session: AsyncSession, start: datetime, end: datetime) -> bool:
+    """Frame members can reference arbitrarily stale candles, across month boundaries."""
+    columns = (
+        MarketFrameMember.open_time_1m,
+        MarketFrameMember.open_time_5m,
+        MarketFrameMember.open_time_15m,
+        MarketFrameMember.open_time_1h,
+    )
+    return bool(
+        await session.scalar(
+            select(exists().where(or_(*((column >= start) & (column < end) for column in columns))))
+        )
+    )
+
+
 async def drop_expired_partitions(
     session: AsyncSession, *, retention_days: int, table: str = "market_candles"
 ) -> list[str]:
@@ -130,17 +147,33 @@ async def drop_expired_partitions(
     name_re = _partition_name_re(table)
 
     dropped: list[str] = []
+    locked = False
     for name in partition_names:
         match = name_re.match(name)
         if match is None:
             continue
         month = datetime(int(match.group(1)), int(match.group(2)), 1, tzinfo=UTC)
         if month < cutoff_month:
+            if table == "market_candles":
+                if not locked:
+                    # Match frame construction's lock order. Keep reference checks
+                    # and drops atomic with respect to concurrent frame builders.
+                    await session.execute(
+                        text("LOCK TABLE market_candles IN ACCESS EXCLUSIVE MODE")
+                    )
+                    await session.execute(
+                        text("LOCK TABLE market_frame_members IN ACCESS EXCLUSIVE MODE")
+                    )
+                    locked = True
+                if await _has_candle_references(session, month, _add_months(month, 1)):
+                    logger.info("candle_partition_retained_for_frames", extra={"partition": name})
+                    continue
             await session.execute(text(f"DROP TABLE IF EXISTS {name}"))  # noqa: S608
             dropped.append(name)
 
-    if dropped:
+    if dropped or locked:
         await session.commit()
+    if dropped:
         logger.info("partitions_dropped", extra={"table": table, "partitions": dropped})
 
     return dropped

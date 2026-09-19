@@ -239,6 +239,149 @@ async def test_bootstrap_already_complete_makes_no_rest_call(session_factory):
     assert client.calls == []
 
 
+# -- bootstrap respects a lowered retention horizon (retention reduction) -------
+
+
+async def test_bootstrap_never_requests_history_earlier_than_the_configured_horizon(
+    session_factory,
+):
+    """A pre-existing instrument's own `history_target_start` may still
+    reflect an older, larger retention policy (e.g. 365 days, persisted
+    before the operator lowered `market_history_retention_days` to 30) —
+    bootstrap must never request/dig earlier than the *current* configured
+    horizon, no matter what that stale per-instrument watermark says."""
+    now = datetime.now(UTC).replace(second=0, microsecond=0)
+    stale_target = now - timedelta(days=365)  # set back when retention was 365 days
+    synced_from = now - timedelta(days=25)  # partway through the current 30-day window
+    instrument_id = await _seed_instrument(
+        session_factory, target_start=stale_target, synced_from=synced_from, synced_through=now
+    )
+
+    rows = [_raw_row(now - timedelta(days=29) + timedelta(minutes=i)) for i in range(5)]
+    client = _FakeBybitClient({"BTCUSDT": [{"list": rows}]})
+    reconciler = _reconciler(session_factory, client, retention_days=30)
+
+    from app.services.candle_ingestion import CandleIngestionService
+
+    async with session_factory() as session:
+        instrument = await session.get(Instrument, instrument_id)
+        await reconciler._bootstrap_step(
+            session, instrument, CandleIngestionService(CandleRepository(session))
+        )
+
+    # The requested start must sit right around "30 days ago" — nowhere
+    # near the stale 365-day target (which would fail the lower bound by
+    # over 300 days).
+    lower_bound_ms = int((now - timedelta(days=30)).timestamp() * 1000)
+    upper_bound_ms = int((datetime.now(UTC) - timedelta(days=30)).timestamp() * 1000)
+    assert lower_bound_ms <= client.calls[0]["start"] <= upper_bound_ms
+
+
+async def test_bootstrap_already_synced_past_the_current_horizon_makes_no_rest_call(
+    session_factory,
+):
+    """An instrument already bootstrapped deep into history under an
+    older, larger retention policy (its `history_synced_from` far older
+    than the current 30-day horizon) must not trigger any further
+    backward bootstrap work just because its own `history_target_start`
+    still says 365 days — the effective floor caps how far back is
+    'needed' under the current policy, and this instrument already
+    exceeds it."""
+    now = datetime.now(UTC).replace(second=0, microsecond=0)
+    stale_target = now - timedelta(days=365)
+    deep_synced_from = now - timedelta(days=200)  # already synced far past the 30-day horizon
+    instrument_id = await _seed_instrument(
+        session_factory,
+        target_start=stale_target,
+        synced_from=deep_synced_from,
+        synced_through=now,
+    )
+    client = _FakeBybitClient()
+    reconciler = _reconciler(session_factory, client, retention_days=30)
+
+    from app.services.candle_ingestion import CandleIngestionService
+
+    async with session_factory() as session:
+        instrument = await session.get(Instrument, instrument_id)
+        await reconciler._bootstrap_step(
+            session, instrument, CandleIngestionService(CandleRepository(session))
+        )
+
+    assert client.calls == []
+    async with session_factory() as session:
+        refreshed = await session.get(Instrument, instrument_id)
+        assert refreshed.history_synced_from == deep_synced_from  # untouched
+
+
+async def test_bootstrap_reaching_the_floor_snaps_to_the_effective_horizon_not_the_stale_target(
+    session_factory,
+):
+    """When bootstrap reaches the natural floor of available history
+    (nothing left for Bybit to return), the frontier must snap to the
+    *effective* (current-policy) target start, not the instrument's
+    stale, deeper persisted `history_target_start` — otherwise a lowered
+    `retention_days` would leave a watermark claiming ~365 days of
+    reconciled history when the current policy only ever asked for ~30.
+    `history_target_start` itself must stay untouched — it is never
+    rewritten, truthfully recording what bootstrap was originally aimed
+    at."""
+    now = datetime.now(UTC).replace(second=0, microsecond=0)
+    stale_target = now - timedelta(days=365)
+    synced_from = now - timedelta(days=25)
+    instrument_id = await _seed_instrument(
+        session_factory, target_start=stale_target, synced_from=synced_from, synced_through=now
+    )
+    client = _FakeBybitClient({"BTCUSDT": [{"list": []}]})  # nothing left -> natural floor
+    reconciler = _reconciler(session_factory, client, retention_days=30)
+
+    from app.services.candle_ingestion import CandleIngestionService
+
+    async with session_factory() as session:
+        instrument = await session.get(Instrument, instrument_id)
+        await reconciler._bootstrap_step(
+            session, instrument, CandleIngestionService(CandleRepository(session))
+        )
+
+    async with session_factory() as session:
+        refreshed = await session.get(Instrument, instrument_id)
+        assert refreshed.history_synced_from > now - timedelta(days=31)
+        assert refreshed.history_target_start == stale_target  # never rewritten
+
+
+async def test_gap_recovery_inside_the_retained_window_is_unaffected_by_the_horizon(
+    session_factory,
+):
+    """Catch-up/gap-repair (`_catchup_step`) walks `history_synced_through`
+    forward within the retained window — it must keep working regardless of the configured
+    retention horizon. Exercised here explicitly at the current 30-day
+    policy value, mirroring
+    `test_catchup_falls_back_to_rest_when_data_is_actually_missing`."""
+    now = datetime.now(UTC).replace(second=0, microsecond=0)
+    synced_through = now - timedelta(minutes=10)
+    instrument_id = await _seed_instrument(
+        session_factory,
+        target_start=synced_through,
+        synced_from=synced_through,
+        synced_through=synced_through,
+    )
+
+    gap_rows = [_raw_row(synced_through + timedelta(minutes=i + 1)) for i in range(5)]
+    client = _FakeBybitClient({"BTCUSDT": [{"list": gap_rows}]})
+    reconciler = _reconciler(session_factory, client, retention_days=30, catchup_buffer_minutes=2)
+
+    from app.services.candle_ingestion import CandleIngestionService
+
+    async with session_factory() as session:
+        instrument = await session.get(Instrument, instrument_id)
+        candle_repo = CandleRepository(session)
+        await reconciler._catchup_step(
+            session, candle_repo, instrument, CandleIngestionService(candle_repo)
+        )
+
+    assert len(client.calls) == 1
+    assert len(await _stored_1m(session_factory, instrument_id)) == 5
+
+
 # -- catch-up / gap repair -------------------------------------------------------
 
 
@@ -486,3 +629,53 @@ async def test_start_and_stop_is_clean_with_an_empty_universe(session_factory):
 
     await asyncio.wait_for(reconciler.stop(), timeout=2)
     assert reconciler.running is False
+
+
+async def test_long_outage_catchup_skips_expired_history_without_rewriting_past(session_factory):
+    from app.services.candle_ingestion import CandleIngestionService
+
+    now = datetime.now(UTC)
+    old = now - timedelta(days=200)
+    instrument_id = await _seed_instrument(
+        session_factory, target_start=old, synced_from=old, synced_through=old
+    )
+    client = _FakeBybitClient()
+    reconciler = _reconciler(session_factory, client, retention_days=30)
+    before = datetime.now(UTC) - timedelta(days=30)
+    async with session_factory() as session:
+        instrument = await session.get(Instrument, instrument_id)
+        repo = CandleRepository(session)
+        await reconciler._catchup_step(session, repo, instrument, CandleIngestionService(repo))
+    after = datetime.now(UTC) - timedelta(days=30)
+    assert (
+        int(before.timestamp() * 1000)
+        <= client.calls[0]["start"]
+        <= int(after.timestamp() * 1000) + 1
+    )
+    async with session_factory() as session:
+        instrument = await session.get(Instrument, instrument_id)
+        assert instrument.history_target_start == old
+        assert instrument.history_synced_from == old
+        assert instrument.history_synced_through > before
+
+
+async def test_retention_prunes_members_before_candles_and_rolls_partitions(
+    session_factory, monkeypatch
+):
+    from unittest.mock import AsyncMock
+
+    from app.services import partition_manager
+
+    drop = AsyncMock()
+    ensure = AsyncMock()
+    monkeypatch.setattr(partition_manager, "drop_expired_partitions", drop)
+    monkeypatch.setattr(partition_manager, "ensure_partitions", ensure)
+    reconciler = _reconciler(session_factory, _FakeBybitClient(), retention_days=30)
+    await reconciler._reconcile_universe_once()
+    assert [c.kwargs["table"] for c in drop.call_args_list] == [
+        "market_frame_members",
+        "sniffer_results",
+        "market_candles",
+    ]
+    assert all(c.kwargs["retention_days"] == 30 for c in drop.call_args_list)
+    assert ensure.await_count == 3

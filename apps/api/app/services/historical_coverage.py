@@ -1,20 +1,19 @@
 """MARKET's "Historical coverage" metric.
 
-How much of the promised rolling ~1-year 1m history is actually reconciled
-for the CURRENT active universe, right now, according to each active
-instrument's persisted watermarks. This is a pure, read-only computation
-over already-persisted state — it never triggers bootstrap, recovery, or
-any Bybit call, so Vitals reading it never drives MARKET (M3 section 18).
+How much of the promised rolling `retention_days` (currently ~30 days —
+see `Settings.market_history_retention_days`) of 1m history is actually
+reconciled for the CURRENT active universe, right now, according to each
+active instrument's persisted watermarks. This is a pure, read-only
+computation over already-persisted state — it never triggers bootstrap,
+recovery, or any Bybit call, so Vitals reading it never drives MARKET (M3
+section 18).
 
 Per-instrument coverage is the fraction of `[target_start, now]` that is
 currently confirmed-reconciled, i.e.
 `(history_synced_through - history_synced_from) / (now - target_start)`,
 where `target_start` is whichever is LATER of:
 
-- the instrument's own discovered floor (`history_target_start` — a newly
-  listed instrument, or wherever Bybit's own history happens to run out),
-  so a symbol with less than a year of real history can still reach 100%
-  without requiring candles that never existed; and
+- the instrument's initial discovery target (`history_target_start`); and
 - the current rolling retention cutoff (`now - retention_days`), so a
   reconciled range that has since aged out of retention and been pruned
   correctly stops counting as "currently covered".

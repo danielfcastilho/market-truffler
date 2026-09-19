@@ -1,7 +1,10 @@
 """MARKET's continuously-running historical capability: universe
-reconciliation, partition upkeep, one-year bootstrap, and gap/outage
-recovery — all driven by one per-instrument watermark pair persisted on
-`Instrument` (see its docstring for the exact semantics).
+reconciliation, partition upkeep, rolling-horizon bootstrap, and
+gap/outage recovery — all driven by one per-instrument watermark pair
+persisted on `Instrument` (see its docstring for the exact semantics) and
+one rolling window, `settings.market_history_retention_days` (currently
+~30 days; see that setting's docstring for the current value and how to
+change it).
 
 Like `MarketCollector`, this is started once from the FastAPI lifespan and
 runs for the life of the process. Vitals only ever reads what it has
@@ -9,11 +12,13 @@ already persisted; nothing here is triggered by a request.
 
 Bootstrap and gap-repair are the same mechanism applied to different parts
 of the timeline: `_bootstrap_step` walks `history_synced_from` backward
-toward `history_target_start`; `_catchup_step` walks `history_synced_through`
-forward toward "now". Both proceed one bounded REST page at a time per
-instrument per round, round-robin across the whole universe with bounded
-concurrency, so no single instrument (and no single round) does unbounded
-work.
+toward the *effective* target start (the later of the instrument's own
+persisted `history_target_start` and `now - retention_days` — see
+`_bootstrap_step`'s own docstring/comments for why it's never just the
+persisted value); `_catchup_step` walks `history_synced_through` forward
+toward "now". Both proceed one bounded REST page at a time per instrument
+per round, round-robin across the whole universe with bounded concurrency,
+so no single instrument (and no single round) does unbounded work.
 """
 
 import asyncio
@@ -45,9 +50,9 @@ _CATEGORY = "linear"
 # `partition_manager` only needs the column name for documentation — the
 # DDL itself is generic.
 _PARTITIONED_TABLES: tuple[tuple[str, str], ...] = (
-    ("market_candles", "open_time"),
     ("market_frame_members", "frame_time"),
     ("sniffer_results", "frame_time"),
+    ("market_candles", "open_time"),
 )
 
 SessionFactory = Callable[[], AsyncSession]
@@ -140,7 +145,10 @@ class HistoryReconciler:
             active, newly_added = await InstrumentRepository(session).reconcile_universe(
                 discovered, now=now, retention_days=self._retention_days
             )
-            for table, _column in _PARTITIONED_TABLES:
+            for table, column in _PARTITIONED_TABLES:
+                await partition_manager.ensure_partitions(
+                    session, months_back=0, table=table, partition_column=column
+                )
                 await partition_manager.drop_expired_partitions(
                     session, retention_days=self._retention_days, table=table
                 )
@@ -211,13 +219,29 @@ class HistoryReconciler:
     ) -> None:
         if instrument.history_synced_from is None or instrument.history_target_start is None:
             return
-        if instrument.history_synced_from <= instrument.history_target_start:
-            return  # bootstrap already complete
+
+        # `instrument.history_target_start` is an honest, never-rewritten
+        # record of what bootstrap was aimed at when this instrument was
+        # first discovered. If the operator has since lowered
+        # `market_history_retention_days` (e.g. 365 -> 30), that persisted
+        # value may now point deeper than the current policy promises. The
+        # *effective* floor bootstrap actually walks toward is always
+        # bounded by the current retention window too — same pattern as
+        # `historical_coverage.compute_historical_coverage` — so a stale
+        # watermark can never make the reconciler dig toward history that
+        # today's policy no longer retains.
+        effective_target_start = max(
+            instrument.history_target_start,
+            datetime.now(UTC) - timedelta(days=self._retention_days),
+        )
+
+        if instrument.history_synced_from <= effective_target_start:
+            return  # bootstrap already complete under the current policy
 
         end_ms = int(instrument.history_synced_from.timestamp() * 1000) - 1
-        start_ms = int(instrument.history_target_start.timestamp() * 1000)
+        start_ms = int(effective_target_start.timestamp() * 1000)
         if end_ms < start_ms:
-            instrument.history_synced_from = instrument.history_target_start
+            instrument.history_synced_from = effective_target_start
             await session.commit()
             return
 
@@ -243,7 +267,7 @@ class HistoryReconciler:
             # natural floor of available history (a new listing, or the
             # exchange's own retention limit) — never manufacture data to
             # fill it, just accept it as the true start of history.
-            instrument.history_synced_from = instrument.history_target_start
+            instrument.history_synced_from = effective_target_start
             await session.commit()
             logger.info("history_bootstrap_reached_floor", extra={"symbol": instrument.symbol})
             return
@@ -268,29 +292,35 @@ class HistoryReconciler:
         if instrument.history_synced_through is None:
             return
 
-        target_end = datetime.now(UTC) - self._catchup_buffer
+        now = datetime.now(UTC)
+        target_end = now - self._catchup_buffer
+        # Skip expired work after a long outage without rewriting the historical
+        # backward frontier. Coverage already intersects it with this window.
+        catchup_start = max(
+            instrument.history_synced_through, now - timedelta(days=self._retention_days)
+        )
         if instrument.history_synced_through >= target_end:
             return
 
-        max_chunk = instrument.history_synced_through + timedelta(minutes=self._page_size)
+        max_chunk = catchup_start + timedelta(minutes=self._page_size)
         chunk_end = min(target_end, max_chunk)
-        if chunk_end <= instrument.history_synced_through:
+        if chunk_end <= catchup_start:
             return
 
         # Cheap path: the live WebSocket collector may already have filled
         # this chunk in real time. Only fall back to a REST call for
         # whatever's genuinely missing.
-        span_seconds = (chunk_end - instrument.history_synced_through).total_seconds()
+        span_seconds = (chunk_end - catchup_start).total_seconds()
         expected_minutes = int(span_seconds // 60)
         existing = await candle_repo.fetch_range(
-            instrument.id, "1m", instrument.history_synced_through, chunk_end
+            instrument.id, "1m", catchup_start, chunk_end
         )
         if len(existing) >= expected_minutes:
             instrument.history_synced_through = chunk_end
             await session.commit()
             return
 
-        start_ms = int(instrument.history_synced_through.timestamp() * 1000) + 1
+        start_ms = int(catchup_start.timestamp() * 1000) + 1
         end_ms = int(chunk_end.timestamp() * 1000)
         try:
             raw = await self._bybit_client.get_kline(

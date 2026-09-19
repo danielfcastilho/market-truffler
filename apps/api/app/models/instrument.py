@@ -17,24 +17,18 @@ class Instrument(Base):
     The three `history_*` columns are MARKET's persisted watermark for this
     instrument's canonical 1m reconciliation, kept intentionally simple:
 
-    - `history_target_start`: how far back MARKET is trying to backfill —
-      `now - retention` at first sight, tightened forward if Bybit's REST
-      history turns out to start later (a newly listed instrument, or the
-      exchange's own data floor).
-    - `history_synced_from`: the backward bootstrap frontier — 1m history is
-      confirmed reconciled for every minute in
-      [history_synced_from, history_synced_through). Decreases toward
-      history_target_start as bootstrap progresses; bootstrap is complete
-      once it reaches it.
-    - `history_synced_through`: the forward/live frontier. Advances by one
-      minute at a time as the live WebSocket collector confirms each new
-      candle arrives contiguously, or in REST-sized jumps when the
-      background reconciler notices it has fallen stale (a WS outage or the
-      app having been offline) and fetches the missing range.
+    - `history_target_start`: the initial discovery target (`now - retention`),
+      not rewritten when policy changes or REST reaches its data floor.
+    - `history_synced_from`: the backward reconciliation frontier, including
+      ranges checked but empty at the exchange. Bootstrap stops at the later
+      of the initial target and today's rolling retention floor.
+    - `history_synced_through`: the forward reconciliation frontier, advanced
+      by the reconciler (which first checks for already-ingested live data).
+      Catch-up skips work older than the current retention floor after outages.
 
-    Both frontiers are seeded to the same instant when the instrument is
-    first registered, so their union is always one contiguous confirmed
-    range — no separate gap-scanning structure is needed.
+    These record reconciliation work, not the oldest/newest physical row.
+    Retention does not rewrite them; coverage intersects them with the current
+    window. Expired intervals can no longer be assumed physically present.
     """
 
     __tablename__ = "instruments"

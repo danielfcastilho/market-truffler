@@ -173,9 +173,14 @@ or an intentional correction if the exchange-backed values differ.
 ### MARKET remembers: durable history, bootstrap, and retention
 
 `ClosedCandle`s are now durably persisted, backfilled up to a rolling
-~1-year horizon, self-repairing after gaps or outages, and locally
-aggregated into 5m/15m/1h — all as a continuously-running background
-capability, never triggered by a request:
+horizon, self-repairing after gaps or outages, and locally aggregated into
+5m/15m/1h — all as a continuously-running background capability, never
+triggered by a request. The horizon itself is one setting,
+`Settings.market_history_retention_days` — this milestone's original
+design target and the value used throughout the rest of this section's
+examples was ~1 year (365 days); **the actual current runtime value is
+~30 days** — see "Current runtime policy" at the end of this section for
+why and exactly what that changed:
 
 ```
 app/models/instrument.py, app/models/candle.py
@@ -198,9 +203,15 @@ app/services/history_reconciler.py (HistoryReconciler)
    A second long-lived background capability, started alongside
    MarketCollector. Round-robins the active universe with bounded
    concurrency; for each instrument, one bounded step walks
-   history_synced_from backward toward history_target_start (bootstrap)
-   and one walks history_synced_through forward toward "now minus a small
-   buffer" (live catch-up/gap-repair) — the same REST kline endpoint,
+   history_synced_from backward toward an *effective* target start — the
+   later of the instrument's own persisted history_target_start (an
+   honest record of what bootstrap was aimed at when this instrument was
+   first discovered, never rewritten) and `now - retention_days` (so a
+   config change that shrinks retention after an instrument was
+   discovered can never send bootstrap digging toward history the current
+   policy no longer promises) — and one walks history_synced_through
+   forward toward "now minus a small buffer" (live catch-up/gap-repair) —
+   the same REST kline endpoint,
    applied to different parts of the timeline. Catch-up first checks
    whether the live collector already filled the range before ever calling
    Bybit REST. Also periodically re-runs universe discovery (updating
@@ -227,6 +238,34 @@ discovered floor (a newly-listed symbol, or wherever Bybit's history
 happens to run out) or the current rolling retention cutoff. It never
 queries `market_candles` directly (no scan over hundreds of millions of
 rows on every Vitals load) and never triggers any MARKET work.
+
+**Current runtime policy: ~30 days, not ~1 year.** The mechanism above is
+retention-horizon-agnostic by design — it was built once, against a ~1-year
+target, and works identically at any horizon. The single knob is
+`Settings.market_history_retention_days` (`apps/api/app/core/config.py`),
+currently set to `30`. Lowering it (from its original `365`) controls the bootstrap target for
+newly-discovered instruments (`InstrumentRepository.reconcile_universe`),
+the partition-retention cutoff (`partition_manager.drop_expired_partitions`,
+called for `market_candles`, `market_frame_members`, and `sniffer_results`
+alike), and the "Historical coverage" denominator above. It does **not**
+retroactively rewrite any instrument's already-persisted
+`history_target_start` — that column stays an honest record of what
+bootstrap originally aimed for; `_bootstrap_step`'s effective-target-start
+clamp (described above) is what keeps that stale, deeper value from
+causing new bootstrap work beyond the current 30-day policy. Partition
+retention is granular to whole months (see `partition_manager.py`), so
+"~30 days" is a floor, not an exact cutoff — the oldest retained data can
+be anywhere from ~30 to less than 61 days old depending where "30 days ago" falls
+within its month; the currently-open month's partition is never dropped
+while any part of it is still within the window. Surviving frame members
+can refer across month boundaries or to arbitrarily stale candles. Retention
+therefore prunes expired member partitions first and only drops an expired
+candle partition if no remaining member references that month. Such references
+can extend candle retention beyond the ordinary monthly rounding. The check
+and candle drops hold table locks to serialize with frame construction.
+Catch-up also clamps long-outage work to the rolling horizon. Partition
+provisioning runs on successful periodic universe refreshes as well as startup.
+See `docs/HISTORY_RETENTION.md` for operational details.
 
 ### MARKET synchronizes: Market Frames
 
@@ -358,7 +397,15 @@ schema migration. A dialect-aware upsert on the composite
 `(frame_time, instrument_id, metric)` primary key makes re-analysis
 idempotent — a retry or duplicate trigger overwrites, never duplicates.
 `RANGE(frame_time)`-partitioned exactly like `market_frame_members`, same
-`partition_manager`, same ~1-year retention.
+`partition_manager`, same rolling retention window (currently ~30 days —
+see "Current runtime policy" under "MARKET remembers" above). Unified
+deliberately: `market_frame_members` rows are meaningless once the
+candles they reference have aged out of `market_candles`, so it *must*
+track the same horizon; `sniffer_results` rows are self-contained
+(an already-computed value, not a reference) and so aren't forced to, but
+sharing one policy across all three partitioned tables stays the simplest
+correct choice unless a real requirement for Sniffer to outlive candle
+retention ever emerges.
 
 **Reactive, not polling.** Sniffer has no loop of its own; it only ever
 runs in direct response to `FrameSynchronizer`'s hook, mirroring the
