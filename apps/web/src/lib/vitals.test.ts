@@ -469,3 +469,13 @@ describe("formatFreshness", () => {
     expect(formatFreshness(-3)).toBe("just now");
   });
 });
+
+
+it("renders the backend coverage fraction exactly once as a percentage", () => {
+  const sections = buildVitalsSections({
+    health: "ok", ready: "ok", system: healthySystem,
+    market: { ...healthyMarket, historical_coverage: 0.207 }, sniffer: healthySniffer,
+  });
+  expect(sections.flatMap((section) => section.rows)
+    .find((row) => row.label === "Historical coverage")?.value).toBe("20.7%");
+});

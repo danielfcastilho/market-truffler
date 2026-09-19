@@ -1,5 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from app.core.deps import get_market_collector, get_market_universe_service
 from app.domain.market import Instrument
 from app.main import app
@@ -277,3 +279,47 @@ async def test_market_status_never_creates_a_frame(client, test_user, db_session
     members = (await db_session.execute(select(MarketFrameMember))).scalars().all()
     assert frames == []
     assert members == []
+
+
+@pytest.mark.parametrize("retention_days,expected", [(30, 0.5), (60, 0.25)])
+async def test_status_uses_runtime_retention_and_only_active_instruments(
+    client, test_user, db_session, monkeypatch, retention_days, expected
+):
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("MARKET_HISTORY_RETENTION_DAYS", str(retention_days))
+    get_settings.cache_clear()
+    now = datetime.now(UTC)
+    for symbol, active in [("ACTIVEUSDT", True), ("INACTIVEUSDT", False)]:
+        db_session.add(
+            InstrumentRow(
+                exchange="bybit",
+                symbol=symbol,
+                base_coin=symbol,
+                quote_coin="USDT",
+                is_active=active,
+                first_seen_at=now,
+                last_seen_at=now,
+                history_target_start=now - timedelta(days=365),
+                history_synced_from=now - timedelta(days=15) if active else now,
+                history_synced_through=now,
+            )
+        )
+    await db_session.commit()
+    await _login(client, test_user)
+    _override()
+    try:
+        response = await client.get("/api/market/status")
+    finally:
+        _clear_overrides()
+        get_settings.cache_clear()
+    assert response.status_code == 200
+    assert response.json()["historical_coverage"] == pytest.approx(expected, abs=0.0001)
+
+
+def test_default_history_policy_is_30_days():
+    from app.core.config import Settings
+
+    settings = Settings(_env_file=None, session_secret="x" * 32, market_history_retention_days=30)
+    assert Settings.model_fields["market_history_retention_days"].default == 30
+    assert settings.market_history_retention_days == 30

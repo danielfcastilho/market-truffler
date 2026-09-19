@@ -10,7 +10,8 @@ section 18).
 
 Per-instrument coverage is the fraction of `[target_start, now]` that is
 currently confirmed-reconciled, i.e.
-`(history_synced_through - history_synced_from) / (now - target_start)`,
+`max(0, min(history_synced_through, now) - max(history_synced_from, target_start))
+/ (now - target_start)`, clamped to [0, 1],
 where `target_start` is whichever is LATER of:
 
 - the instrument's initial discovery target (`history_target_start`); and
@@ -18,7 +19,10 @@ where `target_start` is whichever is LATER of:
   reconciled range that has since aged out of retention and been pruned
   correctly stops counting as "currently covered".
 
-Overall "Historical coverage" is the simple mean across all active
+Missing watermark triples are excluded; no computable instruments means N/A.
+A nonpositive target span returns 1 (no requested time to reconcile).
+
+Overall "Historical coverage" is the simple mean across initialized active
 instruments — every instrument counts equally, consistent with MARKET
 tracking the whole universe without any liquidity/interestingness
 weighting.
