@@ -1,40 +1,31 @@
 import { getLatestSnifferFrame } from "@/lib/server-api";
-import { SnifferTable } from "@/components/sniffer-table";
+import { resolveSnifferView } from "@/lib/sniffer-view";
+import { SnifferNav } from "@/components/sniffer-nav";
+import { SnifferFeatures } from "@/components/sniffer-features";
+import { SnifferNotes } from "@/components/sniffer-notes";
+import { SnifferTruffles } from "@/components/sniffer-truffles";
 
-function formatFrameTimeUtc(iso: string): string {
-  const date = new Date(iso);
-  const hh = String(date.getUTCHours()).padStart(2, "0");
-  const mm = String(date.getUTCMinutes()).padStart(2, "0");
-  return `${hh}:${mm} UTC`;
-}
-
-export default async function SnifferPage() {
-  const frame = await getLatestSnifferFrame();
+export default async function SnifferPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ view?: string | string[] }>;
+}) {
+  const params = await searchParams;
+  const view = resolveSnifferView(params.view);
+  const frame = view === "features" ? await getLatestSnifferFrame() : null;
 
   return (
     <div className="mx-auto max-w-2xl px-4 py-10 md:px-8 md:py-14">
-      <div className="mb-8 space-y-2">
-        <h1 className="text-2xl font-semibold tracking-tight">🐽 Sniffer</h1>
-        <p className="text-muted-foreground">
-          return_5m and return_1h — exact rolling 5-minute and 60-minute returns from canonical
-          1-minute closes in the most recently analyzed Market Frame. Factual measurements, not a ranking: sorting here only reorders
-          the page for you, it never signals a recommendation.
-        </p>
-      </div>
+      <h1 className="mb-8 text-2xl font-semibold tracking-tight">🐽 Sniffer</h1>
 
-      {frame === null ? (
-        <p className="font-mono text-sm text-muted-foreground">
-          No Sniffer analysis yet. Sniffer runs automatically once Market Frames start
-          finalizing.
-        </p>
+      <SnifferNav view={view} />
+
+      {view === "truffles" ? (
+        <SnifferTruffles />
+      ) : view === "notes" ? (
+        <SnifferNotes />
       ) : (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between font-mono text-sm text-muted-foreground">
-            <span>Frame {formatFrameTimeUtc(frame.frame_time)}</span>
-            <span>{frame.instruments_analyzed} coins analyzed</span>
-          </div>
-          <SnifferTable instruments={frame.instruments} />
-        </div>
+        <SnifferFeatures frame={frame} />
       )}
     </div>
   );

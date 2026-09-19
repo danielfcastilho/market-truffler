@@ -19,7 +19,7 @@ a separate product area:
                       ▼
             🐽 SNIFFER — DISCOVERY
   (exchange connectivity, market-data acquisition,
-   features, desirability functions, pillars,
+   features, Scent Notes, desirability functions,
    Entry Fitness, Long/Short rankings)
                       │
                       ▼
@@ -55,8 +55,9 @@ in `docker-compose.yml` builds or starts it.
 
 **🐽 Sniffer — Discovery.** Exchange connectivity, historical backfills,
 WebSocket market streams, normalization, storage, data quality — and,
-downstream of that data, features, desirability functions, pillars, Entry
-Fitness, Long ranking, Short ranking, and individual opportunity inspection.
+downstream of that data, features, Scent Notes, desirability functions,
+Entry Fitness, Long ranking, Short ranking, and individual opportunity
+inspection.
 Discovery and analysis are one product area, not two: Sniffer's job is to
 turn market data into truffles.
 
@@ -81,7 +82,7 @@ areas, Vitals is partially implemented today — see below.
 Sniffer's factual measurements — `return_5m` and `return_1h`, two metrics per
 instrument per Market Frame — are implemented (see "Sniffer measures" below).
 Beyond that, Warhog and OINK CORP remain fully unimplemented, and Sniffer
-itself has no other features, pillars, desirability functions, weights,
+itself has no other features, Scent Notes, desirability functions, weights,
 Entry Fitness, or rankings yet. No Martin Gale parameters, entry/exit/hedge
 rules, or live execution architecture have been decided either. Those are
 later engineering/research milestones, and this codebase makes no
@@ -423,10 +424,79 @@ never falls behind by polling on some independent cadence.
 **API and UI.** `/api/sniffer/status` (Vitals), `/api/sniffer/latest`, and
 `/api/sniffer/frames/{frame_time}` are read-only — no endpoint triggers
 analysis. Responses are always sorted by symbol, a neutral ordering that
-implies no ranking. The Sniffer page renders that same data as a plain
-table; a client-side column sort re-orders only what's already on the page
-for that viewer and never calls the backend, so it can't be mistaken for a
-server-side ranking.
+implies no ranking. These endpoints and their response shape
+(`SnifferFrameResponse`/`SnifferInstrument`, see `app/schemas/sniffer.py`)
+represent **Features** — factual measurements — and stay that way regardless
+of what the UI does with them; see "Features → Scent Notes → Scent →
+Truffles" below for how the Sniffer page itself is organized around that
+same pipeline. A client-side column sort on the feature matrix re-orders
+only what's already on the page for that viewer and never calls the
+backend, so it can't be mistaken for a server-side ranking.
+
+### Features → Scent Notes → Scent → Truffles
+
+Sniffer's product surface (`apps/web/src/app/(protected)/sniffer/page.tsx`)
+is organized around one pipeline that both the UI and this document use
+consistently:
+
+- **Features** — factual, per-instrument measurements Sniffer has actually
+  computed. Today: `return_5m`, `return_1h`. Real now, and the feature
+  matrix (`SnifferFeatures`/`SnifferTable`) is a secondary
+  inspection/research surface — it answers "what does Sniffer currently
+  know about each coin?", nothing more.
+- **Scent Notes** — future higher-level dimensions interpreted from
+  Features (e.g. what a "Pillar" was called in earlier design language;
+  that term is retired in favor of "Scent Notes"). Answers "how does
+  Sniffer interpret important dimensions?" Not implemented, and none are
+  defined yet — no Momentum, Stability, Activity, Trend, Liquidity,
+  Volatility, or any other dimension exists in the code, only the concept
+  of the layer.
+- **Scent** — the UI/product term for a future per-direction desirability
+  strength derived from Scent Notes, backed internally by
+  `long_score`/`short_score`, each independently in `[0, 1]`. Not
+  implemented. Long Scent and Short Scent are not two ends of one scale — a
+  coin can score high on both, low on both, or anywhere in between, so
+  nothing in the data model or UI may assume they're mutually exclusive.
+  The internal names `long_score`/`short_score` stay as they are; "Scent"
+  is only the label shown in the Truffle tables.
+- **Ranking** — an internal ordering produced independently per direction
+  (Long ordered by `long_score` descending, Short by `short_score`
+  descending) that feeds the 🍄 Truffles view. Not implemented, and not a
+  UI surface of its own — see "Rename note" below.
+- **🍄 Truffles** — the opportunities surfaced to the user, downstream of
+  Ranking: Sniffer's primary *operational* UI surface once real scoring
+  exists, with the feature matrix remaining the secondary research view.
+  Not implemented yet.
+
+The Sniffer page reflects this today: `SnifferNav` switches between a 🍄
+Truffles view, a Notes view, and a Features view via `?view=`
+(`resolveSnifferView` in `apps/web/src/lib/sniffer-view.ts`; unrecognized
+or missing values resolve to `truffles`, the default — 🍄 Truffles is
+Sniffer's primary operational surface, so `/sniffer` opens there even
+before real Truffles exist; `?view=notes`/`?view=features` open the other
+two views explicitly). Changing the default is a one-line change in that
+function. `SnifferFeatures` renders the existing feature matrix unchanged.
+`SnifferNotes` renders Scent Notes' future inspection surface but
+deliberately shows only "No scent notes yet": no note dimension, value, or
+formula is invented. `SnifferTruffles` renders the future two-table
+Long/Short structure (`#`, `Symbol`, `Scent` columns) but deliberately
+shows each as "No truffles yet": no Scent, rank number, or instrument is
+fabricated to fill it. Note the Truffle tables show only `Scent`, not
+individual Scent Notes — Notes get their own inspection surface, Truffles
+stay the distilled operational one. No Scent Notes, ranking, or Truffles
+API exists either (`GET /api/sniffer/notes/latest`,
+`GET /api/sniffer/rankings/latest`, `GET /api/sniffer/truffles/latest`, or
+similar all remain unimplemented) — an honest missing endpoint rather than
+one returning fake data.
+
+**Rename note.** The Sniffer UI nav was originally called "Rankings"; it is
+now "🍄 Truffles" (`?view=truffles`, previously `?view=rankings`) since
+Ranking is an internal ordering mechanism, while Truffles — the qualified
+opportunities a ranking eventually produces — is what the UI actually shows
+the user. `long_score`/`short_score` remain the correct internal names for
+that future math; only the user-facing table column is called "Scent". The
+design-language term "Pillars" is likewise retired in favor of the product
+term "Scent Notes" for this same future interpreted-dimension layer.
 
 ## What's actually implemented (this milestone)
 
@@ -449,7 +519,10 @@ server-side ranking.
   shell. A `(protected)` route group enforces auth server-side before
   rendering; a runtime route handler at `src/app/api/[...path]/route.ts`
   proxies `/api/*` to the backend so the browser only ever talks to one
-  origin.
+  origin. `/sniffer` has a 🍄 Truffles view, a Notes view, and a Features
+  view (see "Features → Scent Notes → Scent → Truffles" above) addressed by
+  `?view=truffles`/`?view=notes`/`?view=features`, defaulting to 🍄
+  Truffles.
 - **`apps/api`** (FastAPI, Pydantic, SQLAlchemy 2, Alembic): the backend.
   Owns the `User` model, session issuance/verification, and the
   database-touching endpoints (`/health`, `/ready`, `/api/me`,
