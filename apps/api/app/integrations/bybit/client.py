@@ -15,6 +15,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 INSTRUMENTS_INFO_PATH = "/v5/market/instruments-info"
+KLINE_PATH = "/v5/market/kline"
 
 
 class BybitApiError(Exception):
@@ -49,6 +50,49 @@ class BybitClient:
                 base_url=self._base_url, timeout=self._timeout, transport=self._transport
             ) as client:
                 response = await client.get(INSTRUMENTS_INFO_PATH, params=params)
+                response.raise_for_status()
+                payload = response.json()
+        except httpx.HTTPError as exc:
+            raise BybitApiError(f"Bybit request failed: {exc}") from exc
+
+        ret_code = payload.get("retCode")
+        if ret_code != 0:
+            raise BybitApiError(f"Bybit returned retCode={ret_code}: {payload.get('retMsg')}")
+
+        return payload["result"]
+
+    async def get_kline(
+        self,
+        category: str,
+        symbol: str,
+        interval: str,
+        *,
+        start: int | None = None,
+        end: int | None = None,
+        limit: int = 1000,
+    ) -> dict[str, Any]:
+        """Fetch one page of historical `/v5/market/kline` for `symbol`.
+
+        `start`/`end` are epoch milliseconds (Bybit's native unit). Bybit
+        returns at most `limit` rows (max 1000), newest first — paging
+        further back in time is the caller's concern.
+        """
+        params: dict[str, Any] = {
+            "category": category,
+            "symbol": symbol,
+            "interval": interval,
+            "limit": limit,
+        }
+        if start is not None:
+            params["start"] = start
+        if end is not None:
+            params["end"] = end
+
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url, timeout=self._timeout, transport=self._transport
+            ) as client:
+                response = await client.get(KLINE_PATH, params=params)
                 response.raise_for_status()
                 payload = response.json()
         except httpx.HTTPError as exc:

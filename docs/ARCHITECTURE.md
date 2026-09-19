@@ -85,20 +85,15 @@ execution architecture have been decided. Those are later
 engineering/research milestones, and this codebase makes no assumptions
 about them.
 
-### Bybit connectivity and the market universe (this milestone)
+### Bybit connectivity and the market universe
 
-The first real piece of the MARKET area now exists: a read-only connection
-to Bybit's public REST API, used only to answer "can we reach Bybit?" and
-"how many instruments are in the universe we care about?" It is not market
-data acquisition — no tickers, klines, or WebSocket streams are consumed —
-and it does not make Sniffer operational.
+A read-only connection to Bybit's public REST API answers "can we reach
+Bybit?" and "how many instruments are in the universe we care about?"
 
 ```
-app/integrations/bybit/   HTTP boundary: base URL, timeouts, the retCode
-                           envelope. The only place that knows Bybit's wire
-                           format. Scoped to public REST today; a future
-                           WebSocket client or additional REST calls can
-                           live alongside it without a redesign.
+app/integrations/bybit/client.py   HTTP boundary: base URL, timeouts, the
+                                    retCode envelope. The only place that
+                                    knows Bybit's REST wire format.
         │
         ▼
 app/services/market_universe.py   Paginates instruments-info, filters to
@@ -115,12 +110,121 @@ app/routers/market.py (`GET /api/market/status`)   Presentation boundary
                                    caller see a 500.
 ```
 
-Bybit is treated as an external dependency: unreachable Bybit never fails
-`/health` or `/ready`, and never stops the API from starting. Vitals'
-MARKET section reflects this — "Bybit connectivity" and "Symbols tracked"
-are real, sourced from `/api/market/status`; "Market data," "Last market
-update," and "Data freshness" stay a hardcoded "N/A," since no market data
-is consumed yet.
+### Live MARKET watching: the WebSocket collector
+
+Beyond REST discovery, MARKET now continuously watches the discovered
+universe over Bybit's public WebSocket and turns confirmed klines into
+canonical closed 1-minute candles:
+
+```
+app/integrations/bybit/ws_client.py   BybitKlineWebSocketClient: one WS
+                                       connection's full lifecycle — connect,
+                                       batched subscribe, 20s heartbeat
+                                       ping, reconnect-with-backoff. The
+                                       only place that knows Bybit's WS wire
+                                       format (kline.{interval}.{symbol}
+                                       topics, the `confirm` field). Scoped
+                                       to the kline topic today; other public
+                                       topics can be added alongside it.
+        │
+        ▼
+app/services/market_collector.py   MarketCollector: a long-lived,
+                                    continuously-running capability, started
+                                    once from the FastAPI lifespan — not by
+                                    any request. Uses the existing
+                                    MarketUniverseService (same universe
+                                    definition, no second copy), shards its
+                                    symbols across several WS connections
+                                    (200 symbols/connection, so one
+                                    connection's reconnect only blacks out a
+                                    fraction of the universe), and drops any
+                                    kline where `confirm=False` — only
+                                    closed candles cross into
+                                    app/domain/market.py's ClosedCandle.
+        │
+        ▼
+app/services/live_candle_sink.py (PersistingCandleSink)
+   — resolves symbol → instrument_id and funnels each live candle through
+     the same CandleIngestionService the REST history reconciler uses (see
+     below), so live and historical delivery share one persistence path.
+        │
+        ▼
+Vitals ("Market data" / "Last market update" / "Data freshness" /
+"Historical coverage") — a read-only snapshot of collector + reconciler
+   state. Vitals observes them; it never starts, stops, or otherwise
+   drives either.
+```
+
+Bybit is treated as an external dependency throughout: unreachable Bybit
+(REST or WebSocket) never fails `/health` or `/ready`, and never stops the
+API from starting or running. Every MARKET row in Vitals is real:
+"Bybit connectivity"/"Symbols tracked" come from a REST call made on each
+request; "Market data"/"Last market update"/"Data freshness" come from the
+background collector's live state; "Historical coverage" comes from the
+history reconciler's persisted state (see below).
+
+Candle identity is `(exchange/instrument, timeframe, open_time)` — the
+database's composite primary key — so a duplicate delivery (WebSocket, REST
+bootstrap, REST recovery, a retry) is always harmless: an idempotent no-op,
+or an intentional correction if the exchange-backed values differ.
+
+### MARKET remembers: durable history, bootstrap, and retention
+
+`ClosedCandle`s are now durably persisted, backfilled up to a rolling
+~1-year horizon, self-repairing after gaps or outages, and locally
+aggregated into 5m/15m/1h — all as a continuously-running background
+capability, never triggered by a request:
+
+```
+app/models/instrument.py, app/models/candle.py
+   Instrument: one row per (exchange, symbol) MARKET has ever tracked,
+   never deleted, carrying the three-watermark bootstrap/reconciliation
+   state (history_target_start/synced_from/synced_through — see the
+   model's docstring for exact semantics).
+   Candle: composite PK (instrument_id, timeframe, open_time), a native
+   PostgreSQL table partitioned by RANGE(open_time) in monthly partitions
+   — the same table and partitioning serve all four timeframes.
+        │
+        ▼
+app/services/partition_manager.py
+   Idempotent CREATE/DROP of whole monthly partitions — retention is a
+   handful of DROP TABLE statements, never a row-by-row delete. A no-op on
+   SQLite (tests), since only PostgreSQL is partitioned.
+        │
+        ▼
+app/services/history_reconciler.py (HistoryReconciler)
+   A second long-lived background capability, started alongside
+   MarketCollector. Round-robins the active universe with bounded
+   concurrency; for each instrument, one bounded step walks
+   history_synced_from backward toward history_target_start (bootstrap)
+   and one walks history_synced_through forward toward "now minus a small
+   buffer" (live catch-up/gap-repair) — the same REST kline endpoint,
+   applied to different parts of the timeline. Catch-up first checks
+   whether the live collector already filled the range before ever calling
+   Bybit REST. Also periodically re-runs universe discovery (updating
+   `instruments`, marking newly-inactive symbols without deleting their
+   candles, and telling MarketCollector to start watching newly-eligible
+   ones via `add_symbols`).
+        │
+        ▼
+app/services/candle_ingestion.py, app/services/candle_aggregation.py
+   The shared canonical-1m boundary both the live sink and the reconciler
+   funnel through: upsert the 1m batch, then re-derive any 5m/15m/1h window
+   the batch touches — but only ones where every constituent 1m candle
+   actually exists in storage. An incomplete window is silently left alone
+   and completes itself whenever this is next called over a range that
+   includes it (a later recovery, or a correction).
+```
+
+"Historical coverage" (`app/services/historical_coverage.py`) is a pure,
+read-only function of each active instrument's three watermarks: the
+average, across all active instruments, of how much of
+`[target_start, now]` is currently confirmed-reconciled — where
+`target_start` is tightened to whichever is later of the instrument's own
+discovered floor (a newly-listed symbol, or wherever Bybit's history
+happens to run out) or the current rolling retention cutoff. It never
+queries `market_candles` directly (no scan over hundreds of millions of
+rows on every Vitals load) and never triggers any MARKET work.
 
 ## What's actually implemented (this milestone)
 
@@ -148,23 +252,32 @@ is consumed yet.
   Owns the `User` model, session issuance/verification, and the
   database-touching endpoints (`/health`, `/ready`, `/api/me`,
   `/api/system`, `/api/auth/login`, `/api/auth/logout`), plus
-  `/api/market/status`, which talks to Bybit's public REST API rather than
-  the database.
-- **`postgres`**: one table (`users`). No market-data, ranking, feature, or
+  `/api/market/status`, which talks to Bybit's public REST API and reads
+  the MARKET collector's and history reconciler's status. Two long-lived
+  background capabilities are started from the FastAPI `lifespan`, not
+  from any request: `MarketCollector` (`app/services/market_collector.py`,
+  live WebSocket watching) and `HistoryReconciler`
+  (`app/services/history_reconciler.py`, durable history/bootstrap/gap
+  repair) — both run for the life of the process.
+- **`postgres`**: `users`, `instruments` (the instrument dimension), and
+  `market_candles` (a native `RANGE`-partitioned table on `open_time`,
+  monthly partitions, holding all four timeframes). No ranking, feature, or
   trade-related schema exists — those get designed when their requirements
   are known, not speculatively now.
 - **`research/oink_corp`, `packages/shared`, `infra`**: boundaries reserved
   for future work (see each directory's own README). Deliberately empty.
 - **Vitals** (`apps/web/src/app/(protected)/vitals/page.tsx`): reads
-  `/health`, `/ready`, `/api/system`, and now `/api/market/status`.
+  `/health`, `/ready`, `/api/system`, and `/api/market/status`.
   Status/health logic is a pure module (`apps/web/src/lib/vitals.ts`, unit
   tested) kept separate from the page's presentation, the same pattern as
   `lib/route-guard.ts`. The SYSTEM section reflects real signals (API
   liveness, readiness, database connectivity, uptime, environment, backend
-  version); in MARKET, "Bybit connectivity" and "Symbols tracked" are now
-  real too. Everything else — the rest of MARKET, and all of 🐽 SNIFFER,
-  🐗 WARHOG, and 🧬 OINK CORP — is hardcoded to "N/A": there is no live
-  signal behind it yet, so none is invented.
+  version); every row in MARKET is real too — "Bybit
+  connectivity"/"Symbols tracked" from a REST call, "Market
+  data"/"Last market update"/"Data freshness" from the live collector, and
+  "Historical coverage" from the history reconciler's persisted progress.
+  🐽 SNIFFER, 🐗 WARHOG, and 🧬 OINK CORP stay hardcoded to "N/A": there is
+  no live signal behind any of them yet, so none is invented.
 
 ### Why no Sniffer/Warhog services exist yet
 

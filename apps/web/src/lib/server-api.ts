@@ -68,6 +68,12 @@ export async function getSystemInfo(): Promise<SystemInfo | null> {
 export interface MarketStatus {
   bybit_connectivity: "ok" | "down";
   symbols_tracked: number | null;
+  market_data: "ok" | "down";
+  last_market_update: string | null;
+  data_freshness_seconds: number | null;
+  /** Fraction in [0, 1] of the active universe's promised rolling history
+   * that is currently reconciled. Null when it can't be determined yet. */
+  historical_coverage: number | null;
 }
 
 export async function getMarketStatus(): Promise<MarketStatus | null> {

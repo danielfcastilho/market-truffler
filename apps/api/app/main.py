@@ -8,7 +8,13 @@ from fastapi.responses import JSONResponse
 from app.core import __version__
 from app.core.config import get_settings
 from app.core.logging import configure_logging
+from app.db.session import get_session_factory
+from app.integrations.bybit.client import BybitClient
 from app.routers import auth, market, system
+from app.services.history_reconciler import HistoryReconciler
+from app.services.live_candle_sink import PersistingCandleSink
+from app.services.market_collector import MarketCollector
+from app.services.market_universe import MarketUniverseService
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -18,7 +24,44 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("startup", extra={"environment": settings.app_env, "version": __version__})
+
+    session_factory = get_session_factory()
+
+    bybit_client = BybitClient(
+        base_url=settings.bybit_base_url, timeout_seconds=settings.bybit_timeout_seconds
+    )
+    market_universe_service = MarketUniverseService(bybit_client)
+
+    live_sink = PersistingCandleSink(session_factory)
+    market_collector = MarketCollector(
+        market_universe_service, settings.bybit_ws_base_url, live_sink
+    )
+    app.state.market_collector = market_collector
+
+    history_reconciler = HistoryReconciler(
+        session_factory,
+        bybit_client,
+        market_universe_service,
+        retention_days=settings.market_history_retention_days,
+        page_size=settings.market_history_page_size,
+        max_concurrent_instruments=settings.market_history_max_concurrent_instruments,
+        request_delay_seconds=settings.market_history_request_delay_seconds,
+        catchup_buffer_minutes=settings.market_history_catchup_buffer_minutes,
+        universe_refresh_interval_seconds=settings.market_universe_refresh_interval_seconds,
+        on_new_symbols=market_collector.add_symbols,
+    )
+    app.state.history_reconciler = history_reconciler
+
+    # The reconciler's first universe pass populates `instruments` (which the
+    # live sink and the collector's own discovery both then rely on), so it
+    # must start before the collector.
+    await history_reconciler.start()
+    await market_collector.start()
+
     yield
+
+    await market_collector.stop()
+    await history_reconciler.stop()
     logger.info("shutdown")
 
 

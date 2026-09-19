@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import Cookie, Depends, HTTPException, status
+from fastapi import Cookie, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
@@ -9,6 +9,8 @@ from app.db.session import get_db
 from app.integrations.bybit.client import BybitClient
 from app.models.user import User
 from app.repositories.user_repository import UserRepository
+from app.services.history_reconciler import HistoryReconciler
+from app.services.market_collector import MarketCollector
 from app.services.market_universe import MarketUniverseService
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
@@ -56,3 +58,26 @@ def get_market_universe_service(client: BybitClientDep) -> MarketUniverseService
 
 
 MarketUniverseServiceDep = Annotated[MarketUniverseService, Depends(get_market_universe_service)]
+
+
+def get_market_collector(request: Request) -> MarketCollector:
+    """The continuously-running MARKET collector, owned by the app's lifespan.
+
+    This dependency only reads the existing singleton off `app.state` — it
+    never starts or stops it. The collector's lifecycle is driven solely by
+    `app.main.lifespan`, independent of any request.
+    """
+    return request.app.state.market_collector
+
+
+MarketCollectorDep = Annotated[MarketCollector, Depends(get_market_collector)]
+
+
+def get_history_reconciler(request: Request) -> HistoryReconciler:
+    """The continuously-running MARKET history reconciler, owned by the
+    app's lifespan. Same rule as `get_market_collector`: read-only, never
+    starts/stops/drives it."""
+    return request.app.state.history_reconciler
+
+
+HistoryReconcilerDep = Annotated[HistoryReconciler, Depends(get_history_reconciler)]

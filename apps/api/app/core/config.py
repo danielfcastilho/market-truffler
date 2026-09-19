@@ -23,6 +23,28 @@ class Settings(BaseSettings):
 
     bybit_base_url: str = "https://api.bybit.com"
     bybit_timeout_seconds: float = 5.0
+    bybit_ws_base_url: str = "wss://stream.bybit.com/v5/public/linear"
+
+    # How much canonical 1m history MARKET tries to keep, end to end: the
+    # bootstrap/recovery target window, and the retention horizon candles
+    # (all timeframes) are pruned to. One rolling policy, not two.
+    market_history_retention_days: int = 365
+    # How many instruments the history reconciler works on concurrently.
+    market_history_max_concurrent_instruments: int = 5
+    # Rows requested per Bybit historical kline page (Bybit's documented max).
+    market_history_page_size: int = 1000
+    # Small delay between successive REST history requests, to stay well
+    # under Bybit's documented 600-requests/5s per-IP limit with headroom
+    # for the app's other REST traffic.
+    market_history_request_delay_seconds: float = 0.2
+    # How far behind "now" the live/catch-up frontier is allowed to trail
+    # before the reconciler treats it as stale and fetches a REST catch-up
+    # page for it, in minutes. Also used as the safety buffer against the
+    # still-forming current candle.
+    market_history_catchup_buffer_minutes: int = 2
+    # How often the background reconciler re-discovers the Bybit universe
+    # (to pick up new listings/delistings) and rolls candle partitions.
+    market_universe_refresh_interval_seconds: float = 900.0
 
     @property
     def allowed_origins_list(self) -> list[str]:

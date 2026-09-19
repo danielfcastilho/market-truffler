@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { buildVitalsSections, formatUptime, overallStatus, type VitalsInput } from "./vitals";
+import {
+  buildVitalsSections,
+  formatCoveragePercent,
+  formatFreshness,
+  formatUptime,
+  overallStatus,
+  type VitalsInput,
+} from "./vitals";
 import type { MarketStatus, SystemInfo } from "./server-api";
 
 const healthySystem: SystemInfo = {
@@ -13,6 +20,19 @@ const healthySystem: SystemInfo = {
 const healthyMarket: MarketStatus = {
   bybit_connectivity: "ok",
   symbols_tracked: 214,
+  market_data: "ok",
+  last_market_update: "2026-09-19T16:42:07.000Z",
+  data_freshness_seconds: 12,
+  historical_coverage: 0.681,
+};
+
+const noMarketDataYet: MarketStatus = {
+  bybit_connectivity: "ok",
+  symbols_tracked: 214,
+  market_data: "down",
+  last_market_update: null,
+  data_freshness_seconds: null,
+  historical_coverage: 0.124,
 };
 
 describe("overallStatus", () => {
@@ -56,7 +76,14 @@ describe("overallStatus", () => {
       health: "ok",
       ready: "ok",
       system: healthySystem,
-      market: { bybit_connectivity: "down", symbols_tracked: null },
+      market: {
+        bybit_connectivity: "down",
+        symbols_tracked: null,
+        market_data: "down",
+        last_market_update: null,
+        data_freshness_seconds: null,
+        historical_coverage: null,
+      },
     };
     expect(overallStatus(input)).toBe("ok");
   });
@@ -140,7 +167,7 @@ describe("buildVitalsSections", () => {
     }
   });
 
-  it("reflects real Bybit connectivity and symbol count in MARKET, but nothing else", () => {
+  it("reflects a fully live MARKET section: Bybit connectivity, collector state, and freshness", () => {
     const sections = buildVitalsSections({
       health: "ok",
       ready: "ok",
@@ -154,26 +181,46 @@ describe("buildVitalsSections", () => {
       value: "OK",
       status: "ok",
     });
+    expect(market?.rows.find((r) => r.label === "Market data")).toEqual({
+      label: "Market data",
+      value: "OK",
+      status: "ok",
+    });
+    expect(market?.rows.find((r) => r.label === "Last market update")).toEqual({
+      label: "Last market update",
+      value: "2026-09-19 16:42:07 UTC",
+      status: "ok",
+    });
     expect(market?.rows.find((r) => r.label === "Symbols tracked")).toEqual({
       label: "Symbols tracked",
       value: "214",
       status: "ok",
     });
-    expect(market?.rows.find((r) => r.label === "Market data")).toEqual({
-      label: "Market data",
-      value: "N/A",
-      status: "unavailable",
+    expect(market?.rows.find((r) => r.label === "Data freshness")).toEqual({
+      label: "Data freshness",
+      value: "12s ago",
+      status: "ok",
     });
-    expect(market?.rows.find((r) => r.label === "Last market update")?.value).toBe("N/A");
-    expect(market?.rows.find((r) => r.label === "Data freshness")?.value).toBe("N/A");
+    expect(market?.rows.find((r) => r.label === "Historical coverage")).toEqual({
+      label: "Historical coverage",
+      value: "68.1%",
+      status: "ok",
+    });
   });
 
-  it("reports Bybit connectivity as down and symbols tracked as N/A when Bybit is unreachable", () => {
+  it("reports Bybit connectivity as down and symbols tracked as N/A when Bybit REST is unreachable", () => {
     const sections = buildVitalsSections({
       health: "ok",
       ready: "ok",
       system: healthySystem,
-      market: { bybit_connectivity: "down", symbols_tracked: null },
+      market: {
+        bybit_connectivity: "down",
+        symbols_tracked: null,
+        market_data: "down",
+        last_market_update: null,
+        data_freshness_seconds: null,
+        historical_coverage: null,
+      },
     });
     const market = sections.find((s) => s.title === "MARKET");
 
@@ -189,7 +236,43 @@ describe("buildVitalsSections", () => {
     });
   });
 
-  it("marks Bybit connectivity and symbols tracked N/A when market status could not be fetched", () => {
+  it("reports market data as down and freshness as N/A when the collector has no candle yet", () => {
+    const sections = buildVitalsSections({
+      health: "ok",
+      ready: "ok",
+      system: healthySystem,
+      market: noMarketDataYet,
+    });
+    const market = sections.find((s) => s.title === "MARKET");
+
+    expect(market?.rows.find((r) => r.label === "Market data")).toEqual({
+      label: "Market data",
+      value: "DOWN",
+      status: "down",
+    });
+    expect(market?.rows.find((r) => r.label === "Last market update")).toEqual({
+      label: "Last market update",
+      value: "N/A",
+      status: "unavailable",
+    });
+    expect(market?.rows.find((r) => r.label === "Data freshness")).toEqual({
+      label: "Data freshness",
+      value: "N/A",
+      status: "unavailable",
+    });
+    // Symbols tracked is a separate, unrelated signal (REST universe size) —
+    // it must stay real even while the WS collector has no data yet.
+    expect(market?.rows.find((r) => r.label === "Symbols tracked")?.value).toBe("214");
+    // Historical coverage is independent of live WS state too — it reflects
+    // the background reconciler's own persisted progress.
+    expect(market?.rows.find((r) => r.label === "Historical coverage")).toEqual({
+      label: "Historical coverage",
+      value: "12.4%",
+      status: "ok",
+    });
+  });
+
+  it("marks every MARKET row N/A when market status could not be fetched at all", () => {
     const sections = buildVitalsSections({
       health: "ok",
       ready: "ok",
@@ -198,8 +281,10 @@ describe("buildVitalsSections", () => {
     });
     const market = sections.find((s) => s.title === "MARKET");
 
-    expect(market?.rows.find((r) => r.label === "Bybit connectivity")?.value).toBe("N/A");
-    expect(market?.rows.find((r) => r.label === "Symbols tracked")?.value).toBe("N/A");
+    for (const row of market?.rows ?? []) {
+      expect(row.value).toBe("N/A");
+      expect(row.status).toBe("unavailable");
+    }
   });
 });
 
@@ -222,5 +307,40 @@ describe("formatUptime", () => {
 
   it("never goes negative", () => {
     expect(formatUptime(-5)).toBe("0s");
+  });
+});
+
+describe("formatCoveragePercent", () => {
+  it("formats a fraction as a one-decimal percentage", () => {
+    expect(formatCoveragePercent(0.124)).toBe("12.4%");
+    expect(formatCoveragePercent(0.681)).toBe("68.1%");
+  });
+
+  it("shows a clean 100% instead of 100.0%", () => {
+    expect(formatCoveragePercent(1)).toBe("100%");
+  });
+
+  it("rounds values that are effectively complete up to 100%", () => {
+    expect(formatCoveragePercent(0.9999999944)).toBe("100%");
+  });
+
+  it("clamps out-of-range fractions", () => {
+    expect(formatCoveragePercent(-0.1)).toBe("0.0%");
+    expect(formatCoveragePercent(1.5)).toBe("100%");
+  });
+});
+
+describe("formatFreshness", () => {
+  it("reports sub-second freshness as just now", () => {
+    expect(formatFreshness(0.4)).toBe("just now");
+  });
+
+  it("reports elapsed time with 'ago'", () => {
+    expect(formatFreshness(12)).toBe("12s ago");
+    expect(formatFreshness(125)).toBe("2m 5s ago");
+  });
+
+  it("never goes negative", () => {
+    expect(formatFreshness(-3)).toBe("just now");
   });
 });
