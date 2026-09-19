@@ -1,0 +1,19 @@
+# Environment
+.env
+.env.*.local
+!.env.example
+
+# Python
+apps/api/.venv/
+apps/api/__pycache__/
+apps/api/**/__pycache__/
+apps/api/*.egg-info/
+apps/api/.pytest_cache/
+apps/api/.mypy_cache/
+apps/api/.ruff_cache/
+
+# Node / Next.js (apps/web has its own .gitignore too)
+node_modules/
+
+# OS
+.DS_Store

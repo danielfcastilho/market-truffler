@@ -1,0 +1,70 @@
+name: market-truffler
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-truffler}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-truffler}
+      POSTGRES_DB: ${POSTGRES_DB:-market_truffler}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - market-truffler
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-truffler} -d ${POSTGRES_DB:-market_truffler}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    # No published port: PostgreSQL is only reachable from other containers
+    # on the internal network, never from the host or the public internet.
+
+  api:
+    build:
+      context: ./apps/api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-truffler}:${POSTGRES_PASSWORD:-truffler}@postgres:5432/${POSTGRES_DB:-market_truffler}
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET must be set — see .env.example}
+      SESSION_TTL_MINUTES: ${SESSION_TTL_MINUTES:-10080}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    networks:
+      - market-truffler
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  web:
+    build:
+      context: ./apps/web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      API_INTERNAL_URL: http://api:8000
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    networks:
+      - market-truffler
+
+networks:
+  market-truffler:
+    driver: bridge
+
+volumes:
+  postgres_data:
