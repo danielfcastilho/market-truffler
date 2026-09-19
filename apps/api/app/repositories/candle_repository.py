@@ -124,3 +124,29 @@ class CandleRepository:
 
         result = await self._session.execute(latest)
         return {candle.instrument_id: candle for candle in result.scalars()}
+
+    async def fetch_exact_open_time(
+        self, timeframe: str, instrument_ids: Sequence[int], open_time: datetime
+    ) -> dict[int, Candle]:
+        """The candle at exactly `open_time`, for each of `instrument_ids`
+        that has one — one set-oriented query for the whole given
+        instrument set, never a per-instrument loop.
+
+        Used for frame-relative, time-based historical lookups (e.g.
+        Sniffer's `return_5m`: "the canonical 1m candle exactly 5 minutes
+        before the current one", never "the Nth previous row"). An
+        instrument absent from the result genuinely has no candle at that
+        exact instant — callers must treat that as unavailable, never
+        substitute the nearest one.
+        """
+        if not instrument_ids:
+            return {}
+
+        result = await self._session.execute(
+            select(Candle).where(
+                Candle.timeframe == timeframe,
+                Candle.instrument_id.in_(instrument_ids),
+                Candle.open_time == open_time,
+            )
+        )
+        return {candle.instrument_id: candle for candle in result.scalars()}

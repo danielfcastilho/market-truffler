@@ -39,6 +39,17 @@ logger = logging.getLogger(__name__)
 
 _CATEGORY = "linear"
 
+# Every RANGE-partitioned, per-minute table MARKET/Sniffer own, sharing the
+# same rolling retention horizon and monthly partition scheme. Partitioned
+# by open_time; the frame/Sniffer tables are partitioned by frame_time, but
+# `partition_manager` only needs the column name for documentation — the
+# DDL itself is generic.
+_PARTITIONED_TABLES: tuple[tuple[str, str], ...] = (
+    ("market_candles", "open_time"),
+    ("market_frame_members", "frame_time"),
+    ("sniffer_results", "frame_time"),
+)
+
 SessionFactory = Callable[[], AsyncSession]
 NewSymbolsHook = Callable[[list[str]], "Awaitable[None]"]
 
@@ -82,7 +93,10 @@ class HistoryReconciler:
 
         months_back = (self._retention_days // 30) + 2
         async with self._session_factory() as session:
-            await partition_manager.ensure_partitions(session, months_back=months_back)
+            for table, column in _PARTITIONED_TABLES:
+                await partition_manager.ensure_partitions(
+                    session, months_back=months_back, table=table, partition_column=column
+                )
 
         await self._reconcile_universe_once()
 
@@ -126,9 +140,10 @@ class HistoryReconciler:
             active, newly_added = await InstrumentRepository(session).reconcile_universe(
                 discovered, now=now, retention_days=self._retention_days
             )
-            await partition_manager.drop_expired_partitions(
-                session, retention_days=self._retention_days
-            )
+            for table, _column in _PARTITIONED_TABLES:
+                await partition_manager.drop_expired_partitions(
+                    session, retention_days=self._retention_days, table=table
+                )
 
         logger.info(
             "universe_reconciled",

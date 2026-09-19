@@ -7,7 +7,7 @@ import {
   overallStatus,
   type VitalsInput,
 } from "./vitals";
-import type { MarketStatus, SystemInfo } from "./server-api";
+import type { MarketStatus, SnifferStatus, SystemInfo } from "./server-api";
 
 const healthySystem: SystemInfo = {
   environment: "development",
@@ -28,6 +28,18 @@ const healthyMarket: MarketStatus = {
   frame_completeness: 0.9987,
 };
 
+const healthySniffer: SnifferStatus = {
+  status: "ok",
+  last_scan: "2026-09-19T16:37:06.000Z",
+  coins_analyzed: 771,
+};
+
+const noSnifferScanYet: SnifferStatus = {
+  status: null,
+  last_scan: null,
+  coins_analyzed: null,
+};
+
 const noMarketDataYet: MarketStatus = {
   bybit_connectivity: "ok",
   symbols_tracked: 214,
@@ -46,6 +58,7 @@ describe("overallStatus", () => {
       ready: "ok",
       system: healthySystem,
       market: healthyMarket,
+      sniffer: healthySniffer,
     };
     expect(overallStatus(input)).toBe("ok");
   });
@@ -56,6 +69,7 @@ describe("overallStatus", () => {
       ready: "ok",
       system: healthySystem,
       market: healthyMarket,
+      sniffer: healthySniffer,
     };
     expect(overallStatus(input)).toBe("down");
   });
@@ -66,12 +80,19 @@ describe("overallStatus", () => {
       ready: "down",
       system: { ...healthySystem, database: "unreachable" },
       market: healthyMarket,
+      sniffer: healthySniffer,
     };
     expect(overallStatus(input)).toBe("down");
   });
 
   it("is down when there is no system info at all (API unreachable)", () => {
-    const input: VitalsInput = { health: "down", ready: "down", system: null, market: null };
+    const input: VitalsInput = {
+      health: "down",
+      ready: "down",
+      system: null,
+      market: null,
+      sniffer: null,
+    };
     expect(overallStatus(input)).toBe("down");
   });
 
@@ -90,6 +111,7 @@ describe("overallStatus", () => {
         latest_market_frame: null,
         frame_completeness: null,
       },
+      sniffer: healthySniffer,
     };
     expect(overallStatus(input)).toBe("ok");
   });
@@ -102,6 +124,7 @@ describe("buildVitalsSections", () => {
       ready: "ok",
       system: healthySystem,
       market: healthyMarket,
+      sniffer: healthySniffer,
     });
     const system = sections.find((s) => s.title === "SYSTEM");
     expect(system?.rows.find((r) => r.label === "API liveness")).toEqual({
@@ -121,6 +144,7 @@ describe("buildVitalsSections", () => {
       ready: "ok",
       system: { ...healthySystem, database: "unreachable" },
       market: healthyMarket,
+      sniffer: healthySniffer,
     });
     const system = sections.find((s) => s.title === "SYSTEM");
     expect(system?.rows.find((r) => r.label === "Database connectivity")).toEqual({
@@ -136,6 +160,7 @@ describe("buildVitalsSections", () => {
       ready: "down",
       system: null,
       market: null,
+      sniffer: null,
     });
     const system = sections.find((s) => s.title === "SYSTEM");
     expect(system?.rows.find((r) => r.label === "Uptime")?.value).toBe("N/A");
@@ -149,6 +174,7 @@ describe("buildVitalsSections", () => {
       ready: "ok",
       system: healthySystem,
       market: healthyMarket,
+      sniffer: healthySniffer,
     });
     const titles = sections.map((s) => s.title);
     expect(titles).toEqual(["SYSTEM", "MARKET", "🐽 SNIFFER", "🐗 WARHOG", "🧬 OINK CORP"]);
@@ -160,6 +186,7 @@ describe("buildVitalsSections", () => {
       ready: "ok",
       system: healthySystem,
       market: healthyMarket,
+      sniffer: null,
     });
     const placeholderSections = sections.filter(
       (s) => s.title !== "SYSTEM" && s.title !== "MARKET",
@@ -179,6 +206,7 @@ describe("buildVitalsSections", () => {
       ready: "ok",
       system: healthySystem,
       market: healthyMarket,
+      sniffer: healthySniffer,
     });
     const market = sections.find((s) => s.title === "MARKET");
 
@@ -239,6 +267,7 @@ describe("buildVitalsSections", () => {
         latest_market_frame: null,
         frame_completeness: null,
       },
+      sniffer: healthySniffer,
     });
     const market = sections.find((s) => s.title === "MARKET");
 
@@ -260,6 +289,7 @@ describe("buildVitalsSections", () => {
       ready: "ok",
       system: healthySystem,
       market: noMarketDataYet,
+      sniffer: healthySniffer,
     });
     const market = sections.find((s) => s.title === "MARKET");
 
@@ -307,10 +337,76 @@ describe("buildVitalsSections", () => {
       ready: "ok",
       system: healthySystem,
       market: null,
+      sniffer: healthySniffer,
     });
     const market = sections.find((s) => s.title === "MARKET");
 
     for (const row of market?.rows ?? []) {
+      expect(row.value).toBe("N/A");
+      expect(row.status).toBe("unavailable");
+    }
+  });
+
+  it("reflects a real SNIFFER status/last-scan/coins-analyzed once Sniffer has analyzed a frame", () => {
+    const sections = buildVitalsSections({
+      health: "ok",
+      ready: "ok",
+      system: healthySystem,
+      market: healthyMarket,
+      sniffer: healthySniffer,
+    });
+    const sniffer = sections.find((s) => s.title === "🐽 SNIFFER");
+
+    expect(sniffer?.rows.find((r) => r.label === "Status")).toEqual({
+      label: "Status",
+      value: "OK",
+      status: "ok",
+    });
+    expect(sniffer?.rows.find((r) => r.label === "Last scan")).toEqual({
+      label: "Last scan",
+      value: "2026-09-19 16:37:06 UTC",
+      status: "ok",
+    });
+    expect(sniffer?.rows.find((r) => r.label === "Coins analyzed")).toEqual({
+      label: "Coins analyzed",
+      value: "771",
+      status: "ok",
+    });
+  });
+
+  it("keeps Latest ranking and Truffles found hardcoded N/A even once Sniffer is live", () => {
+    const sections = buildVitalsSections({
+      health: "ok",
+      ready: "ok",
+      system: healthySystem,
+      market: healthyMarket,
+      sniffer: healthySniffer,
+    });
+    const sniffer = sections.find((s) => s.title === "🐽 SNIFFER");
+
+    expect(sniffer?.rows.find((r) => r.label === "Latest ranking")).toEqual({
+      label: "Latest ranking",
+      value: "N/A",
+      status: "unavailable",
+    });
+    expect(sniffer?.rows.find((r) => r.label === "🍄 Truffles found")).toEqual({
+      label: "🍄 Truffles found",
+      value: "N/A",
+      status: "unavailable",
+    });
+  });
+
+  it("marks every SNIFFER row N/A when Sniffer has never analyzed a frame", () => {
+    const sections = buildVitalsSections({
+      health: "ok",
+      ready: "ok",
+      system: healthySystem,
+      market: healthyMarket,
+      sniffer: noSnifferScanYet,
+    });
+    const sniffer = sections.find((s) => s.title === "🐽 SNIFFER");
+
+    for (const row of sniffer?.rows ?? []) {
       expect(row.value).toBe("N/A");
       expect(row.status).toBe("unavailable");
     }

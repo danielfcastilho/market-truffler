@@ -78,12 +78,14 @@ Sniffer, Warhog, OINK CORP), but until each is real, every row in those
 sections is an honest "N/A," not a simulated value. Unlike the other three
 areas, Vitals is partially implemented today — see below.
 
-None of Sniffer, Warhog, or OINK CORP is implemented in this milestone. No
-indicators, features, pillars, desirability functions, weights, Entry
-Fitness, rankings, Martin Gale parameters, entry/exit/hedge rules, or live
-execution architecture have been decided. Those are later
-engineering/research milestones, and this codebase makes no assumptions
-about them.
+Sniffer's very first measurement — `return_5m`, one reference metric per
+instrument per Market Frame — is implemented (see "Sniffer measures" below).
+Beyond that, Warhog and OINK CORP remain fully unimplemented, and Sniffer
+itself has no other features, pillars, desirability functions, weights,
+Entry Fitness, or rankings yet. No Martin Gale parameters, entry/exit/hedge
+rules, or live execution architecture have been decided either. Those are
+later engineering/research milestones, and this codebase makes no
+assumptions about them.
 
 ### Bybit connectivity and the market universe
 
@@ -299,6 +301,80 @@ Vitals reads two new values — "Latest market frame" and "Frame
 completeness" — purely from `FrameRepository.get_latest_finalized()`;
 opening Vitals never creates, advances, or otherwise drives a frame.
 
+### Sniffer measures: the feature engine and `return_5m`
+
+Sniffer's first capability is deliberately narrow: consume one finalized
+Market Frame, compute exactly one reference metric per instrument member,
+and persist it. Nothing here ranks, scores, or interprets — it only
+measures:
+
+```
+app/services/frame_synchronizer.py (FrameSynchronizer._finalize_frame)
+   After flipping a frame COMPLETE/PARTIAL, calls an optional
+   on_frame_finalized(frame_time) hook — wrapped in its own try/except, so
+   a Sniffer failure can never break MARKET's own finalize step.
+        │
+        ▼
+app/services/sniffer.py (Sniffer.on_frame_finalized -> analyze_frame)
+   Re-fetches the finalized frame by frame_time via FrameRepository
+   (never trusts a passed-in object — always re-reads the persisted,
+   authoritative record). Skips silently if the frame doesn't exist or is
+   still BUILDING (a defensive no-op, not an error: the hook can only ever
+   fire after finalization, but analyze_frame stays safe standalone too).
+   Wraps the whole analysis+persist step in try/except and logs, never
+   raises — this is the second, independent layer of the same isolation
+   guarantee the hook itself has.
+        │
+        ▼
+app/features/engine.py (FeatureEngine.run)
+   Orchestration only, no formulas. Iterates the fixed FEATURES tuple
+   (currently one entry) and asks each Feature to calculate itself
+   cross-sectionally over every member of the frame at once, assembling
+   a SnifferFrameResult keyed by instrument.
+        │
+        ▼
+app/features/return_5m.py (Return5m implements the Feature contract)
+   return_5m = (current_close / close_5_minutes_ago) - 1, as an exact
+   Decimal. "current_close" is always the frame member's own selected m1
+   candle (never a fresh market_candles query — no look-ahead is even
+   possible by construction). "5 minutes ago" is member.m1.open_time minus
+   exactly 5 minutes, resolved via one batched exact-open_time lookup
+   (CandleRepository.fetch_exact_open_time) per distinct anchor timestamp
+   across the whole frame — one query for the common case where every
+   member shares the same anchor, never one query per instrument. Missing
+   that exact candle (or a non-positive historical close) yields None —
+   "unavailable" — never a substituted, zeroed, or nearest-candle value.
+```
+
+**Result model and persistence.** `SnifferFrameResult`/
+`SnifferInstrumentResult` (`app/domain/sniffer.py`) are the typed in-memory
+result — `features: dict[str, Decimal | None]`, explicit about
+unavailability. `SnifferRepository.save_result` persists every instrument
+(including unavailable ones, as a NULL `value` row — Sniffer looked at it
+and recorded that fact, rather than omitting it) into `sniffer_results`
+(`frame_time, instrument_id, metric, value, calculated_at`), an
+intentionally EAV-lite shape: a second metric is a new row shape, never a
+schema migration. A dialect-aware upsert on the composite
+`(frame_time, instrument_id, metric)` primary key makes re-analysis
+idempotent — a retry or duplicate trigger overwrites, never duplicates.
+`RANGE(frame_time)`-partitioned exactly like `market_frame_members`, same
+`partition_manager`, same ~1-year retention.
+
+**Reactive, not polling.** Sniffer has no loop of its own; it only ever
+runs in direct response to `FrameSynchronizer`'s hook, mirroring the
+`on_new_symbols` pattern `HistoryReconciler`/`MarketCollector` already use.
+This keeps Sniffer decoupled (`FrameSynchronizer` knows only that an async
+callable exists, nothing about Sniffer's internals) while guaranteeing it
+never falls behind by polling on some independent cadence.
+
+**API and UI.** `/api/sniffer/status` (Vitals), `/api/sniffer/latest`, and
+`/api/sniffer/frames/{frame_time}` are read-only — no endpoint triggers
+analysis. Responses are always sorted by symbol, a neutral ordering that
+implies no ranking. The Sniffer page renders that same data as a plain
+table; a client-side column sort re-orders only what's already on the page
+for that viewer and never calls the backend, so it can't be mistaken for a
+server-side ranking.
+
 ## What's actually implemented (this milestone)
 
 ```
@@ -325,47 +401,57 @@ opening Vitals never creates, advances, or otherwise drives a frame.
   Owns the `User` model, session issuance/verification, and the
   database-touching endpoints (`/health`, `/ready`, `/api/me`,
   `/api/system`, `/api/auth/login`, `/api/auth/logout`), plus
-  `/api/market/status` and two minimal read-only inspection endpoints
-  (`/api/market/frames/latest`, `/api/market/frames/{frame_time}`). Three
+  `/api/market/status`, two minimal read-only Market Frame inspection
+  endpoints (`/api/market/frames/latest`, `/api/market/frames/{frame_time}`),
+  and three read-only Sniffer endpoints (`/api/sniffer/status`,
+  `/api/sniffer/latest`, `/api/sniffer/frames/{frame_time}`). Four
   long-lived background capabilities are started from the FastAPI
   `lifespan`, not from any request: `MarketCollector`
   (`app/services/market_collector.py`, live WebSocket watching),
   `HistoryReconciler` (`app/services/history_reconciler.py`, durable
-  history/bootstrap/gap repair), and `FrameSynchronizer`
+  history/bootstrap/gap repair), `FrameSynchronizer`
   (`app/services/frame_synchronizer.py`, per-minute cross-sectional
-  synchronization) — all three run for the life of the process.
+  synchronization), and `Sniffer` (`app/services/sniffer.py`, reactive
+  per-frame feature analysis) — all four run for the life of the process.
 - **`postgres`**: `users`, `instruments` (the instrument dimension),
   `market_candles` (a native `RANGE`-partitioned table on `open_time`,
   monthly partitions, holding all four timeframes), `market_frames` (one
-  row per synchronized minute), and `market_frame_members`
-  (`RANGE`-partitioned on `frame_time`, same monthly scheme). No ranking,
-  feature, or trade-related schema exists — those get designed when their
-  requirements are known, not speculatively now.
+  row per synchronized minute), `market_frame_members`
+  (`RANGE`-partitioned on `frame_time`, same monthly scheme), and
+  `sniffer_results` (`RANGE`-partitioned on `frame_time`, same monthly
+  scheme, one row per `(frame_time, instrument_id, metric)`). No ranking or
+  trade-related schema exists — those get designed when their requirements
+  are known, not speculatively now.
 - **`research/oink_corp`, `packages/shared`, `infra`**: boundaries reserved
   for future work (see each directory's own README). Deliberately empty.
 - **Vitals** (`apps/web/src/app/(protected)/vitals/page.tsx`): reads
-  `/health`, `/ready`, `/api/system`, and `/api/market/status`.
-  Status/health logic is a pure module (`apps/web/src/lib/vitals.ts`, unit
-  tested) kept separate from the page's presentation, the same pattern as
-  `lib/route-guard.ts`. The SYSTEM section reflects real signals (API
-  liveness, readiness, database connectivity, uptime, environment, backend
-  version); every row in MARKET is real too — "Bybit
-  connectivity"/"Symbols tracked" from a REST call, "Market
-  data"/"Last market update"/"Data freshness" from the live collector,
-  "Historical coverage" from the history reconciler's persisted progress,
-  and "Latest market frame"/"Frame completeness" from the frame
-  synchronizer's most recently finalized Market Frame. 🐽 SNIFFER,
-  🐗 WARHOG, and 🧬 OINK CORP stay hardcoded to "N/A": there is no live
-  signal behind any of them yet, so none is invented.
+  `/health`, `/ready`, `/api/system`, `/api/market/status`, and
+  `/api/sniffer/status`. Status/health logic is a pure module
+  (`apps/web/src/lib/vitals.ts`, unit tested) kept separate from the page's
+  presentation, the same pattern as `lib/route-guard.ts`. The SYSTEM
+  section reflects real signals (API liveness, readiness, database
+  connectivity, uptime, environment, backend version); every row in MARKET
+  is real too — "Bybit connectivity"/"Symbols tracked" from a REST call,
+  "Market data"/"Last market update"/"Data freshness" from the live
+  collector, "Historical coverage" from the history reconciler's persisted
+  progress, and "Latest market frame"/"Frame completeness" from the frame
+  synchronizer's most recently finalized Market Frame. In 🐽 SNIFFER,
+  "Status"/"Last scan"/"Coins analyzed" are now real too, reflecting
+  Sniffer's own most recent analysis; "Latest ranking" and
+  "🍄 Truffles found" stay hardcoded to "N/A", and all of 🐗 WARHOG and
+  🧬 OINK CORP still do too: there is no live signal behind any of them
+  yet, so none is invented.
 
-### Why no Sniffer/Warhog services exist yet
+### Why no Warhog service exists yet
 
-The spec that drove this milestone was explicit: don't create empty service
-scaffolding to match a future architecture. `apps/api` and `apps/web` are the
-only two applications; Sniffer/Warhog become real services (with real
-Dockerfiles, real dependencies, real responsibilities) when their first
-actual implementation begins — not before. Until then they're routes in the
-frontend that render an intentional "in progress" page.
+The spec that has driven every milestone so far is explicit: don't create
+empty service scaffolding to match a future architecture. `apps/api` and
+`apps/web` remain the only two applications — Sniffer is a service module
+inside `apps/api` (`app/services/sniffer.py`), not a separate app or
+container, and Warhog becomes real (as a module, a separate app, or
+whatever its own requirements turn out to need) only when its first actual
+implementation begins. Until then it's a route in the frontend that renders
+an intentional "in progress" page.
 
 ## Request flow (auth)
 

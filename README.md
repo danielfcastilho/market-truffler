@@ -1,15 +1,18 @@
 # Market Truffler 🐷🍄
 
 A crypto trading system, currently at its **foundation milestone** plus a
-real MARKET capability: a clean, containerized, runnable application shell
-— authentication, a database, a typed API, a navigable frontend — that
-discovers its Bybit market universe over REST, continuously watches it over
-Bybit's public WebSocket, durably remembers it (closed 1-minute candles
-persisted, backfilled up to a rolling ~1-year history, self-repaired after
-gaps or outages, locally aggregated into 5m/15m/1h), and every closed UTC
-minute synchronizes it into one Market Frame — a single, temporally-legal
-cross-sectional snapshot of the whole market a future Sniffer will consume
-without re-deriving alignment itself. No trading logic, no scoring yet. See
+real MARKET capability and Sniffer's first real measurement: a clean,
+containerized, runnable application shell — authentication, a database, a
+typed API, a navigable frontend — that discovers its Bybit market universe
+over REST, continuously watches it over Bybit's public WebSocket, durably
+remembers it (closed 1-minute candles persisted, backfilled up to a rolling
+~1-year history, self-repaired after gaps or outages, locally aggregated
+into 5m/15m/1h), and every closed UTC minute synchronizes it into one
+Market Frame — a single, temporally-legal cross-sectional snapshot of the
+whole market. Sniffer now reacts to each finalized frame and computes one
+reference measurement, `return_5m`, per instrument, persisting it for the
+`/api/sniffer/latest` API and the Sniffer/Vitals pages. No ranking, no
+scoring, no Truffles, no trading logic yet. See
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for where this is headed.
 
 ## Repository structure
@@ -61,19 +64,33 @@ independently of it; a fresh install becomes usable immediately and both
 its historical dataset and its frame history converge/accumulate in the
 background.
 
+On top of that, a fourth background capability — **Sniffer**
+(`apps/api/app/services/sniffer.py`) — reacts to each finalized Market
+Frame (a hook from `FrameSynchronizer`, not polling) and computes one
+reference measurement per instrument in that frame: `return_5m`, the exact
+5-minutes-ago-to-now close-to-close return, using only the frame's own
+selected candles (never a fresh query, never look-ahead) and reporting
+`None`/unavailable rather than substituting or approximating whenever the
+exact historical candle doesn't exist. Results persist to a compact,
+idempotent `sniffer_results` table and are exposed read-only via
+`/api/sniffer/status` and `/api/sniffer/latest`. A Sniffer failure can never
+break MARKET's own background capabilities.
+
 What's **not** real: higher-timeframe candles fetched from the exchange
 directly (they're always derived locally from 1m), historical frame
 backfill/reconstruction (frames are only ever produced live, going
-forward), features, scoring, rankings, or trading logic. Sniffer, Warhog,
-and OINK CORP are reachable in the UI and each show a deliberate "in
-progress" page. Vitals (system health)'s SYSTEM section is real, and every
-row in MARKET is now real: "Bybit connectivity"/"Symbols tracked" (REST),
-"Market data"/"Last market update"/"Data freshness" (the live WebSocket
-collector), "Historical coverage" (the history reconciler's persisted
-progress), and "Latest market frame"/"Frame completeness" (the frame
-synchronizer's most recently finalized snapshot). Sniffer/Warhog/OINK CORP
-are laid out for the future but every value is an honest "N/A" — nothing is
-simulated.
+forward), any metric besides `return_5m`, ranking, scoring, Truffles, or
+trading logic. Warhog and OINK CORP are still reachable in the UI only as a
+deliberate "in progress" page. Vitals (system health)'s SYSTEM section is
+real, every row in MARKET is real ("Bybit connectivity"/"Symbols tracked"
+from REST, "Market data"/"Last market update"/"Data freshness" from the
+live WebSocket collector, "Historical coverage" from the history
+reconciler's persisted progress, "Latest market frame"/"Frame completeness"
+from the frame synchronizer's most recently finalized snapshot), and in
+🐽 SNIFFER, "Status"/"Last scan"/"Coins analyzed" are now real too — only
+"Latest ranking" and "🍄 Truffles found" stay an honest "N/A", since Sniffer
+has no ranking or Truffle concept yet. 🐗 WARHOG and 🧬 OINK CORP are laid
+out for the future but every value is still "N/A" — nothing is simulated.
 
 ## Prerequisites
 

@@ -12,6 +12,7 @@ from app.models import (  # noqa: F401 - registers models on Base.metadata
     Instrument,
     MarketFrame,
     MarketFrameMember,
+    SnifferResult,
     User,
 )
 

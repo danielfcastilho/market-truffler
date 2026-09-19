@@ -45,7 +45,7 @@ A finalized frame is never revisited: corrections/recovery that land in
 import asyncio
 import contextlib
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -63,6 +63,7 @@ logger = logging.getLogger(__name__)
 TIMEFRAMES: tuple[tuple[str, int], ...] = (("1m", 1), ("5m", 5), ("15m", 15), ("1h", 60))
 
 SessionFactory = Callable[[], AsyncSession]
+OnFrameFinalized = Callable[[datetime], Awaitable[None]]
 
 
 def _floor_to_minute(dt: datetime) -> datetime:
@@ -75,9 +76,11 @@ class FrameSynchronizer:
         session_factory: SessionFactory,
         *,
         grace_period_seconds: float = 5.0,
+        on_frame_finalized: OnFrameFinalized | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._grace_period_seconds = grace_period_seconds
+        self._on_frame_finalized = on_frame_finalized
 
         self._stop_event: asyncio.Event | None = None
         self._task: asyncio.Task[None] | None = None
@@ -238,3 +241,13 @@ class FrameSynchronizer:
                     "available": len(member_rows),
                 },
             )
+            if self._on_frame_finalized is not None:
+                # Belt and suspenders: the hook (Sniffer's) is documented to
+                # swallow its own errors, but MARKET's own lifecycle must
+                # stay safe even if some future hook doesn't (M5 section 14).
+                try:
+                    await self._on_frame_finalized(frame_time)
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "frame_finalized_hook_failed", extra={"frame_time": frame_time.isoformat()}
+                    )

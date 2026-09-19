@@ -10,12 +10,13 @@ from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db.session import get_session_factory
 from app.integrations.bybit.client import BybitClient
-from app.routers import auth, market, system
+from app.routers import auth, market, sniffer, system
 from app.services.frame_synchronizer import FrameSynchronizer
 from app.services.history_reconciler import HistoryReconciler
 from app.services.live_candle_sink import PersistingCandleSink
 from app.services.market_collector import MarketCollector
 from app.services.market_universe import MarketUniverseService
+from app.services.sniffer import Sniffer
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -53,8 +54,18 @@ async def lifespan(app: FastAPI):
     )
     app.state.history_reconciler = history_reconciler
 
+    # Sniffer has no lifecycle of its own — it's invoked reactively via the
+    # hook below, once per finalized frame, never polling and never
+    # triggered by a request. A Sniffer failure is isolated inside
+    # FrameSynchronizer itself (see its `on_frame_finalized` handling), so
+    # it can never take MARKET down.
+    sniffer_service = Sniffer(session_factory)
+    app.state.sniffer = sniffer_service
+
     frame_synchronizer = FrameSynchronizer(
-        session_factory, grace_period_seconds=settings.market_frame_grace_period_seconds
+        session_factory,
+        grace_period_seconds=settings.market_frame_grace_period_seconds,
+        on_frame_finalized=sniffer_service.on_frame_finalized,
     )
     app.state.frame_synchronizer = frame_synchronizer
 
@@ -104,3 +115,4 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 app.include_router(system.router)
 app.include_router(auth.router)
 app.include_router(market.router)
+app.include_router(sniffer.router)

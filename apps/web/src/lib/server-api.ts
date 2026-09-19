@@ -91,3 +91,45 @@ export async function getMarketStatus(): Promise<MarketStatus | null> {
     return null;
   }
 }
+
+export interface SnifferStatus {
+  status: "ok" | null;
+  last_scan: string | null;
+  coins_analyzed: number | null;
+}
+
+export async function getSnifferStatus(): Promise<SnifferStatus | null> {
+  try {
+    const response = await serverFetch("/api/sniffer/status");
+    if (!response.ok) return null;
+    return (await response.json()) as SnifferStatus;
+  } catch {
+    return null;
+  }
+}
+
+export interface SnifferInstrument {
+  instrument_id: number;
+  symbol: string;
+  /** Decimal fraction (e.g. 0.01 == +1%) as a string, or null when Sniffer
+   * genuinely had no exact 5-minutes-ago candle to compare against —
+   * never a substituted or zeroed value. */
+  return_5m: string | null;
+}
+
+export interface SnifferFrame {
+  frame_time: string;
+  analyzed_at: string;
+  instruments_analyzed: number;
+  instruments: SnifferInstrument[];
+}
+
+export async function getLatestSnifferFrame(): Promise<SnifferFrame | null> {
+  try {
+    const response = await serverFetch("/api/sniffer/latest");
+    if (!response.ok) return null;
+    return (await response.json()) as SnifferFrame;
+  } catch {
+    return null;
+  }
+}

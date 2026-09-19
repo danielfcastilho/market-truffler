@@ -491,3 +491,66 @@ async def test_vitals_reading_the_latest_frame_never_creates_one(session_factory
     async with session_factory() as session:
         rows = (await session.execute(select(MarketFrame))).scalars().all()
     assert rows == []
+
+
+# -- on_frame_finalized hook (M5) ----------------------------------------------------
+
+
+async def test_on_frame_finalized_hook_is_called_once_with_the_finalized_frame_time(
+    session_factory,
+):
+    hour_start = FRAME_TIME - timedelta(hours=1)
+    btc = await _add_instrument(session_factory, "BTCUSDT")
+    await _seed_full_hour(session_factory, btc, hour_start)
+
+    calls: list[datetime] = []
+
+    async def hook(frame_time: datetime) -> None:
+        calls.append(frame_time)
+
+    sync = _synchronizer(session_factory, on_frame_finalized=hook)
+    async with session_factory() as session:
+        await FrameRepository(session).create_building(
+            FRAME_TIME, expected_instrument_ids=[btc], now=datetime.now(UTC)
+        )
+    await sync._finalize_frame(FRAME_TIME)
+
+    assert calls == [FRAME_TIME]
+
+
+async def test_on_frame_finalized_hook_is_not_called_when_nothing_is_finalized(session_factory):
+    """No BUILDING frame exists at this frame_time, so `_finalize_frame`
+    finalizes nothing — the hook must not fire for a no-op."""
+    calls: list[datetime] = []
+
+    async def hook(frame_time: datetime) -> None:
+        calls.append(frame_time)
+
+    sync = _synchronizer(session_factory, on_frame_finalized=hook)
+    await sync._finalize_frame(FRAME_TIME)
+
+    assert calls == []
+
+
+async def test_on_frame_finalized_hook_failure_does_not_break_finalization(session_factory):
+    """A Sniffer-side failure inside the hook must never prevent MARKET's
+    own frame finalization from completing, nor propagate out of
+    `_finalize_frame` (M5 section 14: Sniffer must never be able to break
+    FrameSynchronizer)."""
+    hour_start = FRAME_TIME - timedelta(hours=1)
+    btc = await _add_instrument(session_factory, "BTCUSDT")
+    await _seed_full_hour(session_factory, btc, hour_start)
+
+    async def failing_hook(frame_time: datetime) -> None:
+        raise RuntimeError("sniffer exploded")
+
+    sync = _synchronizer(session_factory, on_frame_finalized=failing_hook)
+    async with session_factory() as session:
+        await FrameRepository(session).create_building(
+            FRAME_TIME, expected_instrument_ids=[btc], now=datetime.now(UTC)
+        )
+    await sync._finalize_frame(FRAME_TIME)  # must not raise
+
+    async with session_factory() as session:
+        frame = await FrameRepository(session).get_frame(FRAME_TIME)
+    assert frame.status == FrameStatus.COMPLETE

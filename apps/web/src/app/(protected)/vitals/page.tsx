@@ -1,4 +1,4 @@
-import { serverFetch, getSystemInfo, getMarketStatus } from "@/lib/server-api";
+import { serverFetch, getSystemInfo, getMarketStatus, getSnifferStatus } from "@/lib/server-api";
 import { buildVitalsSections, type VitalsInput, type VitalStatus } from "@/lib/vitals";
 import { cn } from "@/lib/utils";
 
@@ -18,14 +18,15 @@ const VALUE_CLASS: Record<VitalStatus, string> = {
 };
 
 export default async function VitalsPage() {
-  const [health, ready, system, market] = await Promise.all([
+  const [health, ready, system, market, sniffer] = await Promise.all([
     getProbe("/health"),
     getProbe("/ready"),
     getSystemInfo(),
     getMarketStatus(),
+    getSnifferStatus(),
   ]);
 
-  const input: VitalsInput = { health, ready, system, market };
+  const input: VitalsInput = { health, ready, system, market, sniffer };
   const sections = buildVitalsSections(input);
 
   return (

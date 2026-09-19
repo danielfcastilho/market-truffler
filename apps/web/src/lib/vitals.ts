@@ -1,4 +1,4 @@
-import type { MarketStatus, SystemInfo } from "@/lib/server-api";
+import type { MarketStatus, SnifferStatus, SystemInfo } from "@/lib/server-api";
 
 export type VitalStatus = "ok" | "down" | "unavailable";
 
@@ -18,6 +18,7 @@ export interface VitalsInput {
   ready: "ok" | "down";
   system: SystemInfo | null;
   market: MarketStatus | null;
+  sniffer: SnifferStatus | null;
 }
 
 const NOT_AVAILABLE = "N/A";
@@ -43,15 +44,20 @@ function unavailableRow(label: string): VitalRow {
  * synchronized, temporally-legal cross-section of the whole market,
  * produced once per closed UTC minute). All of it runs continuously in the
  * background; this page only observes it, never drives it — reading Vitals
- * never creates a frame. Sniffer/Warhog/OINK CORP lay out the shape Vitals
- * will eventually report on, but every row in them is a hardcoded "N/A":
- * there is no live signal for any of it yet, so none is invented.
+ * never creates a frame. In SNIFFER, "Status"/"Last scan"/"Coins analyzed"
+ * are likewise real, reflecting Sniffer's own persisted analysis of the
+ * most recently finalized frame (see `app.services.sniffer`); "Latest
+ * ranking" and "🍄 Truffles found" stay hardcoded "N/A" since Sniffer has
+ * no ranking or Truffle concept yet. Warhog/OINK CORP lay out the shape
+ * Vitals will eventually report on, but every row in them is a hardcoded
+ * "N/A": there is no live signal for any of it yet, so none is invented.
  */
 export function buildVitalsSections({
   health,
   ready,
   system,
   market,
+  sniffer,
 }: VitalsInput): VitalSection[] {
   const databaseStatus: VitalStatus =
     system?.database === "ok" ? "ok" : system?.database === "unreachable" ? "down" : "unavailable";
@@ -155,9 +161,21 @@ export function buildVitalsSections({
     {
       title: "🐽 SNIFFER",
       rows: [
-        unavailableRow("Status"),
-        unavailableRow("Last scan"),
-        unavailableRow("Coins analyzed"),
+        {
+          label: "Status",
+          value: sniffer?.status === "ok" ? "OK" : NOT_AVAILABLE,
+          status: sniffer?.status === "ok" ? "ok" : "unavailable",
+        },
+        {
+          label: "Last scan",
+          value: sniffer?.last_scan ? formatTimestampUtc(sniffer.last_scan) : NOT_AVAILABLE,
+          status: sniffer?.last_scan ? "ok" : "unavailable",
+        },
+        {
+          label: "Coins analyzed",
+          value: sniffer?.coins_analyzed != null ? String(sniffer.coins_analyzed) : NOT_AVAILABLE,
+          status: sniffer?.coins_analyzed != null ? "ok" : "unavailable",
+        },
         unavailableRow("Latest ranking"),
         unavailableRow("🍄 Truffles found"),
       ],
