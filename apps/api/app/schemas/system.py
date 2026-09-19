@@ -15,3 +15,4 @@ class SystemInfo(BaseModel):
     version: str
     database: str
     authenticated_user: str | None
+    uptime_seconds: float

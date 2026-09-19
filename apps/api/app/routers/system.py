@@ -1,9 +1,10 @@
 import logging
+import time
 
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import text
 
-from app.core import __version__
+from app.core import PROCESS_STARTED_AT, __version__
 from app.core.deps import CurrentUserDep, DbSessionDep, SettingsDep
 from app.schemas.system import HealthResponse, ReadyResponse, SystemInfo
 
@@ -46,4 +47,5 @@ async def system_info(
         version=__version__,
         database=database_status,
         authenticated_user=current_user.email,
+        uptime_seconds=time.monotonic() - PROCESS_STARTED_AT,
     )

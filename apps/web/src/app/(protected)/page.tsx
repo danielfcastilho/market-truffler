@@ -8,9 +8,9 @@ export default function HomePage() {
           🐷🍄 Market Truffler
         </h1>
         <p className="max-w-2xl text-muted-foreground">
-          A foundation for a systematic crypto trading system. Sniffer gathers market data,
-          Truffler turns it into opportunity intelligence, and Warhog acts on it — with OINK
-          CORP developing and validating the strategy behind the scenes.
+          A foundation for a systematic crypto trading system. Sniffer digs through market data
+          to surface opportunities — truffles — and Warhog acts on them, with OINK CORP
+          developing and validating the strategy behind the scenes.
         </p>
       </div>
 
@@ -18,26 +18,26 @@ export default function HomePage() {
         <ModuleCard
           href="/sniffer"
           icon="🐽"
-          title="Sniffer — Data"
-          description="Exchange connectivity and market-data acquisition."
-        />
-        <ModuleCard
-          href="/truffler"
-          icon="🍄"
-          title="Truffler — Analysis"
-          description="Turns market data into opportunity intelligence."
+          title="Sniffer"
+          description="Finds and surfaces market opportunities — the truffles."
         />
         <ModuleCard
           href="/warhog"
           icon="🐗"
-          title="Warhog — Trading"
+          title="Warhog"
           description="Entries, position management, and exits."
         />
         <ModuleCard
           href="/oink-corp"
           icon="🧬"
-          title="OINK CORP — Research"
+          title="OINK CORP"
           description="Develops and validates the strategy."
+        />
+        <ModuleCard
+          href="/vitals"
+          icon="🩺"
+          title="Vitals"
+          description="Is Market Truffler healthy and operating correctly?"
         />
       </div>
     </div>

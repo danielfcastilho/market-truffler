@@ -9,8 +9,8 @@ build or start anything from here).
 ## Conceptual role
 
 OINK CORP develops and validates the strategy; Market Truffler (Sniffer →
-Truffler → Warhog) runs it. Concretely, this is where future work will live
-for things like:
+Warhog) runs it. Concretely, this is where future work will live for things
+like:
 
 - quantitative feature research
 - backtesting

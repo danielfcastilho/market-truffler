@@ -11,10 +11,10 @@ describe("decideRouteGuard", () => {
   });
 
   it("preserves the original path so login can redirect back", () => {
-    expect(decideRouteGuard("/system", false)).toEqual({
+    expect(decideRouteGuard("/vitals", false)).toEqual({
       action: "redirect",
       to: "/login",
-      from: "/system",
+      from: "/vitals",
     });
   });
 
@@ -27,6 +27,6 @@ describe("decideRouteGuard", () => {
   });
 
   it("lets an authenticated visitor continue to a protected page", () => {
-    expect(decideRouteGuard("/system", true)).toEqual({ action: "continue" });
+    expect(decideRouteGuard("/vitals", true)).toEqual({ action: "continue" });
   });
 });

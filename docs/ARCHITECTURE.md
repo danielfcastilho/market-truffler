@@ -7,18 +7,23 @@ yet, by design.
 
 ## The future system
 
+Market Truffler has three product areas in its trading pipeline, plus one
+cross-cutting operational area that observes all of them. Sniffer owns
+everything between raw market data and a ranked opportunity — including
+analysis, scoring, and individual coin/opportunity inspection, which are not
+a separate product area:
+
 ```
                     BYBIT
                       │
                       ▼
-              🐽 SNIFFER — DATA
-   (exchange connectivity, market-data
-    acquisition, normalization, storage)
+            🐽 SNIFFER — DISCOVERY
+  (exchange connectivity, market-data acquisition,
+   features, desirability functions, pillars,
+   Entry Fitness, Long/Short rankings)
                       │
                       ▼
-            🍄 TRUFFLER — ANALYSIS
-  (features, desirability functions, pillars,
-     Entry Fitness, Long/Short rankings)
+           🍄 opportunities / truffles
                       │
                       ▼
              🐗 WARHOG — TRADING
@@ -37,22 +42,23 @@ Separately, alongside but outside that runtime pipeline:
            develops / validates strategy
                       │
                       ▼
-              TRUFFLER + WARHOG
+                   SNIFFER
+              (feeds its scoring)
 ```
 
-OINK CORP is where the strategy is developed and validated. Sniffer →
-Truffler → Warhog is where it runs in production. OINK CORP is not a
-production runtime dependency — nothing in `docker-compose.yml` builds or
-starts it.
+OINK CORP is where the strategy is developed and validated; Sniffer is where
+that scoring runs in production, surfacing opportunities ("truffles") for
+Warhog to act on. OINK CORP is not a production runtime dependency — nothing
+in `docker-compose.yml` builds or starts it.
 
 ### Domain responsibilities (future)
 
-**🐽 Sniffer — Data.** Exchange connectivity, historical backfills,
-WebSocket market streams, normalization, storage, data quality.
-
-**🍄 Truffler — Analysis.** Turns market data into strategy-specific
-opportunity intelligence: features, desirability functions, pillars, Entry
-Fitness, Long ranking, Short ranking.
+**🐽 Sniffer — Discovery.** Exchange connectivity, historical backfills,
+WebSocket market streams, normalization, storage, data quality — and,
+downstream of that data, features, desirability functions, pillars, Entry
+Fitness, Long ranking, Short ranking, and individual opportunity inspection.
+Discovery and analysis are one product area, not two: Sniffer's job is to
+turn market data into truffles.
 
 **🐗 Warhog — Trading.** Entries, position sizing, Martin Gale progression,
 active-position management, recovery, emergency behavior, hedging, exits,
@@ -63,11 +69,21 @@ backtests, Martin Gale simulation, calibration, ablation, walk-forward
 validation. A repository boundary and a conceptual home for research, not a
 service.
 
-None of the above is implemented in this milestone. No indicators, features,
-pillars, desirability functions, weights, Entry Fitness, rankings, Martin
-Gale parameters, entry/exit/hedge rules, or live execution architecture have
-been decided. Those are later engineering/research milestones, and this
-codebase makes no assumptions about them.
+**🩺 Vitals — System Health.** Not part of the trading pipeline — it sits
+outside it and observes all of it. Answers one question: "is Market Truffler
+operating correctly?" Vitals monitors real runtime components and
+dependencies — it never fabricates a status for one that doesn't exist yet.
+Its layout previews the areas it will eventually report on (Market,
+Sniffer, Warhog, OINK CORP), but until each is real, every row in those
+sections is an honest "N/A," not a simulated value. Unlike the other three
+areas, Vitals is partially implemented today — see below.
+
+None of Sniffer, Warhog, or OINK CORP is implemented in this milestone. No
+indicators, features, pillars, desirability functions, weights, Entry
+Fitness, rankings, Martin Gale parameters, entry/exit/hedge rules, or live
+execution architecture have been decided. Those are later
+engineering/research milestones, and this codebase makes no assumptions
+about them.
 
 ## What's actually implemented (this milestone)
 
@@ -100,15 +116,26 @@ codebase makes no assumptions about them.
   are known, not speculatively now.
 - **`research/oink_corp`, `packages/shared`, `infra`**: boundaries reserved
   for future work (see each directory's own README). Deliberately empty.
+- **Vitals** (`apps/web/src/app/(protected)/vitals/page.tsx`): reuses the
+  existing `/health`, `/ready`, and `/api/system` endpoints — no new backend
+  surface beyond adding a real `uptime_seconds` to `/api/system`. Status/
+  health logic is a pure module (`apps/web/src/lib/vitals.ts`, unit tested)
+  kept separate from the page's presentation, the same pattern as
+  `lib/route-guard.ts`. Only the SYSTEM section reflects real signals (API
+  liveness, readiness, database connectivity, uptime, environment, backend
+  version). The MARKET, 🐽 SNIFFER, 🐗 WARHOG, and 🧬 OINK CORP sections lay
+  out the shape Vitals will eventually report on, but every row in them is
+  hardcoded to "N/A" — there is no live signal behind them yet, so none is
+  invented.
 
-### Why no Sniffer/Truffler/Warhog services exist yet
+### Why no Sniffer/Warhog services exist yet
 
 The spec that drove this milestone was explicit: don't create empty service
 scaffolding to match a future architecture. `apps/api` and `apps/web` are the
-only two applications; Sniffer/Truffler/Warhog become real services (with
-real Dockerfiles, real dependencies, real responsibilities) when their
-first actual implementation begins — not before. Until then they're four
-routes in the frontend that render an intentional "in progress" page.
+only two applications; Sniffer/Warhog become real services (with real
+Dockerfiles, real dependencies, real responsibilities) when their first
+actual implementation begins — not before. Until then they're routes in the
+frontend that render an intentional "in progress" page.
 
 ## Request flow (auth)
 

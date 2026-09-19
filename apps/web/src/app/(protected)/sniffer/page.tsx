@@ -5,7 +5,7 @@ export default function SnifferPage() {
     <InProgressPage
       icon="🐽"
       name="Sniffer"
-      tagline="Data infrastructure."
+      tagline="Discovery — data, analysis, and opportunities."
       message="Market Truffler is still growing its snout."
     />
   );

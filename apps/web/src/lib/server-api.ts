@@ -52,6 +52,7 @@ export interface SystemInfo {
   version: string;
   database: "ok" | "unreachable";
   authenticated_user: string | null;
+  uptime_seconds: number;
 }
 
 export async function getSystemInfo(): Promise<SystemInfo | null> {

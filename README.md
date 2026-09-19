@@ -38,8 +38,11 @@ backend ↔ database communication, health/readiness checks, structured
 logging, and tests.
 
 What's **not** real: any Bybit/exchange connectivity, market data, features,
-scoring, rankings, or trading logic. Sniffer, Truffler, Warhog, and OINK CORP
-are reachable in the UI and each show a deliberate "in progress" page.
+scoring, rankings, or trading logic. Sniffer, Warhog, and OINK CORP are
+reachable in the UI and each show a deliberate "in progress" page. Vitals
+(system health)'s SYSTEM section is real; its MARKET/Sniffer/Warhog/OINK CORP
+sections are laid out for the future but every value in them is an honest
+"N/A" — nothing is simulated.
 
 ## Prerequisites
 
@@ -127,10 +130,13 @@ signed, `httpOnly` cookie — it survives a page refresh and is enforced on
 both the frontend (redirects) and the backend (every protected endpoint
 independently verifies it).
 
-From there you can navigate to Home, Sniffer, Truffler, Warhog, OINK CORP,
-and System. The first four show an intentional "in progress" page; System
-shows live status (API health, database connectivity, environment, your
-session).
+From there you can navigate to Home, Sniffer, Warhog, OINK CORP, and Vitals.
+Sniffer, Warhog, and OINK CORP each show an intentional "in progress" page.
+Vitals shows a SYSTEM section with live operational status (API liveness,
+API readiness, database connectivity, uptime, environment, backend version),
+plus MARKET/🐽 SNIFFER/🐗 WARHOG/🧬 OINK CORP sections previewing what
+Vitals will eventually report on — every row in those is an honest "N/A",
+never a fabricated value, since none of that infrastructure exists yet.
 
 ## 6. Run tests
 

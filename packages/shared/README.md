@@ -2,7 +2,7 @@
 
 Reserved boundary for code shared across multiple apps (for example, types
 or constants shared between `apps/api` and `apps/web`, or later between
-Sniffer/Truffler/Warhog services).
+Sniffer/Warhog services).
 
 ## Status
 
