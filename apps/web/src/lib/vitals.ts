@@ -1,4 +1,4 @@
-import type { SystemInfo } from "@/lib/server-api";
+import type { MarketStatus, SystemInfo } from "@/lib/server-api";
 
 export type VitalStatus = "ok" | "down" | "unavailable";
 
@@ -17,6 +17,7 @@ export interface VitalsInput {
   health: "ok" | "down";
   ready: "ok" | "down";
   system: SystemInfo | null;
+  market: MarketStatus | null;
 }
 
 const NOT_AVAILABLE = "N/A";
@@ -31,14 +32,28 @@ function unavailableRow(label: string): VitalRow {
  * the "what does the app honestly know about its own health" logic can be
  * unit tested without rendering anything.
  *
- * Only the SYSTEM section reflects real, currently-running infrastructure.
- * The Market/Sniffer/Warhog/OINK CORP sections lay out the shape Vitals will
- * eventually report on, but every row in them is a hardcoded "N/A" — there
- * is no live signal for any of it yet, so none is invented.
+ * The SYSTEM section reflects real, currently-running infrastructure, and
+ * the MARKET section's "Bybit connectivity"/"Symbols tracked" rows reflect
+ * a real Bybit integration. Everything else — the rest of MARKET, and all
+ * of Sniffer/Warhog/OINK CORP — lays out the shape Vitals will eventually
+ * report on, but every row in them is a hardcoded "N/A": there is no live
+ * signal for any of it yet, so none is invented.
  */
-export function buildVitalsSections({ health, ready, system }: VitalsInput): VitalSection[] {
+export function buildVitalsSections({
+  health,
+  ready,
+  system,
+  market,
+}: VitalsInput): VitalSection[] {
   const databaseStatus: VitalStatus =
     system?.database === "ok" ? "ok" : system?.database === "unreachable" ? "down" : "unavailable";
+
+  const bybitStatus: VitalStatus =
+    market?.bybit_connectivity === "ok"
+      ? "ok"
+      : market?.bybit_connectivity === "down"
+        ? "down"
+        : "unavailable";
 
   return [
     {
@@ -71,10 +86,18 @@ export function buildVitalsSections({ health, ready, system }: VitalsInput): Vit
     {
       title: "MARKET",
       rows: [
-        unavailableRow("Bybit connectivity"),
+        {
+          label: "Bybit connectivity",
+          value: bybitStatus === "unavailable" ? NOT_AVAILABLE : bybitStatus.toUpperCase(),
+          status: bybitStatus,
+        },
         unavailableRow("Market data"),
         unavailableRow("Last market update"),
-        unavailableRow("Symbols tracked"),
+        {
+          label: "Symbols tracked",
+          value: market?.symbols_tracked != null ? String(market.symbols_tracked) : NOT_AVAILABLE,
+          status: market?.symbols_tracked != null ? "ok" : "unavailable",
+        },
         unavailableRow("Data freshness"),
       ],
     },

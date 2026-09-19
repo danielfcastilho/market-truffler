@@ -1,10 +1,12 @@
 # Market Truffler 🐷🍄
 
-A crypto trading system, currently at its **foundation milestone**: a clean,
-containerized, runnable application shell — authentication, a database, a
-typed API, and a navigable frontend. No trading logic, no market data, no
-exchange connectivity yet. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-for where this is headed.
+A crypto trading system, currently at its **foundation milestone** plus a
+first real piece of MARKET connectivity: a clean, containerized, runnable
+application shell — authentication, a database, a typed API, a navigable
+frontend, and a read-only connection to Bybit's public API for market
+universe discovery. No trading logic, no market data acquisition, no
+scoring yet. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for where
+this is headed.
 
 ## Repository structure
 
@@ -35,14 +37,17 @@ Docker Compose, containers, the Next.js frontend, the FastAPI backend,
 PostgreSQL, database migrations, authentication (login/logout, hashed
 passwords, sessions that survive a refresh), protected routes, frontend ↔
 backend ↔ database communication, health/readiness checks, structured
-logging, and tests.
+logging, tests, and a read-only connection to Bybit's public REST API that
+discovers the current market universe (linear, USDT-settled, perpetual,
+currently tradable instruments) — no API key required.
 
-What's **not** real: any Bybit/exchange connectivity, market data, features,
-scoring, rankings, or trading logic. Sniffer, Warhog, and OINK CORP are
-reachable in the UI and each show a deliberate "in progress" page. Vitals
-(system health)'s SYSTEM section is real; its MARKET/Sniffer/Warhog/OINK CORP
-sections are laid out for the future but every value in them is an honest
-"N/A" — nothing is simulated.
+What's **not** real: market data acquisition (tickers, klines, WebSocket
+streams), features, scoring, rankings, or trading logic. Sniffer, Warhog,
+and OINK CORP are reachable in the UI and each show a deliberate "in
+progress" page. Vitals (system health)'s SYSTEM section is real, and in
+MARKET, "Bybit connectivity" and "Symbols tracked" are real too. Everything
+else in MARKET, and all of Sniffer/Warhog/OINK CORP, is laid out for the
+future but every value is an honest "N/A" — nothing is simulated.
 
 ## Prerequisites
 
@@ -64,8 +69,8 @@ python3 -c "import secrets; print(secrets.token_urlsafe(48))"
 
 Paste the output as `SESSION_SECRET` in `.env`. Nothing else in
 `.env.example` needs to change for local development. No exchange
-credentials are needed anywhere — this milestone doesn't talk to Bybit or
-any other exchange.
+credentials are needed anywhere — the API talks only to Bybit's public
+market-data API, which requires no API key.
 
 ## 2. Build and start
 
@@ -133,10 +138,12 @@ independently verifies it).
 From there you can navigate to Home, Sniffer, Warhog, OINK CORP, and Vitals.
 Sniffer, Warhog, and OINK CORP each show an intentional "in progress" page.
 Vitals shows a SYSTEM section with live operational status (API liveness,
-API readiness, database connectivity, uptime, environment, backend version),
-plus MARKET/🐽 SNIFFER/🐗 WARHOG/🧬 OINK CORP sections previewing what
-Vitals will eventually report on — every row in those is an honest "N/A",
-never a fabricated value, since none of that infrastructure exists yet.
+API readiness, database connectivity, uptime, environment, backend version)
+and a MARKET section where "Bybit connectivity" and "Symbols tracked" are
+now real, sourced from a live call to Bybit's public API. Everything else —
+the rest of MARKET, plus 🐽 SNIFFER/🐗 WARHOG/🧬 OINK CORP — previews what
+Vitals will eventually report on: every row there is an honest "N/A", never
+a fabricated value, since none of that infrastructure exists yet.
 
 ## 6. Run tests
 

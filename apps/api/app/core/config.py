@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     frontend_origin: str = "http://localhost:3000"
     allowed_origins: str = "http://localhost:3000"
 
+    bybit_base_url: str = "https://api.bybit.com"
+    bybit_timeout_seconds: float = 5.0
+
     @property
     def allowed_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.allowed_origins.split(",") if origin.strip()]

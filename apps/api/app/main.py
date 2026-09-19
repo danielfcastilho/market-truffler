@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from app.core import __version__
 from app.core.config import get_settings
 from app.core.logging import configure_logging
-from app.routers import auth, system
+from app.routers import auth, market, system
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -50,3 +50,4 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 
 app.include_router(system.router)
 app.include_router(auth.router)
+app.include_router(market.router)

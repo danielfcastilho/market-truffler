@@ -64,3 +64,18 @@ export async function getSystemInfo(): Promise<SystemInfo | null> {
     return null;
   }
 }
+
+export interface MarketStatus {
+  bybit_connectivity: "ok" | "down";
+  symbols_tracked: number | null;
+}
+
+export async function getMarketStatus(): Promise<MarketStatus | null> {
+  try {
+    const response = await serverFetch("/api/market/status");
+    if (!response.ok) return null;
+    return (await response.json()) as MarketStatus;
+  } catch {
+    return null;
+  }
+}

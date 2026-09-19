@@ -85,6 +85,43 @@ execution architecture have been decided. Those are later
 engineering/research milestones, and this codebase makes no assumptions
 about them.
 
+### Bybit connectivity and the market universe (this milestone)
+
+The first real piece of the MARKET area now exists: a read-only connection
+to Bybit's public REST API, used only to answer "can we reach Bybit?" and
+"how many instruments are in the universe we care about?" It is not market
+data acquisition — no tickers, klines, or WebSocket streams are consumed —
+and it does not make Sniffer operational.
+
+```
+app/integrations/bybit/   HTTP boundary: base URL, timeouts, the retCode
+                           envelope. The only place that knows Bybit's wire
+                           format. Scoped to public REST today; a future
+                           WebSocket client or additional REST calls can
+                           live alongside it without a redesign.
+        │
+        ▼
+app/services/market_universe.py   Paginates instruments-info, filters to
+                                   linear/USDT-settled/perpetual/tradable,
+                                   and maps to app/domain/market.py's
+                                   Instrument — the app's own model, not
+                                   Bybit's raw response shape.
+        │
+        ▼
+app/routers/market.py (`GET /api/market/status`)   Presentation boundary
+                                   consumed by Vitals. Converts a Bybit
+                                   failure into a truthful "down" response
+                                   rather than letting the app crash or the
+                                   caller see a 500.
+```
+
+Bybit is treated as an external dependency: unreachable Bybit never fails
+`/health` or `/ready`, and never stops the API from starting. Vitals'
+MARKET section reflects this — "Bybit connectivity" and "Symbols tracked"
+are real, sourced from `/api/market/status`; "Market data," "Last market
+update," and "Data freshness" stay a hardcoded "N/A," since no market data
+is consumed yet.
+
 ## What's actually implemented (this milestone)
 
 ```
@@ -108,25 +145,26 @@ about them.
   proxies `/api/*` to the backend so the browser only ever talks to one
   origin.
 - **`apps/api`** (FastAPI, Pydantic, SQLAlchemy 2, Alembic): the backend.
-  Owns the `User` model, session issuance/verification, and the only
-  database-touching endpoints that exist right now (`/health`, `/ready`,
-  `/api/me`, `/api/system`, `/api/auth/login`, `/api/auth/logout`).
+  Owns the `User` model, session issuance/verification, and the
+  database-touching endpoints (`/health`, `/ready`, `/api/me`,
+  `/api/system`, `/api/auth/login`, `/api/auth/logout`), plus
+  `/api/market/status`, which talks to Bybit's public REST API rather than
+  the database.
 - **`postgres`**: one table (`users`). No market-data, ranking, feature, or
   trade-related schema exists — those get designed when their requirements
   are known, not speculatively now.
 - **`research/oink_corp`, `packages/shared`, `infra`**: boundaries reserved
   for future work (see each directory's own README). Deliberately empty.
-- **Vitals** (`apps/web/src/app/(protected)/vitals/page.tsx`): reuses the
-  existing `/health`, `/ready`, and `/api/system` endpoints — no new backend
-  surface beyond adding a real `uptime_seconds` to `/api/system`. Status/
-  health logic is a pure module (`apps/web/src/lib/vitals.ts`, unit tested)
-  kept separate from the page's presentation, the same pattern as
-  `lib/route-guard.ts`. Only the SYSTEM section reflects real signals (API
+- **Vitals** (`apps/web/src/app/(protected)/vitals/page.tsx`): reads
+  `/health`, `/ready`, `/api/system`, and now `/api/market/status`.
+  Status/health logic is a pure module (`apps/web/src/lib/vitals.ts`, unit
+  tested) kept separate from the page's presentation, the same pattern as
+  `lib/route-guard.ts`. The SYSTEM section reflects real signals (API
   liveness, readiness, database connectivity, uptime, environment, backend
-  version). The MARKET, 🐽 SNIFFER, 🐗 WARHOG, and 🧬 OINK CORP sections lay
-  out the shape Vitals will eventually report on, but every row in them is
-  hardcoded to "N/A" — there is no live signal behind them yet, so none is
-  invented.
+  version); in MARKET, "Bybit connectivity" and "Symbols tracked" are now
+  real too. Everything else — the rest of MARKET, and all of 🐽 SNIFFER,
+  🐗 WARHOG, and 🧬 OINK CORP — is hardcoded to "N/A": there is no live
+  signal behind it yet, so none is invented.
 
 ### Why no Sniffer/Warhog services exist yet
 
