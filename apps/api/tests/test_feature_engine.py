@@ -81,7 +81,8 @@ async def test_engine_assembles_named_feature_results_per_instrument(db_session)
     instrument = result.instruments[0]
     assert instrument.instrument_id == btc
     assert instrument.symbol == "BTCUSDT"
-    assert "return_5m" in instrument.features
+    assert set(instrument.features) == {"return_5m", "return_1h"}
+    assert instrument.features["return_1h"] is None
     assert instrument.features["return_5m"] == Decimal("0.01")
 
 

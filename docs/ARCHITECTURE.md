@@ -78,8 +78,8 @@ Sniffer, Warhog, OINK CORP), but until each is real, every row in those
 sections is an honest "N/A," not a simulated value. Unlike the other three
 areas, Vitals is partially implemented today — see below.
 
-Sniffer's very first measurement — `return_5m`, one reference metric per
-instrument per Market Frame — is implemented (see "Sniffer measures" below).
+Sniffer's factual measurements — `return_5m` and `return_1h`, two metrics per
+instrument per Market Frame — are implemented (see "Sniffer measures" below).
 Beyond that, Warhog and OINK CORP remain fully unimplemented, and Sniffer
 itself has no other features, pillars, desirability functions, weights,
 Entry Fitness, or rankings yet. No Martin Gale parameters, entry/exit/hedge
@@ -340,11 +340,11 @@ Vitals reads two new values — "Latest market frame" and "Frame
 completeness" — purely from `FrameRepository.get_latest_finalized()`;
 opening Vitals never creates, advances, or otherwise drives a frame.
 
-### Sniffer measures: the feature engine and `return_5m`
+### Sniffer measures: `return_5m` and `return_1h`
 
 Sniffer's first capability is deliberately narrow: consume one finalized
-Market Frame, compute exactly one reference metric per instrument member,
-and persist it. Nothing here ranks, scores, or interprets — it only
+Market Frame, compute two factual metrics per instrument member,
+and persist them. Nothing here ranks, scores, or interprets — it only
 measures:
 
 ```
@@ -367,23 +367,29 @@ app/services/sniffer.py (Sniffer.on_frame_finalized -> analyze_frame)
         ▼
 app/features/engine.py (FeatureEngine.run)
    Orchestration only, no formulas. Iterates the fixed FEATURES tuple
-   (currently one entry) and asks each Feature to calculate itself
+   (Return5m and Return1h) and asks each Feature to calculate itself
    cross-sectionally over every member of the frame at once, assembling
    a SnifferFrameResult keyed by instrument.
         │
         ▼
-app/features/return_5m.py (Return5m implements the Feature contract)
-   return_5m = (current_close / close_5_minutes_ago) - 1, as an exact
-   Decimal. "current_close" is always the frame member's own selected m1
+app/features/return_5m.py and return_1h.py (both implement Feature)
+   return_5m = (current_close / close_5_minutes_ago) - 1
+   return_1h = (current_close / close_60_minutes_ago) - 1
+   Both use Decimal. "current_close" is the frame member's own selected m1
    candle (never a fresh market_candles query — no look-ahead is even
-   possible by construction). "5 minutes ago" is member.m1.open_time minus
-   exactly 5 minutes, resolved via one batched exact-open_time lookup
+   possible by construction). The historical anchor is member.m1.open_time minus
+   exactly 5 or 60 minutes, resolved via one batched exact-open_time lookup
    (CandleRepository.fetch_exact_open_time) per distinct anchor timestamp
-   across the whole frame — one query for the common case where every
-   member shares the same anchor, never one query per instrument. Missing
+   across the whole frame for each feature — one query when members share
+   the same anchor, never an individual query loop. Missing
    that exact candle (or a non-positive historical close) yields None —
    "unavailable" — never a substituted, zeroed, or nearest-candle value.
 ```
+
+The hourly return uses canonical 1m candles, not the frame's closed hourly
+OHLC reference. Both measurements are decimal fractions, not desirability or
+trade signals. The API and Sniffer table expose both; older stored analyses
+without `return_1h` expose it as null/N/A. There is no historical re-analysis.
 
 **Result model and persistence.** `SnifferFrameResult`/
 `SnifferInstrumentResult` (`app/domain/sniffer.py`) are the typed in-memory

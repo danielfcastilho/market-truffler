@@ -115,6 +115,8 @@ export interface SnifferInstrument {
    * genuinely had no exact 5-minutes-ago candle to compare against —
    * never a substituted or zeroed value. */
   return_5m: string | null;
+  /** Exact rolling 60-minute return using canonical 1m closes. */
+  return_1h: string | null;
 }
 
 export interface SnifferFrame {

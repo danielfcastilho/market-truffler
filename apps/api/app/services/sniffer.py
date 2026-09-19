@@ -1,6 +1,6 @@
 """🐽 SNIFFER: turns a finalized Market Frame into feature measurements.
 
-Pure orchestration — the return_5m formula lives in `app.features`, not
+Pure orchestration — the feature formulas live in `app.features`, not
 here, and this module knows nothing about HTTP, the frontend, Vitals, or
 application startup. It has no lifecycle of its own (no background loop):
 it is invoked reactively, once per finalized frame, via the optional hook

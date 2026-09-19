@@ -73,7 +73,9 @@ async def _seed_analyzed_frame(db_session) -> None:
             analyzed_at=ANALYZED_AT,
             instruments=[
                 SnifferInstrumentResult(
-                    instrument_id=eth.id, symbol="ETHUSDT", features={"return_5m": Decimal("0.05")}
+                    instrument_id=eth.id,
+                    symbol="ETHUSDT",
+                    features={"return_5m": Decimal("0.05"), "return_1h": Decimal("0.03")},
                 ),
                 SnifferInstrumentResult(
                     instrument_id=btc.id, symbol="BTCUSDT", features={"return_5m": None}
@@ -175,8 +177,10 @@ async def test_latest_represents_unavailable_as_null_never_zero_or_a_string(
     body = response.json()
     btc = next(i for i in body["instruments"] if i["symbol"] == "BTCUSDT")
     assert btc["return_5m"] is None
+    assert btc["return_1h"] is None  # older metric-only analysis remains readable
     eth = next(i for i in body["instruments"] if i["symbol"] == "ETHUSDT")
     assert Decimal(eth["return_5m"]) == Decimal("0.05")
+    assert Decimal(eth["return_1h"]) == Decimal("0.03")
 
 
 async def test_latest_never_writes_to_the_database(client, test_user, db_session):
@@ -186,7 +190,7 @@ async def test_latest_never_writes_to_the_database(client, test_user, db_session
     await client.get("/api/sniffer/latest")
 
     rows = (await db_session.execute(select(SnifferResult))).scalars().all()
-    assert len(rows) == 2  # unchanged from what _seed_analyzed_frame wrote
+    assert len(rows) == 3  # unchanged: two ETH metrics plus the legacy BTC metric
 
 
 # -- /api/sniffer/frames/{frame_time} ----------------------------------------------------

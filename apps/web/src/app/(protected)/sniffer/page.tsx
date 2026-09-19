@@ -16,8 +16,8 @@ export default async function SnifferPage() {
       <div className="mb-8 space-y-2">
         <h1 className="text-2xl font-semibold tracking-tight">🐽 Sniffer</h1>
         <p className="text-muted-foreground">
-          return_5m — the 5-minute close-to-close return of each instrument in the most recently
-          analyzed Market Frame. A factual measurement, not a ranking: sorting here only reorders
+          return_5m and return_1h — exact rolling 5-minute and 60-minute returns from canonical
+          1-minute closes in the most recently analyzed Market Frame. Factual measurements, not a ranking: sorting here only reorders
           the page for you, it never signals a recommendation.
         </p>
       </div>

@@ -1,7 +1,7 @@
 # Market Truffler 🐷🍄
 
 A crypto trading system, currently at its **foundation milestone** plus a
-real MARKET capability and Sniffer's first real measurement: a clean,
+real MARKET capability and Sniffer's factual measurements: a clean,
 containerized, runnable application shell — authentication, a database, a
 typed API, a navigable frontend — that discovers its Bybit market universe
 over REST, continuously watches it over Bybit's public WebSocket, durably
@@ -9,8 +9,8 @@ remembers it (closed 1-minute candles persisted, backfilled up to a rolling
 history horizon, self-repaired after gaps or outages, locally aggregated
 into 5m/15m/1h), and every closed UTC minute synchronizes it into one
 Market Frame — a single, temporally-legal cross-sectional snapshot of the
-whole market. Sniffer now reacts to each finalized frame and computes one
-reference measurement, `return_5m`, per instrument, persisting it for the
+whole market. Sniffer now reacts to each finalized frame and computes two
+factual measurements, `return_5m` and `return_1h`, per instrument, persisting them for the
 `/api/sniffer/latest` API and the Sniffer/Vitals pages. No ranking, no
 scoring, no Truffles, no trading logic yet. See
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for where this is headed.
@@ -68,10 +68,11 @@ background.
 
 On top of that, a fourth background capability — **Sniffer**
 (`apps/api/app/services/sniffer.py`) — reacts to each finalized Market
-Frame (a hook from `FrameSynchronizer`, not polling) and computes one
-reference measurement per instrument in that frame: `return_5m`, the exact
-5-minutes-ago-to-now close-to-close return, using only the frame's own
-selected candles (never a fresh query, never look-ahead) and reporting
+Frame (a hook from `FrameSynchronizer`, not polling) and computes two
+factual measurements per instrument: `return_5m` (exact rolling 5-minute
+return) and `return_1h` (exact rolling 60-minute return). Both use the frame
+member's canonical 1m close and an exact historical 1m anchor at its open
+time minus the lookback, never the frame's hourly candle and reporting
 `None`/unavailable rather than substituting or approximating whenever the
 exact historical candle doesn't exist. Results persist to a compact,
 idempotent `sniffer_results` table and are exposed read-only via
@@ -92,7 +93,7 @@ break MARKET's own background capabilities.
 What's **not** real: higher-timeframe candles fetched from the exchange
 directly (they're always derived locally from 1m), historical frame
 backfill/reconstruction (frames are only ever produced live, going
-forward), any metric besides `return_5m`, ranking, scoring, Truffles, or
+forward), any metric besides `return_5m` and `return_1h`, ranking, scoring, Truffles, or
 trading logic. Warhog and OINK CORP are still reachable in the UI only as a
 deliberate "in progress" page. Vitals (system health)'s SYSTEM section is
 real, every row in MARKET is real ("Bybit connectivity"/"Symbols tracked"

@@ -17,10 +17,10 @@ class SnifferResult(Base):
 
     Identity is the composite primary key `(frame_time, instrument_id,
     metric)` — the same "one row per fact" shape the prompt itself suggests,
-    chosen deliberately over one column per feature: today there is exactly
-    one feature (`return_5m`), but this table must not need an
+    chosen deliberately over one column per feature: today there are
+    two features (`return_5m`, `return_1h`), but this table must not need an
     `ALTER TABLE ADD COLUMN` (or any Sniffer/orchestration change) the day a
-    second one is added — only a new row per (frame, instrument) with a new
+    next one is added — only a new row per (frame, instrument) with a new
     `metric` value. The PK also doubles as the idempotency/uniqueness
     enforcement: re-analyzing the same frame is `ON CONFLICT DO UPDATE`, not
     a duplicate row (M5 section 15).

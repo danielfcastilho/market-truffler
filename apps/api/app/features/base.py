@@ -4,7 +4,7 @@ Deliberately small: one named calculator, one async method taking a
 finalized `MarketFrame` and a `CandleRepository` for any historical lookups
 it needs, returning a value per instrument (or `None` — unavailable).
 
-No registry, no dynamic discovery, no dependency graph. Adding metric #2
+No registry, no dynamic discovery, no dependency graph. Adding a metric
 means writing one more file like `return_5m.py` and listing it in
 `app.features.engine.FEATURES` — nothing else changes.
 """

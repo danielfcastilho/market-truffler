@@ -2,18 +2,18 @@
 the per-instrument results.
 
 `FEATURES` is a plain, explicit tuple — not a registry, not dynamically
-discovered. Adding metric #2 means writing `app/features/volatility.py` (or
-similar) and adding one entry here.
+discovered. Each feature is listed explicitly below.
 """
 
 from datetime import datetime
 
 from app.domain.frame import MarketFrame
 from app.domain.sniffer import SnifferFrameResult, SnifferInstrumentResult
+from app.features.return_1h import Return1h
 from app.features.return_5m import Return5m
 from app.repositories.candle_repository import CandleRepository
 
-FEATURES = (Return5m(),)
+FEATURES = (Return5m(), Return1h())
 
 
 class FeatureEngine:

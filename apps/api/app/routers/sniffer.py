@@ -22,6 +22,7 @@ def _to_response(result: SnifferFrameResult) -> SnifferFrameResponse:
                 instrument_id=i.instrument_id,
                 symbol=i.symbol,
                 return_5m=i.features.get("return_5m"),
+                return_1h=i.features.get("return_1h"),
             )
             for i in sorted(result.instruments, key=lambda i: i.symbol)
         ],
@@ -49,7 +50,7 @@ async def sniffer_status(db: DbSessionDep, current_user: CurrentUserDep) -> Snif
 async def latest_sniffer_result(
     db: DbSessionDep, current_user: CurrentUserDep
 ) -> SnifferFrameResponse:
-    """Sniffer's most recently analyzed frame — return_5m per instrument.
+    """Sniffer's most recently analyzed frame — rolling 5-minute and 60-minute returns.
 
     Ordered by symbol, a neutral deterministic ordering: this is a factual
     measurement, not a ranking, and this endpoint never sorts by return_5m

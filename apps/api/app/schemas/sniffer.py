@@ -13,6 +13,9 @@ class SnifferInstrument(BaseModel):
     # this instrument for return_5m and it was genuinely unavailable (e.g.
     # no exact T-5m candle), never a substituted/approximated value.
     return_5m: Decimal | None
+    # Exact canonical 1m anchor at member.m1.open_time - 60 minutes.
+    # Also null for older analyses that predate this feature.
+    return_1h: Decimal | None
 
 
 class SnifferFrameResponse(BaseModel):

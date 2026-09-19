@@ -4,13 +4,13 @@ import { useMemo, useState } from "react";
 import type { SnifferInstrument } from "@/lib/server-api";
 import { cn } from "@/lib/utils";
 
-type SortColumn = "symbol" | "return_5m";
+type SortColumn = "symbol" | "return_5m" | "return_1h";
 type SortDirection = "asc" | "desc";
 
 /**
  * Purely client-side, viewer-local sorting. This is not a ranking feature:
  * the default is alphabetical by symbol (neutral, implies nothing about
- * desirability), and toggling the return_5m column only reorders what's
+ * desirability), and toggling either return column only reorders what's
  * already on the page for the person looking at it — it never calls the
  * backend, which has no ranking/sort concept of its own.
  */
@@ -25,12 +25,12 @@ export function SnifferTable({ instruments }: { instruments: SnifferInstrument[]
       if (sortColumn === "symbol") {
         comparison = a.symbol.localeCompare(b.symbol);
       } else {
-        const aValue = a.return_5m != null ? Number(a.return_5m) : null;
-        const bValue = b.return_5m != null ? Number(b.return_5m) : null;
-        if (aValue == null && bValue == null) comparison = 0;
-        else if (aValue == null) comparison = 1; // unavailable sorts last, either direction
-        else if (bValue == null) comparison = -1;
-        else comparison = aValue - bValue;
+        const aValue = a[sortColumn] != null ? Number(a[sortColumn]) : null;
+        const bValue = b[sortColumn] != null ? Number(b[sortColumn]) : null;
+        if (aValue == null && bValue == null) return 0;
+        if (aValue == null) return 1; // unavailable stays last in either direction
+        if (bValue == null) return -1;
+        comparison = aValue - bValue;
       }
       return sortDirection === "asc" ? comparison : -comparison;
     });
@@ -63,6 +63,13 @@ export function SnifferTable({ instruments }: { instruments: SnifferInstrument[]
             onClick={() => toggleSort("return_5m")}
             align="right"
           />
+          <SortableHeader
+            label="return_1h"
+            active={sortColumn === "return_1h"}
+            direction={sortDirection}
+            onClick={() => toggleSort("return_1h")}
+            align="right"
+          />
         </tr>
       </thead>
       <tbody className="divide-y divide-border/60">
@@ -71,6 +78,9 @@ export function SnifferTable({ instruments }: { instruments: SnifferInstrument[]
             <td className="py-2 pr-4 font-medium">{instrument.symbol}</td>
             <td className={cn("py-2 text-right", returnClass(instrument.return_5m))}>
               {formatReturn(instrument.return_5m)}
+            </td>
+            <td className={cn("py-2 text-right", returnClass(instrument.return_1h))}>
+              {formatReturn(instrument.return_1h)}
             </td>
           </tr>
         ))}

@@ -98,6 +98,7 @@ async def _finalize_complete_frame(
 async def test_analyze_frame_persists_a_result_for_a_complete_frame(session_factory):
     hour_start = FRAME_TIME - timedelta(hours=1)
     btc = await _add_instrument(session_factory, "BTCUSDT")
+    await _seed_full_hour(session_factory, btc, hour_start - timedelta(hours=1))
     await _seed_full_hour(session_factory, btc, hour_start)
     await _finalize_complete_frame(session_factory, btc, FRAME_TIME)
 
@@ -109,6 +110,7 @@ async def test_analyze_frame_persists_a_result_for_a_complete_frame(session_fact
     assert result is not None
     assert len(result.instruments) == 1
     assert result.instruments[0].features["return_5m"] is not None
+    assert result.instruments[0].features["return_1h"] == Decimal("0")
 
 
 async def test_analyze_frame_only_analyzes_actual_frame_members_not_all_active_instruments(
@@ -170,7 +172,8 @@ async def test_analyze_frame_is_idempotent_on_retry(session_factory):
 
     async with session_factory() as session:
         rows = (await session.execute(select(SnifferResult))).scalars().all()
-    assert len(rows) == 1  # one (instrument, metric) row, not duplicated
+    assert len(rows) == 2  # one row per metric, not duplicated by retry
+    assert {row.metric for row in rows} == {"return_5m", "return_1h"}
 
 
 async def test_on_frame_finalized_swallows_analysis_failures(session_factory, monkeypatch):
