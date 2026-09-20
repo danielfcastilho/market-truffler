@@ -112,6 +112,10 @@ async def _has_candle_references(session: AsyncSession, start: datetime, end: da
         MarketFrameMember.open_time_5m,
         MarketFrameMember.open_time_15m,
         MarketFrameMember.open_time_1h,
+        # Nullable (see MarketFrameMember.h4) — a NULL comparison is simply
+        # never true in the OR below, which is exactly correct: a member
+        # with no 4h reference makes no 4h-based retention claim.
+        MarketFrameMember.open_time_4h,
     )
     return bool(
         await session.scalar(

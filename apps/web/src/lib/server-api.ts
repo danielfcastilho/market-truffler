@@ -117,6 +117,14 @@ export interface SnifferInstrument {
   return_5m: string | null;
   /** Exact rolling 60-minute return using canonical 1m closes. */
   return_1h: string | null;
+  /** Cutler's RSI(14) (see apps/api/app/features/rsi.py) over canonical
+   * 5m/15m/1h/4h candles, anchored to this frame's already-selected
+   * candle for that timeframe. A plain number (e.g. "63.42"), never a
+   * percentage. Null when 15 consecutive closes weren't available. */
+  rsi_14_5m: string | null;
+  rsi_14_15m: string | null;
+  rsi_14_1h: string | null;
+  rsi_14_4h: string | null;
 }
 
 export interface SnifferFrame {

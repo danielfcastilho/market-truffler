@@ -79,10 +79,11 @@ Sniffer, Warhog, OINK CORP), but until each is real, every row in those
 sections is an honest "N/A," not a simulated value. Unlike the other three
 areas, Vitals is partially implemented today — see below.
 
-Sniffer's factual measurements — `return_5m` and `return_1h`, two metrics per
-instrument per Market Frame — are implemented (see "Sniffer measures" below).
-Beyond that, Warhog and OINK CORP remain fully unimplemented, and Sniffer
-itself has no other features, Scent Notes, desirability functions, weights,
+Sniffer's factual measurements — `return_5m`, `return_1h`, `rsi_14_5m`,
+`rsi_14_15m`, `rsi_14_1h`, `rsi_14_4h`, six metrics per instrument per
+Market Frame — are implemented (see "Sniffer measures" below). Beyond
+that, Warhog and OINK CORP remain fully unimplemented, and Sniffer itself
+has no other features, Scent Notes, desirability functions, weights,
 Entry Fitness, or rankings yet. No Martin Gale parameters, entry/exit/hedge
 rules, or live execution architecture have been decided either. Those are
 later engineering/research milestones, and this codebase makes no
@@ -175,7 +176,7 @@ or an intentional correction if the exchange-backed values differ.
 
 `ClosedCandle`s are now durably persisted, backfilled up to a rolling
 horizon, self-repairing after gaps or outages, and locally aggregated into
-5m/15m/1h — all as a continuously-running background capability, never
+5m/15m/1h/4h — all as a continuously-running background capability, never
 triggered by a request. The horizon itself is one setting,
 `Settings.market_history_retention_days` — this milestone's original
 design target and the value used throughout the rest of this section's
@@ -191,7 +192,7 @@ app/models/instrument.py, app/models/candle.py
    model's docstring for exact semantics).
    Candle: composite PK (instrument_id, timeframe, open_time), a native
    PostgreSQL table partitioned by RANGE(open_time) in monthly partitions
-   — the same table and partitioning serve all four timeframes.
+   — the same table and partitioning serve all five timeframes.
         │
         ▼
 app/services/partition_manager.py
@@ -223,11 +224,14 @@ app/services/history_reconciler.py (HistoryReconciler)
         ▼
 app/services/candle_ingestion.py, app/services/candle_aggregation.py
    The shared canonical-1m boundary both the live sink and the reconciler
-   funnel through: upsert the 1m batch, then re-derive any 5m/15m/1h window
-   the batch touches — but only ones where every constituent 1m candle
-   actually exists in storage. An incomplete window is silently left alone
-   and completes itself whenever this is next called over a range that
-   includes it (a later recovery, or a correction).
+   funnel through: upsert the 1m batch, then re-derive any 5m/15m/1h/4h
+   window the batch touches — but only ones where every constituent 1m
+   candle actually exists in storage. An incomplete window is silently
+   left alone and completes itself whenever this is next called over a
+   range that includes it (a later recovery, or a correction). 4h is
+   derived the same one-level-from-1m way as every other timeframe here
+   (240 constituent 1m candles, not chained through 1h) — no special-casing
+   per timeframe beyond one more entry in `_DERIVED_TIMEFRAMES`.
 ```
 
 "Historical coverage" (`app/services/historical_coverage.py`) is a pure,
@@ -293,19 +297,22 @@ app/repositories/candle_repository.py
    instrument_id ORDER BY open_time DESC) window function — works
    identically on SQLite in tests and PostgreSQL in production) resolves
    the whole active universe's latest *legal* candle for one timeframe.
-   Called once per configured timeframe (four total) — never once per
-   instrument. `max_open_time` is `frame_time - duration`, which is exactly
-   equivalent to "close_time <= frame_time" given how M3 already defines
-   close_time, without needing an index on close_time at all.
+   Called once per configured timeframe (five total: 1m/5m/15m/1h/4h) —
+   never once per instrument. `max_open_time` is `frame_time - duration`,
+   which is exactly equivalent to "close_time <= frame_time" given how M3
+   already defines close_time, without needing an index on close_time at
+   all.
         │
         ▼
 app/repositories/frame_repository.py (FrameRepository)
-   An instrument is a frame "member" only if all four configured
-   timeframes resolved — missing even one means no member row, never a
-   fabricated placeholder. Batch-inserts members and flips
-   BUILDING -> COMPLETE (available == expected) or PARTIAL (available <
-   expected), guarded so a second finalize attempt (a duplicate trigger,
-   or late-arriving recovered data) can never rewrite an already-terminal
+   An instrument is a frame "member" only if all four *gating* timeframes
+   (1m/5m/15m/1h) resolved — missing even one means no member row, never a
+   fabricated placeholder. 4h is resolved the same no-look-ahead way but
+   does not gate membership (see "4h: a fifth timeframe, deliberately
+   non-gating" below). Batch-inserts members and flips BUILDING ->
+   COMPLETE (available == expected) or PARTIAL (available < expected),
+   guarded so a second finalize attempt (a duplicate trigger, or
+   late-arriving recovered data) can never rewrite an already-terminal
    frame — a finalized frame is an immutable statement of what MARKET
    actually had available at T.
 ```
@@ -313,21 +320,38 @@ app/repositories/frame_repository.py (FrameRepository)
 **Frame time.** `frame_time = M` means "the decision point immediately
 after the M-1..M minute closed." A frame may only reference candles with
 `close_time <= frame_time` — e.g. at `frame_time=14:37`, the legal 1h
-candle is `13:00-13:59` (`14:00-14:59` is still forming); verified directly
-against real data in this milestone's live smoke test.
+candle is `13:00-13:59` (`14:00-14:59` is still forming, so it can never be
+selected); the legal 4h candle is `08:00-11:59` (`12:00-15:59` is still
+forming). Verified directly against real data in this milestone's live
+smoke test, and by dedicated tests in `tests/test_frame_4h.py` for the 4h
+case specifically.
 
 **Schema.** `market_frames` (frame_time as PK — no surrogate id; small,
 ~525,600 rows/year, not partitioned) and `market_frame_members`
 (`(frame_time, instrument_id)` composite PK, partitioned by
 `RANGE(frame_time)` exactly like `market_candles` — same
 `app.services.partition_manager`, generalized to take a `table` parameter
-rather than duplicated). A member stores only four `open_time` datetimes
-(the identifying half of `market_candles`' own
-`(instrument_id, timeframe, open_time)` key, `timeframe` implied by the
-column) — never duplicated OHLCV. The dominant "give me frame T" read
-joins back to `market_candles` four times (one per timeframe); "give me the
-latest finalized frame" is the same, keyed off `MAX(frame_time) WHERE
-status != 'building'`.
+rather than duplicated). A member stores five `open_time` datetimes (the
+identifying half of `market_candles`' own `(instrument_id, timeframe,
+open_time)` key, `timeframe` implied by the column) — never duplicated
+OHLCV; `open_time_4h` is nullable (see below), the other four are not. The
+dominant "give me frame T" read joins back to `market_candles` five times
+(one per timeframe, the 4h join is a LEFT JOIN); "give me the latest
+finalized frame" is the same, keyed off `MAX(frame_time) WHERE status !=
+'building'`.
+
+**4h: a fifth timeframe, deliberately non-gating.** `MarketFrameMember.h4`
+(`app/domain/frame.py`) is `None` — never fabricated — for two honest
+reasons: a member finalized before 4h tracking existed (the
+`open_time_4h` column, added by migration `b53245e910f5`, is nullable
+specifically so historical rows need no invented backfill value), or an
+instrument whose first 4h bucket genuinely hasn't closed yet (4h buckets
+take up to 4x longer to first become available than 1h). Gating
+COMPLETE/PARTIAL on 4h too would make newly-listed instruments PARTIAL for
+up to 4 hours for a reason unrelated to their actual live-data health, so
+4h participates in frame construction (resolved, stored, joined back) but
+is not part of the completeness contract; only `rsi_14_4h` (see "Sniffer
+measures" below) depends on it being present, and is `None` when it isn't.
 
 **Restart.** A process that crashes between creating a BUILDING row and
 finalizing it leaves that one row inspectable, never silently corrupt. On
@@ -341,12 +365,13 @@ Vitals reads two new values — "Latest market frame" and "Frame
 completeness" — purely from `FrameRepository.get_latest_finalized()`;
 opening Vitals never creates, advances, or otherwise drives a frame.
 
-### Sniffer measures: `return_5m` and `return_1h`
+### Sniffer measures: `return_5m`/`return_1h` and `rsi_14_{5m,15m,1h,4h}`
 
-Sniffer's first capability is deliberately narrow: consume one finalized
-Market Frame, compute two factual metrics per instrument member,
-and persist them. Nothing here ranks, scores, or interprets — it only
-measures:
+Sniffer's capability is deliberately narrow: consume one finalized Market
+Frame, compute factual metrics per instrument member, and persist them.
+Nothing here ranks, scores, or interprets — it only measures. Today's six
+Features: `return_5m`, `return_1h`, `rsi_14_5m`, `rsi_14_15m`, `rsi_14_1h`,
+`rsi_14_4h`.
 
 ```
 app/services/frame_synchronizer.py (FrameSynchronizer._finalize_frame)
@@ -367,10 +392,11 @@ app/services/sniffer.py (Sniffer.on_frame_finalized -> analyze_frame)
         │
         ▼
 app/features/engine.py (FeatureEngine.run)
-   Orchestration only, no formulas. Iterates the fixed FEATURES tuple
-   (Return5m and Return1h) and asks each Feature to calculate itself
-   cross-sectionally over every member of the frame at once, assembling
-   a SnifferFrameResult keyed by instrument.
+   Orchestration only, no formulas. Iterates the fixed FEATURES tuple —
+   Return5m, Return1h, and one RsiFeature instance per timeframe (5m, 15m,
+   1h, 4h) — and asks each Feature to calculate itself cross-sectionally
+   over every member of the frame at once, assembling a SnifferFrameResult
+   keyed by instrument.
         │
         ▼
 app/features/return_5m.py and return_1h.py (both implement Feature)
@@ -385,12 +411,74 @@ app/features/return_5m.py and return_1h.py (both implement Feature)
    the same anchor, never an individual query loop. Missing
    that exact candle (or a non-positive historical close) yields None —
    "unavailable" — never a substituted, zeroed, or nearest-candle value.
+        │
+        ▼
+app/features/rsi.py (RsiFeature, one instance per timeframe)
+   rsi_14_{5m,15m,1h,4h} — see "RSI features" below.
 ```
 
 The hourly return uses canonical 1m candles, not the frame's closed hourly
-OHLC reference. Both measurements are decimal fractions, not desirability or
-trade signals. The API and Sniffer table expose both; older stored analyses
-without `return_1h` expose it as null/N/A. There is no historical re-analysis.
+OHLC reference. All six measurements are factual — decimal fractions or a
+plain 0-100 index, never desirability or trade signals. The API and
+Sniffer Features view expose all of them; older stored analyses without a
+given metric expose it as null/N/A. There is no historical re-analysis.
+
+**RSI features (`rsi_14_5m`/`rsi_14_15m`/`rsi_14_1h`/`rsi_14_4h`).**
+Standard RSI(14), one per canonical timeframe, computed from the
+materialized MARKET candles of that timeframe (never reconstructed inside
+Sniffer) — implemented once in `app/features/rsi.py` (`compute_rsi_14` +
+one reusable `RsiFeature` class instantiated four times in
+`app.features.engine.FEATURES`, not four duplicated algorithms).
+
+*Convention: Cutler's RSI*, not Wilder's original recursive smoothing.
+Average gain/loss is a plain, unweighted mean over the most recent 14
+price changes (15 consecutive closes):
+
+```
+change_i = close_i - close_(i-1), for the 14 most recent closes
+avg_gain = mean(change_i for change_i > 0, else 0)   over 14 changes
+avg_loss = mean(-change_i for change_i < 0, else 0)  over 14 changes
+RS  = avg_gain / avg_loss
+RSI = 100 - 100 / (1 + RS)
+```
+
+Edge cases: `avg_loss == 0 and avg_gain > 0` -> RSI = 100 (no losses in the
+window at all); `avg_gain == 0 and avg_loss == 0` -> RSI = 50 (every close
+in the window was flat — genuinely neutral, not fabricated as either
+extreme). Wilder's convention was deliberately not used: its recursive
+smoothing carries every prior period's average forward indefinitely, so
+its value depends on wherever smoothing happened to start — there is no
+principled "correct" starting point for a value computed fresh per frame.
+Cutler's variant is fully determined by exactly the last 15 consecutive
+closes, giving RSI the same determinism guarantee `return_5m`/`return_1h`
+already have.
+
+*History requirement.* Exactly 15 consecutive closed candles of the named
+timeframe, each exactly one timeframe-duration apart, ending exactly at
+the frame's already-selected anchor candle for that timeframe
+(`member.m5`/`m15`/`h1`/`h4`). Fewer than 15, any gap, or a missing anchor
+(`h4` not yet available for that instrument/frame — see "4h: a fifth
+timeframe, deliberately non-gating" above) all yield `None` — never a
+shortened period, an interpolated value, or the nearest available candle
+substituted in. `CandleRepository.fetch_latest_n_closed_per_instrument`
+(the batched, set-oriented "N most recent legal candles per instrument"
+query RSI needs, generalizing `fetch_latest_closed_per_instrument`'s
+`rn == 1` to `rn <= n`) fetches the candidate window; `RsiFeature` then
+verifies the fetched open_times are *exactly* the expected 15 consecutive
+timestamps before ever computing anything — a superficially-sufficient
+count with a gap in the middle is rejected just as surely as too few rows.
+
+*No look-ahead.* Each timeframe's 15 closes are anchored to the exact
+`open_time` Market Frame T already selected for that timeframe — never a
+fresh "latest candle" query — so RSI inherits the frame's no-look-ahead
+guarantee for free, exactly like `return_5m`/`return_1h`. A candle that
+arrives later than a frame's own anchor (a newer close, or a whole newer
+4h bucket) can never change that frame's already-computed RSI.
+
+*Batching.* Members are grouped by identical anchor `open_time` before
+querying (the common case — every member sharing the same frame-relative
+anchor — collapses to one query per timeframe, never one per instrument),
+mirroring `return_5m`/`return_1h`'s existing batching pattern exactly.
 
 **Result model and persistence.** `SnifferFrameResult`/
 `SnifferInstrumentResult` (`app/domain/sniffer.py`) are the typed in-memory
@@ -440,8 +528,9 @@ is organized around one pipeline that both the UI and this document use
 consistently:
 
 - **Features** — factual, per-instrument measurements Sniffer has actually
-  computed. Today: `return_5m`, `return_1h`. Real now, and the feature
-  matrix (`SnifferFeatures`/`SnifferTable`) is a secondary
+  computed. Today: `return_5m`, `return_1h`, `rsi_14_5m`, `rsi_14_15m`,
+  `rsi_14_1h`, `rsi_14_4h` (see "Sniffer measures" above). Real now, and
+  the feature matrix (`SnifferFeatures`/`SnifferTable`) is a secondary
   inspection/research surface — it answers "what does Sniffer currently
   know about each coin?", nothing more.
 - **Scent Notes** — future higher-level dimensions interpreted from
@@ -541,8 +630,8 @@ term "Scent Notes" for this same future interpreted-dimension layer.
   per-frame feature analysis) — all four run for the life of the process.
 - **`postgres`**: `users`, `instruments` (the instrument dimension),
   `market_candles` (a native `RANGE`-partitioned table on `open_time`,
-  monthly partitions, holding all four timeframes), `market_frames` (one
-  row per synchronized minute), `market_frame_members`
+  monthly partitions, holding all five timeframes: 1m/5m/15m/1h/4h),
+  `market_frames` (one row per synchronized minute), `market_frame_members`
   (`RANGE`-partitioned on `frame_time`, same monthly scheme), and
   `sniffer_results` (`RANGE`-partitioned on `frame_time`, same monthly
   scheme, one row per `(frame_time, instrument_id, metric)`). No ranking or

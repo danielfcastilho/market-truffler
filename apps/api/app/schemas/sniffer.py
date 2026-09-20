@@ -16,6 +16,17 @@ class SnifferInstrument(BaseModel):
     # Exact canonical 1m anchor at member.m1.open_time - 60 minutes.
     # Also null for older analyses that predate this feature.
     return_1h: Decimal | None
+    # rsi_14_{timeframe} — Cutler's RSI(14) (see app/features/rsi.py) over
+    # canonical 5m/15m/1h/4h candles, anchored to this frame's
+    # already-selected candle for that timeframe. A plain number (e.g.
+    # 63.42), never a percentage. None when 15 consecutive closes aren't
+    # available for that timeframe at this frame (short history, a gap, or
+    # — for rsi_14_4h specifically — this instrument's first 4h bucket
+    # hasn't closed yet).
+    rsi_14_5m: Decimal | None
+    rsi_14_15m: Decimal | None
+    rsi_14_1h: Decimal | None
+    rsi_14_4h: Decimal | None
 
 
 class SnifferFrameResponse(BaseModel):

@@ -26,14 +26,17 @@ LIFECYCLE (per minute)
        crash-safe, inspectable state even mid-build (M4 section 11/19).
     4. Wait `grace_period_seconds` for normal live delivery to settle
        (M4 section 12) — does not finalize on the first symbol to arrive.
-    5. For each of the four timeframes, one set-oriented query resolves the
-       latest legal candle per instrument across the *entire* snapshotted
-       universe (`CandleRepository.fetch_latest_closed_per_instrument`) —
-       never a per-instrument loop (M4 section 25).
-    6. An instrument is "available" only if all four timeframes resolved;
-       its four `open_time`s become one member row. Missing even one
-       timeframe means no member row — never a partial/fabricated one (M4
-       section 8/13/14).
+    5. For each configured timeframe — the four membership-gating ones
+       (1m/5m/15m/1h) plus 4h — one set-oriented query resolves the latest
+       legal candle per instrument across the *entire* snapshotted universe
+       (`CandleRepository.fetch_latest_closed_per_instrument`) — never a
+       per-instrument loop (M4 section 25).
+    6. An instrument is "available" only if all four gating timeframes
+       resolved; its `open_time`s become one member row, plus 4h's
+       `open_time` when it happens to be available too (never gating —
+       see `app.domain.frame.MarketFrameMember.h4`). Missing even one
+       gating timeframe means no member row — never a partial/fabricated
+       one (M4 section 8/13/14).
     7. `FrameRepository.finalize` batch-inserts members and flips the frame
        to COMPLETE (available == expected) or PARTIAL (available <
        expected) — truthfully, never faked (M4 section 13/14).
@@ -57,10 +60,18 @@ from app.repositories.instrument_repository import InstrumentRepository
 
 logger = logging.getLogger(__name__)
 
-# (timeframe label, duration in minutes) — the four configured frame
-# timeframes. Fixed, not configurable: this is MARKET's contract with
-# future Sniffer, not an operational tuning knob.
-TIMEFRAMES: tuple[tuple[str, int], ...] = (("1m", 1), ("5m", 5), ("15m", 15), ("1h", 60))
+# (timeframe label, duration in minutes) — the configured frame timeframes.
+# Fixed, not configurable: this is MARKET's contract with future Sniffer,
+# not an operational tuning knob. 1m/5m/15m/1h gate member availability;
+# 4h is resolved the same way but does not gate it (see
+# `app.domain.frame.MarketFrameMember.h4`).
+TIMEFRAMES: tuple[tuple[str, int], ...] = (
+    ("1m", 1),
+    ("5m", 5),
+    ("15m", 15),
+    ("1h", 60),
+    ("4h", 240),
+)
 
 SessionFactory = Callable[[], AsyncSession]
 OnFrameFinalized = Callable[[datetime], Awaitable[None]]
@@ -218,7 +229,8 @@ class FrameSynchronizer:
                 m15 = per_timeframe["15m"].get(instrument_id)
                 h1 = per_timeframe["1h"].get(instrument_id)
                 if m1 is None or m5 is None or m15 is None or h1 is None:
-                    continue  # missing even one timeframe — not available, no member row
+                    continue  # missing even one gating timeframe — not available, no member row
+                h4 = per_timeframe["4h"].get(instrument_id)
                 member_rows.append(
                     {
                         "frame_time": frame_time,
@@ -227,6 +239,10 @@ class FrameSynchronizer:
                         "open_time_5m": m5.open_time,
                         "open_time_15m": m15.open_time,
                         "open_time_1h": h1.open_time,
+                        # Not gating (see MarketFrameMember.h4) — legitimately
+                        # None when this instrument's first 4h bucket hasn't
+                        # closed yet, never fabricated.
+                        "open_time_4h": h4.open_time if h4 is not None else None,
                     }
                 )
 

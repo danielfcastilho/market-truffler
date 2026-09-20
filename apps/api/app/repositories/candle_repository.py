@@ -125,6 +125,51 @@ class CandleRepository:
         result = await self._session.execute(latest)
         return {candle.instrument_id: candle for candle in result.scalars()}
 
+    async def fetch_latest_n_closed_per_instrument(
+        self, timeframe: str, instrument_ids: Sequence[int], max_open_time: datetime, n: int
+    ) -> dict[int, list[Candle]]:
+        """The `n` most recent legally-closed candles per instrument, for one
+        timeframe, as of `max_open_time` (inclusive) — one set-oriented query
+        for the whole given instrument set, never a per-instrument loop (used
+        by `app.features.rsi` for RSI's fixed-length lookback window).
+
+        Returns each instrument's candles ordered oldest-to-newest. An
+        instrument with fewer than `n` legally-closed candles as of
+        `max_open_time` simply gets a shorter (or empty) list — callers must
+        treat that as insufficient history, never pad or substitute.
+
+        Same `ROW_NUMBER() OVER (PARTITION BY instrument_id ORDER BY
+        open_time DESC)` technique as `fetch_latest_closed_per_instrument`,
+        generalized from `rn == 1` to `rn <= n`.
+        """
+        if not instrument_ids or n <= 0:
+            return {}
+
+        row_number = (
+            func.row_number()
+            .over(partition_by=Candle.instrument_id, order_by=Candle.open_time.desc())
+            .label("rn")
+        )
+        ranked = (
+            select(Candle, row_number)
+            .where(
+                Candle.timeframe == timeframe,
+                Candle.instrument_id.in_(instrument_ids),
+                Candle.open_time <= max_open_time,
+            )
+            .subquery()
+        )
+        ranked_candle = aliased(Candle, ranked)
+        latest_n = select(ranked_candle).where(ranked.c.rn <= n)
+
+        result = await self._session.execute(latest_n)
+        grouped: dict[int, list[Candle]] = {}
+        for candle in result.scalars():
+            grouped.setdefault(candle.instrument_id, []).append(candle)
+        for candles in grouped.values():
+            candles.sort(key=lambda c: c.open_time)
+        return grouped
+
     async def fetch_exact_open_time(
         self, timeframe: str, instrument_ids: Sequence[int], open_time: datetime
     ) -> dict[int, Candle]:

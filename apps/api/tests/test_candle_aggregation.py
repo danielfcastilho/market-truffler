@@ -185,6 +185,115 @@ async def test_recovered_missing_constituent_completes_the_aggregate(db_session)
     assert len(await h.rows("5m", start, end)) == 1
 
 
+async def test_4h_aggregation_derives_correct_ohlcv_and_turnover(db_session):
+    h = await _harness(db_session)
+    start = datetime(2026, 1, 1, 8, 0, tzinfo=UTC)  # exchange/UTC-aligned 4h boundary
+    end = start + timedelta(hours=4)
+    await _seed_minutes(h.repo, h.instrument_id, start, 240)
+
+    derived = await h.derive(start, end)
+    assert derived["4h"] == 1
+
+    rows = await h.rows("4h", start, end)
+    assert len(rows) == 1
+    candle = rows[0]
+    assert candle.open_time == start
+    assert candle.close_time == end - timedelta(microseconds=1)
+    assert candle.open == Decimal("100.0")  # open of first constituent
+    assert candle.close == Decimal("339.5")  # close of last (240th) constituent
+    assert candle.high == Decimal("340.0")  # max high across constituents
+    assert candle.low == Decimal("99.0")  # min low across constituents
+    assert candle.volume == Decimal("2400.0")  # sum of volumes (240 * 10.0)
+    assert candle.turnover == Decimal("240000.0")  # sum of turnover (240 * 1000.0)
+
+
+async def test_4h_boundaries_align_to_00_04_08_12_16_20_utc(db_session):
+    """A 4h window straddling an off-boundary range must still land on the
+    fixed exchange/UTC 00:00/04:00/08:00/12:00/16:00/20:00 boundaries, not
+    on whatever minute ingestion happened to start at."""
+    h = await _harness(db_session)
+    # Seed the tail of the 04:00-07:59 bucket plus all of 08:00-11:59 plus
+    # the start of the still-forming 12:00-15:59 bucket.
+    seed_start = datetime(2026, 1, 1, 7, 50, tzinfo=UTC)
+    await _seed_minutes(h.repo, h.instrument_id, seed_start, 250)  # through 12:00
+
+    await h.derive(seed_start, datetime(2026, 1, 1, 12, 0, tzinfo=UTC))
+
+    rows = await h.rows(
+        "4h", datetime(2026, 1, 1, 0, 0, tzinfo=UTC), datetime(2026, 1, 2, 0, 0, tzinfo=UTC)
+    )
+    # Only the fully-covered 08:00-11:59 bucket is complete; the partial
+    # 04:00 and 12:00 buckets must not appear.
+    assert [r.open_time for r in rows] == [datetime(2026, 1, 1, 8, 0, tzinfo=UTC)]
+
+
+async def test_incomplete_4h_bucket_is_not_materialized(db_session):
+    h = await _harness(db_session)
+    start = datetime(2026, 1, 1, 8, 0, tzinfo=UTC)
+    end = start + timedelta(hours=4)
+    await _seed_minutes(h.repo, h.instrument_id, start, 239)  # one minute short of a full bucket
+
+    derived = await h.derive(start, end)
+    assert derived["4h"] == 0
+    assert await h.rows("4h", start, end) == []
+
+
+async def test_single_missing_source_1m_candle_prevents_4h_materialization(db_session):
+    h = await _harness(db_session)
+    start = datetime(2026, 1, 1, 8, 0, tzinfo=UTC)
+    end = start + timedelta(hours=4)
+    rows = [
+        _minute_row(h.instrument_id, start + timedelta(minutes=m))
+        for m in range(240)
+        if m != 137  # a single gap deep inside the bucket
+    ]
+    await h.repo.upsert_many(rows)
+
+    derived = await h.derive(start, end)
+    assert derived["4h"] == 0
+    assert await h.rows("4h", start, end) == []
+
+    # Recovery fills the missing minute...
+    await h.repo.upsert_many([_minute_row(h.instrument_id, start + timedelta(minutes=137))])
+    # ...and re-deriving over the affected range now completes the bucket
+    # (this is exactly what a bootstrap page or a gap-recovery pass does —
+    # both funnel through this same function; see app.services.candle_ingestion).
+    derived = await h.derive(start, end)
+    assert derived["4h"] == 1
+    assert len(await h.rows("4h", start, end)) == 1
+
+
+async def test_corrected_1m_candle_recomputes_the_affected_4h_aggregate(db_session):
+    h = await _harness(db_session)
+    start = datetime(2026, 1, 1, 8, 0, tzinfo=UTC)
+    end = start + timedelta(hours=4)
+    await _seed_minutes(h.repo, h.instrument_id, start, 240)
+    await h.derive(start, end)
+
+    original = (await h.rows("4h", start, end))[0]
+    assert original.close == Decimal("339.5")
+
+    # An exchange-backed correction to the last constituent's close price.
+    await h.repo.upsert_many(
+        [
+            _minute_row(
+                h.instrument_id,
+                start + timedelta(minutes=239),
+                o="339.0",
+                h="341.0",
+                low="99.0",
+                c="999.0",
+                v="10.0",
+                t="1000.0",
+            )
+        ]
+    )
+    await h.derive(start, end)
+
+    corrected = (await h.rows("4h", start, end))[0]
+    assert corrected.close == Decimal("999.0")
+
+
 async def test_corrected_1m_candle_recomputes_the_affected_aggregate(db_session):
     h = await _harness(db_session)
     start = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)

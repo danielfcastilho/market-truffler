@@ -76,6 +76,60 @@ async def test_candle_reference_guard_includes_cross_month_and_stale_context(db_
     )
 
 
+async def test_candle_reference_guard_includes_4h_references(db_session):
+    """open_time_4h participates in the retention guard exactly like the
+    four gating timeframe columns — retention handles 4h consistently even
+    though it's nullable (see MarketFrameMember.h4)."""
+    from datetime import UTC, datetime
+
+    from app.models.frame import MarketFrameMember
+
+    march = datetime(2026, 3, 1, tzinfo=UTC)
+    april = datetime(2026, 4, 1, tzinfo=UTC)
+    september = datetime(2026, 9, 1, tzinfo=UTC)
+    db_session.add(
+        MarketFrameMember(
+            frame_time=september,
+            instrument_id=1,
+            open_time_1m=september,
+            open_time_5m=september,
+            open_time_15m=september,
+            open_time_1h=september,
+            open_time_4h=march,  # far older than the other four — only 4h references this month
+        )
+    )
+    await db_session.commit()
+    assert await partition_manager._has_candle_references(db_session, march, april)
+    assert not await partition_manager._has_candle_references(
+        db_session, datetime(2026, 2, 1, tzinfo=UTC), march
+    )
+
+
+async def test_candle_reference_guard_tolerates_null_open_time_4h(db_session):
+    """A member with no 4h reference at all (open_time_4h IS NULL) must
+    never itself satisfy the guard — a NULL comparison is simply never
+    true, exactly as intended."""
+    from datetime import UTC, datetime
+
+    from app.models.frame import MarketFrameMember
+
+    june = datetime(2026, 6, 1, tzinfo=UTC)
+    july = datetime(2026, 7, 1, tzinfo=UTC)
+    db_session.add(
+        MarketFrameMember(
+            frame_time=june,
+            instrument_id=1,
+            open_time_1m=datetime(2020, 1, 1, tzinfo=UTC),
+            open_time_5m=datetime(2020, 1, 1, tzinfo=UTC),
+            open_time_15m=datetime(2020, 1, 1, tzinfo=UTC),
+            open_time_1h=datetime(2020, 1, 1, tzinfo=UTC),
+            open_time_4h=None,
+        )
+    )
+    await db_session.commit()
+    assert not await partition_manager._has_candle_references(db_session, june, july)
+
+
 async def test_postgres_retention_preserves_window_and_referenced_month(monkeypatch):
     from datetime import UTC, datetime
     from types import SimpleNamespace

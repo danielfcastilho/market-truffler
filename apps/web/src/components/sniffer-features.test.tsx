@@ -15,7 +15,16 @@ it("shows the frame metadata and feature matrix when a frame exists", () => {
         analyzed_at: "2026-01-01T22:18:05Z",
         instruments_analyzed: 771,
         instruments: [
-          { instrument_id: 1, symbol: "BTCUSDT", return_5m: "0.0042", return_1h: "0.0184" },
+          {
+            instrument_id: 1,
+            symbol: "BTCUSDT",
+            return_5m: "0.0042",
+            return_1h: "0.0184",
+            rsi_14_5m: "63.42",
+            rsi_14_15m: null,
+            rsi_14_1h: "50",
+            rsi_14_4h: "10",
+          },
         ],
       }}
     />,

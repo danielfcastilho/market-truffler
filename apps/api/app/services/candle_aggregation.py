@@ -1,4 +1,4 @@
-"""Derives 5m/15m/1h candles locally from stored canonical 1m candles.
+"""Derives 5m/15m/1h/4h candles locally from stored canonical 1m candles.
 
 Never fetched from Bybit directly (1m is the only exchange-observed
 timeframe — see `app.domain.market.ClosedCandle`'s docstring and M3's
@@ -10,9 +10,12 @@ this is what makes "late recovery completes aggregates" work: the caller
 just re-runs this over the affected range).
 
 UTC-epoch-aligned bucketing (not relative to application start) is used for
-window boundaries, so 5m/15m/1h windows always land on
-:00/:05/:10.../:00/:15/:30/:45/hh:00 boundaries — standard exchange-time
-alignment.
+window boundaries, so 5m/15m/1h/4h windows always land on
+:00/:05/:10.../:00/:15/:30/:45/hh:00/00:00-04:00-08:00-12:00-16:00-20:00
+boundaries — standard exchange-time alignment. 4h is derived directly from
+1m (240 constituent candles), the same one-level scheme as every other
+derived timeframe here — not chained through 1h — so this module has no
+special-casing per timeframe beyond the `_DERIVED_TIMEFRAMES` table below.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -21,7 +24,7 @@ from decimal import Decimal
 from app.repositories.candle_repository import CandleRepository
 
 # (timeframe label, window length in minutes, constituent 1m candles required)
-_DERIVED_TIMEFRAMES: tuple[tuple[str, int], ...] = (("5m", 5), ("15m", 15), ("1h", 60))
+_DERIVED_TIMEFRAMES: tuple[tuple[str, int], ...] = (("5m", 5), ("15m", 15), ("1h", 60), ("4h", 240))
 
 
 def _floor_to_boundary(dt: datetime, minutes: int) -> datetime:
@@ -41,7 +44,7 @@ async def derive_higher_timeframes(
     touched_start: datetime,
     touched_end: datetime,
 ) -> dict[str, int]:
-    """(Re)derive any 5m/15m/1h windows whose full set of constituent 1m
+    """(Re)derive any 5m/15m/1h/4h windows whose full set of constituent 1m
     candles now exists, anywhere their window overlaps
     `[touched_start, touched_end)`.
 

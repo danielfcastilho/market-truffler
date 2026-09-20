@@ -81,9 +81,21 @@ async def test_engine_assembles_named_feature_results_per_instrument(db_session)
     instrument = result.instruments[0]
     assert instrument.instrument_id == btc
     assert instrument.symbol == "BTCUSDT"
-    assert set(instrument.features) == {"return_5m", "return_1h"}
+    assert set(instrument.features) == {
+        "return_5m",
+        "return_1h",
+        "rsi_14_5m",
+        "rsi_14_15m",
+        "rsi_14_1h",
+        "rsi_14_4h",
+    }
     assert instrument.features["return_1h"] is None
     assert instrument.features["return_5m"] == Decimal("0.01")
+    # No 15-candle history was seeded for any RSI timeframe — all unavailable.
+    assert instrument.features["rsi_14_5m"] is None
+    assert instrument.features["rsi_14_15m"] is None
+    assert instrument.features["rsi_14_1h"] is None
+    assert instrument.features["rsi_14_4h"] is None
 
 
 async def test_engine_only_analyzes_actual_frame_members(db_session):

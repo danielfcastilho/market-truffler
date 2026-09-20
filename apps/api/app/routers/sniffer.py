@@ -23,6 +23,10 @@ def _to_response(result: SnifferFrameResult) -> SnifferFrameResponse:
                 symbol=i.symbol,
                 return_5m=i.features.get("return_5m"),
                 return_1h=i.features.get("return_1h"),
+                rsi_14_5m=i.features.get("rsi_14_5m"),
+                rsi_14_15m=i.features.get("rsi_14_15m"),
+                rsi_14_1h=i.features.get("rsi_14_1h"),
+                rsi_14_4h=i.features.get("rsi_14_4h"),
             )
             for i in sorted(result.instruments, key=lambda i: i.symbol)
         ],

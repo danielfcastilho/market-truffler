@@ -20,7 +20,7 @@ class CandleIngestionService:
 
     async def ingest_1m_candles(self, instrument_id: int, candles: list[ClosedCandle]) -> None:
         """Upsert a batch of canonical 1m candles for one instrument, then
-        (re)derive any 5m/15m/1h windows the batch now completes or corrects.
+        (re)derive any 5m/15m/1h/4h windows the batch now completes or corrects.
 
         A batch may be a single live candle or an entire REST page — either
         way this is one upsert statement plus one bounded re-check of the

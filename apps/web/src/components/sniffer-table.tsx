@@ -4,15 +4,30 @@ import { useMemo, useState } from "react";
 import type { SnifferInstrument } from "@/lib/server-api";
 import { cn } from "@/lib/utils";
 
-type SortColumn = "symbol" | "return_5m" | "return_1h";
+type ReturnColumn = "return_5m" | "return_1h";
+type RsiColumn = "rsi_14_5m" | "rsi_14_15m" | "rsi_14_1h" | "rsi_14_4h";
+type SortColumn = "symbol" | ReturnColumn | RsiColumn;
 type SortDirection = "asc" | "desc";
+
+const RETURN_COLUMNS: { key: ReturnColumn; label: string }[] = [
+  { key: "return_5m", label: "return_5m" },
+  { key: "return_1h", label: "return_1h" },
+];
+
+// Same canonical order as the underlying MARKET timeframes: 5m, 15m, 1h, 4h.
+const RSI_COLUMNS: { key: RsiColumn; label: string }[] = [
+  { key: "rsi_14_5m", label: "rsi_14_5m" },
+  { key: "rsi_14_15m", label: "rsi_14_15m" },
+  { key: "rsi_14_1h", label: "rsi_14_1h" },
+  { key: "rsi_14_4h", label: "rsi_14_4h" },
+];
 
 /**
  * Purely client-side, viewer-local sorting. This is not a ranking feature:
  * the default is alphabetical by symbol (neutral, implies nothing about
- * desirability), and toggling either return column only reorders what's
- * already on the page for the person looking at it — it never calls the
- * backend, which has no ranking/sort concept of its own.
+ * desirability), and toggling any column only reorders what's already on
+ * the page for the person looking at it — it never calls the backend,
+ * which has no ranking/sort concept of its own.
  */
 export function SnifferTable({ instruments }: { instruments: SnifferInstrument[] }) {
   const [sortColumn, setSortColumn] = useState<SortColumn>("symbol");
@@ -56,32 +71,48 @@ export function SnifferTable({ instruments }: { instruments: SnifferInstrument[]
             direction={sortDirection}
             onClick={() => toggleSort("symbol")}
           />
-          <SortableHeader
-            label="return_5m"
-            active={sortColumn === "return_5m"}
-            direction={sortDirection}
-            onClick={() => toggleSort("return_5m")}
-            align="right"
-          />
-          <SortableHeader
-            label="return_1h"
-            active={sortColumn === "return_1h"}
-            direction={sortDirection}
-            onClick={() => toggleSort("return_1h")}
-            align="right"
-          />
+          {RETURN_COLUMNS.map((column) => (
+            <SortableHeader
+              key={column.key}
+              label={column.label}
+              active={sortColumn === column.key}
+              direction={sortDirection}
+              onClick={() => toggleSort(column.key)}
+              align="right"
+            />
+          ))}
+          {RSI_COLUMNS.map((column) => (
+            <SortableHeader
+              key={column.key}
+              label={column.label}
+              active={sortColumn === column.key}
+              direction={sortDirection}
+              onClick={() => toggleSort(column.key)}
+              align="right"
+            />
+          ))}
         </tr>
       </thead>
       <tbody className="divide-y divide-border/60">
         {sorted.map((instrument) => (
           <tr key={instrument.instrument_id}>
             <td className="py-2 pr-4 font-medium">{instrument.symbol}</td>
-            <td className={cn("py-2 text-right", returnClass(instrument.return_5m))}>
-              {formatReturn(instrument.return_5m)}
-            </td>
-            <td className={cn("py-2 text-right", returnClass(instrument.return_1h))}>
-              {formatReturn(instrument.return_1h)}
-            </td>
+            {RETURN_COLUMNS.map((column) => (
+              <td
+                key={column.key}
+                className={cn("py-2 text-right", returnClass(instrument[column.key]))}
+              >
+                {formatReturn(instrument[column.key])}
+              </td>
+            ))}
+            {RSI_COLUMNS.map((column) => (
+              <td
+                key={column.key}
+                className={cn("py-2 text-right", rsiClass(instrument[column.key]))}
+              >
+                {formatRsi(instrument[column.key])}
+              </td>
+            ))}
           </tr>
         ))}
       </tbody>
@@ -132,4 +163,19 @@ function formatReturn(value: string | null): string {
   const percent = Number(value) * 100;
   const sign = percent > 0 ? "+" : "";
   return `${sign}${percent.toFixed(2)}%`;
+}
+
+// RSI is a factual measurement, not a signal — deliberately no green/red or
+// any other value-based styling (no "bullish"/"bearish"/"overbought"/
+// "oversold" framing). The only distinction made here is real vs.
+// unavailable, exactly like every other feature column.
+function rsiClass(value: string | null): string {
+  return value == null ? "text-muted-foreground/70" : "text-foreground";
+}
+
+// A plain number (e.g. "63.42"), never a percentage — RSI is already a
+// 0-100 index, not a fraction to be multiplied.
+function formatRsi(value: string | null): string {
+  if (value == null) return "N/A";
+  return Number(value).toFixed(2);
 }
