@@ -103,6 +103,7 @@ def _reconciler(session_factory, bybit_client, **overrides) -> HistoryReconciler
         "request_delay_seconds": 0,
         "catchup_buffer_minutes": 2,
         "universe_refresh_interval_seconds": 900,
+        "gap_retry_delay_seconds": 0,
     }
     kwargs.update(overrides)
     return HistoryReconciler(session_factory, bybit_client, _FakeMarketUniverse(), **kwargs)
@@ -378,7 +379,11 @@ async def test_gap_recovery_inside_the_retained_window_is_unaffected_by_the_hori
             session, candle_repo, instrument, CandleIngestionService(candle_repo)
         )
 
-    assert len(client.calls) == 1
+    # The single queued page still leaves the window incomplete, so the
+    # bounded one-retry path (see the gap-retry tests below) fires a
+    # second, identically-shaped request before accepting the remainder
+    # as a genuine gap.
+    assert len(client.calls) == 2
     assert len(await _stored_1m(session_factory, instrument_id)) == 5
 
 
@@ -457,8 +462,124 @@ async def test_catchup_falls_back_to_rest_when_data_is_actually_missing(session_
             session, candle_repo, instrument, CandleIngestionService(candle_repo)
         )
 
-    assert len(client.calls) == 1  # had to ask Bybit for the missing range
+    # Had to ask Bybit for the missing range, and since the single queued
+    # page still leaves it incomplete, once more for the bounded retry
+    # (see the gap-retry tests below) — never a third time.
+    assert len(client.calls) == 2
     assert len(await _stored_1m(session_factory, instrument_id)) == 5
+    async with session_factory() as session:
+        refreshed = await session.get(Instrument, instrument_id)
+        # A genuinely-incomplete-after-retry chunk still isn't a reason to
+        # stall this instrument's catch-up forever.
+        assert refreshed.history_synced_through > synced_through
+
+
+async def test_catchup_gap_retry_recovers_a_transient_exchange_indexing_lag(session_factory):
+    """Regression test for the actual production bug: every one of 771
+    instruments simultaneously lost the same live 1m minute (a WebSocket
+    hiccup), and the exchange's REST kline endpoint hadn't indexed that
+    very-recent minute yet on the first catch-up attempt either — but it
+    *was* available moments later. The old code accepted the first
+    (incomplete) REST response as final and permanently advanced the
+    watermark past the gap, so RSI's exact-window check failed for every
+    instrument and every timeframe whose required window crossed that
+    minute (this is why rsi_14_1h was 0% across the entire universe: its
+    15-hour window is wide enough that the single missing minute's hour
+    was virtually always inside it). The fix must retry once and pick up
+    a page that arrives complete on the second attempt."""
+    now = datetime.now(UTC).replace(second=0, microsecond=0)
+    synced_through = now - timedelta(minutes=10)
+    instrument_id = await _seed_instrument(
+        session_factory,
+        target_start=synced_through,
+        synced_from=synced_through,
+        synced_through=synced_through,
+    )
+
+    # catchup_buffer_minutes=2 -> window is [synced_through, now-2min), 8
+    # expected minutes (offsets 0..7). First attempt: exchange only has
+    # offsets 1-5 indexed yet (offsets 0, 6, 7 still lagging). Second
+    # attempt (the retry): the lag has resolved and the exchange now
+    # returns the previously-missing offsets too.
+    first_attempt_rows = [_raw_row(synced_through + timedelta(minutes=i + 1)) for i in range(5)]
+    second_attempt_rows = [
+        _raw_row(synced_through + timedelta(minutes=offset)) for offset in (0, 6, 7)
+    ]
+    client = _FakeBybitClient(
+        {"BTCUSDT": [{"list": first_attempt_rows}, {"list": second_attempt_rows}]}
+    )
+    reconciler = _reconciler(session_factory, client, catchup_buffer_minutes=2)
+
+    from app.services.candle_ingestion import CandleIngestionService
+
+    async with session_factory() as session:
+        instrument = await session.get(Instrument, instrument_id)
+        candle_repo = CandleRepository(session)
+        await reconciler._catchup_step(
+            session, candle_repo, instrument, CandleIngestionService(candle_repo)
+        )
+
+    assert len(client.calls) == 2
+    stored = await _stored_1m(session_factory, instrument_id)
+    assert len(stored) == 8  # the full window, gap included, is now present
+    assert {c.open_time for c in stored} == {
+        synced_through + timedelta(minutes=i) for i in range(8)
+    }
+    async with session_factory() as session:
+        refreshed = await session.get(Instrument, instrument_id)
+        # Advanced to the buffer edge (allow for the few ms of real time
+        # that elapse between the test's `now` snapshot and the code's own).
+        assert refreshed.history_synced_through >= now - timedelta(minutes=2)
+        assert refreshed.history_synced_through <= datetime.now(UTC) - timedelta(minutes=2)
+
+
+async def test_catchup_gap_retry_is_bounded_to_exactly_one_extra_attempt(session_factory):
+    """A genuinely permanent gap (no trade recorded that minute — REST
+    will never return it, no matter how many times it's asked) must not
+    stall an instrument's catch-up forever: the retry is bounded to
+    exactly one extra attempt, then the remaining gap is accepted and the
+    watermark advances. A third queued response must never be consumed."""
+    now = datetime.now(UTC).replace(second=0, microsecond=0)
+    synced_through = now - timedelta(minutes=10)
+    instrument_id = await _seed_instrument(
+        session_factory,
+        target_start=synced_through,
+        synced_from=synced_through,
+        synced_through=synced_through,
+    )
+
+    first_attempt_rows = [_raw_row(synced_through + timedelta(minutes=i + 1)) for i in range(5)]
+    second_attempt_rows = [_raw_row(synced_through + timedelta(minutes=6))]  # still short
+    third_attempt_rows = [_raw_row(synced_through + timedelta(minutes=7))]  # must never be used
+    client = _FakeBybitClient(
+        {
+            "BTCUSDT": [
+                {"list": first_attempt_rows},
+                {"list": second_attempt_rows},
+                {"list": third_attempt_rows},
+            ]
+        }
+    )
+    reconciler = _reconciler(session_factory, client, catchup_buffer_minutes=2)
+
+    from app.services.candle_ingestion import CandleIngestionService
+
+    async with session_factory() as session:
+        instrument = await session.get(Instrument, instrument_id)
+        candle_repo = CandleRepository(session)
+        await reconciler._catchup_step(
+            session, candle_repo, instrument, CandleIngestionService(candle_repo)
+        )
+
+    assert len(client.calls) == 2  # never a third attempt
+    stored = await _stored_1m(session_factory, instrument_id)
+    assert len(stored) == 6  # offsets 0 and 7 remain genuinely missing
+    async with session_factory() as session:
+        refreshed = await session.get(Instrument, instrument_id)
+        # Still advances past the accepted, permanent-looking gap — a
+        # symbol with one bad minute must not block all future catch-up.
+        assert refreshed.history_synced_through >= now - timedelta(minutes=2)
+        assert refreshed.history_synced_through <= datetime.now(UTC) - timedelta(minutes=2)
 
 
 async def test_catchup_does_not_advance_past_the_buffer_near_now(session_factory):

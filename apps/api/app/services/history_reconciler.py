@@ -72,6 +72,7 @@ class HistoryReconciler:
         request_delay_seconds: float = 0.2,
         catchup_buffer_minutes: int = 2,
         universe_refresh_interval_seconds: float = 900.0,
+        gap_retry_delay_seconds: float = 3.0,
         on_new_symbols: NewSymbolsHook | None = None,
     ) -> None:
         self._session_factory = session_factory
@@ -83,6 +84,7 @@ class HistoryReconciler:
         self._request_delay = request_delay_seconds
         self._catchup_buffer = timedelta(minutes=catchup_buffer_minutes)
         self._universe_refresh_interval = universe_refresh_interval_seconds
+        self._gap_retry_delay = gap_retry_delay_seconds
         self._on_new_symbols = on_new_symbols
 
         self._stop_event: asyncio.Event | None = None
@@ -292,6 +294,19 @@ class HistoryReconciler:
         if instrument.history_synced_through is None:
             return
 
+        # Resolved once, up front: `candle_ingestion.ingest_1m_candles`
+        # (called below, possibly twice) upserts via Core and then calls
+        # `session.expire_all()` (see `CandleRepository.upsert_many`), so
+        # `instrument`'s attributes become lazy-load-on-access afterwards
+        # — and a lazy reload from inside an already-running async call
+        # raises `MissingGreenlet`. Capturing the plain values we need
+        # before any ingestion happens avoids ever touching a
+        # possibly-expired attribute again in this method (the final
+        # assignment to `history_synced_through` is a pure write, which
+        # SQLAlchemy never needs to reload for).
+        instrument_id = instrument.id
+        symbol = instrument.symbol
+
         now = datetime.now(UTC)
         target_end = now - self._catchup_buffer
         # Skip expired work after a long outage without rewriting the historical
@@ -310,22 +325,73 @@ class HistoryReconciler:
         # Cheap path: the live WebSocket collector may already have filled
         # this chunk in real time. Only fall back to a REST call for
         # whatever's genuinely missing.
-        span_seconds = (chunk_end - catchup_start).total_seconds()
-        expected_minutes = int(span_seconds // 60)
-        existing = await candle_repo.fetch_range(
-            instrument.id, "1m", catchup_start, chunk_end
-        )
-        if len(existing) >= expected_minutes:
+        if await self._chunk_complete(candle_repo, instrument_id, catchup_start, chunk_end):
             instrument.history_synced_through = chunk_end
             await session.commit()
             return
 
-        start_ms = int(catchup_start.timestamp() * 1000) + 1
-        end_ms = int(chunk_end.timestamp() * 1000)
+        fetched = await self._fetch_and_ingest_page(
+            instrument_id, symbol, candle_ingestion, catchup_start, chunk_end
+        )
+        if not fetched:
+            return  # request itself failed; retry this exact chunk next round
+
+        # A gap this close to "now" can be the exchange's REST kline
+        # endpoint simply not having indexed the very latest minute(s) yet
+        # — it can lag a little behind what the WebSocket already
+        # delivered live, independent of `catchup_buffer_minutes`. Give it
+        # exactly one bounded retry before accepting whatever's left as a
+        # genuine, permanent gap (no trade recorded that minute) — never
+        # more than one retry, so a truly-absent candle can't stall this
+        # instrument's catch-up forever. Without this, a single
+        # transiently-incomplete REST response used to get the watermark
+        # advanced past the gap anyway, permanently sealing in a hole that
+        # was actually recoverable (this is what caused every instrument
+        # to simultaneously lose one live minute and never recover it,
+        # breaking every RSI window that minute fell inside).
+        if not await self._chunk_complete(candle_repo, instrument_id, catchup_start, chunk_end):
+            await asyncio.sleep(self._gap_retry_delay)
+            await self._fetch_and_ingest_page(
+                instrument_id, symbol, candle_ingestion, catchup_start, chunk_end
+            )
+
+        instrument.history_synced_through = chunk_end
+        await session.commit()
+
+    async def _chunk_complete(
+        self,
+        candle_repo: CandleRepository,
+        instrument_id: int,
+        start: datetime,
+        end: datetime,
+    ) -> bool:
+        """Whether every expected 1m minute in the half-open `[start, end)`
+        window is already present — a plain count comparison is exact
+        here since `(instrument_id, timeframe, open_time)` is the
+        candle's primary key, so `fetch_range` can never return a
+        duplicate open_time to inflate the count."""
+        expected_minutes = int((end - start).total_seconds() // 60)
+        existing = await candle_repo.fetch_range(instrument_id, "1m", start, end)
+        return len(existing) >= expected_minutes
+
+    async def _fetch_and_ingest_page(
+        self,
+        instrument_id: int,
+        symbol: str,
+        candle_ingestion: CandleIngestionService,
+        start: datetime,
+        end: datetime,
+    ) -> bool:
+        """Fetch and ingest one REST page for `[start, end)`. Returns
+        whether the request itself succeeded — a successful request that
+        came back short of the full expected window is still `True`; it's
+        the caller's job to decide whether a remaining gap is acceptable."""
+        start_ms = int(start.timestamp() * 1000) + 1
+        end_ms = int(end.timestamp() * 1000)
         try:
             raw = await self._bybit_client.get_kline(
                 category=_CATEGORY,
-                symbol=instrument.symbol,
+                symbol=symbol,
                 interval="1",
                 start=start_ms,
                 end=end_ms,
@@ -334,16 +400,12 @@ class HistoryReconciler:
         except BybitApiError as exc:
             logger.warning(
                 "history_catchup_page_failed",
-                extra={"symbol": instrument.symbol, "error": str(exc)},
+                extra={"symbol": symbol, "error": str(exc)},
             )
-            return
+            return False
 
         rows = raw.get("list", [])
         if rows:
-            candles = [
-                to_closed_candle(instrument.symbol, parse_kline_history_row(row)) for row in rows
-            ]
-            await candle_ingestion.ingest_1m_candles(instrument.id, candles)
-
-        instrument.history_synced_through = chunk_end
-        await session.commit()
+            candles = [to_closed_candle(symbol, parse_kline_history_row(row)) for row in rows]
+            await candle_ingestion.ingest_1m_candles(instrument_id, candles)
+        return True
