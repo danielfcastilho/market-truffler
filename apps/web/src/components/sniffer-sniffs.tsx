@@ -8,7 +8,7 @@ import { formatFrameTimeUtc } from "@/lib/sniffer-format";
  * Market Frame. A secondary inspection/research surface, not the
  * operational 🍄 Truffles dashboard (`/sniffer` itself, see
  * SnifferDashboard) — see docs/ARCHITECTURE.md for the Sniffs → Scents →
- * Overall Scent → Truffles pipeline. "Sniff" is the product term for what
+ * Score → Rank → Truffles pipeline. "Sniff" is the product term for what
  * the backend calls a Feature (`app/features/`, `FeatureEngine`) — those
  * internal names are unchanged; only the UI label is renamed.
  */

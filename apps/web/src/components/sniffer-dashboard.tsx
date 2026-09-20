@@ -8,7 +8,7 @@ import { TrufflePanel } from "@/components/truffle-panel";
  * There is no separate "Dashboard" view: Truffles *are* the dashboard's
  * main content, not a different product. Frame context (when/how much),
  * a way to jump straight to any tracked symbol, and each direction's top
- * 🍄 Truffles side by side. Sniffer has no Scent/ranking/qualification
+ * 🍄 Truffles side by side. Sniffer has no Scent/Score/Rank/qualification
  * logic yet, so both panels are the exact same truthful empty state —
  * never a fabricated top 5. `TrufflePanel` takes no `limit` today (there's
  * nothing to truncate yet) but is written generically enough to grow past

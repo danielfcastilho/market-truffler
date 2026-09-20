@@ -19,8 +19,7 @@ a separate product area:
                       ▼
             🐽 SNIFFER — DISCOVERY
   (exchange connectivity, market-data acquisition,
-   Sniffs, Scents, desirability functions,
-   Entry Fitness, Long/Short rankings)
+   Sniffs, Scents, Score, Rank)
                       │
                       ▼
            🍄 opportunities / truffles
@@ -55,9 +54,8 @@ in `docker-compose.yml` builds or starts it.
 
 **🐽 Sniffer — Discovery.** Exchange connectivity, historical backfills,
 WebSocket market streams, normalization, storage, data quality — and,
-downstream of that data, Sniffs, Scents, desirability functions, Entry
-Fitness, Long ranking, Short ranking, and individual opportunity
-inspection.
+downstream of that data, Sniffs, Scents, Score, Rank, and individual
+opportunity inspection.
 Discovery and analysis are one product area, not two: Sniffer's job is to
 turn market data into truffles.
 
@@ -83,8 +81,8 @@ Sniffer's factual measurements — `return_5m`, `return_1h`, `rsi_14_5m`,
 `rsi_14_15m`, `rsi_14_1h`, `rsi_14_4h`, six metrics per instrument per
 Market Frame — are implemented (see "Sniffer measures" below). Beyond
 that, Warhog and OINK CORP remain fully unimplemented, and Sniffer itself
-has no other Sniffs, Scents, desirability functions, weights,
-Entry Fitness, or rankings yet. No Martin Gale parameters, entry/exit/hedge
+has no other Sniffs, Scents, Score, Rank, or Truffle qualification yet.
+No Martin Gale parameters, entry/exit/hedge
 rules, or live execution architecture have been decided either. Those are
 later engineering/research milestones, and this codebase makes no
 assumptions about them.
@@ -518,52 +516,68 @@ analysis. Responses are always sorted by symbol, a neutral ordering that
 implies no ranking. These endpoints and their response shape
 (`SnifferFrameResponse`/`SnifferInstrument`, see `app/schemas/sniffer.py`)
 represent **Sniffs** — factual measurements — and stay that way regardless
-of what the UI does with them; see "Sniffs → Scents → Overall Scent →
+of what the UI does with them; see "Sniffs → Scents → Score → Rank →
 Truffles" below for how the Sniffer product surface itself is organized
 around that same pipeline. A client-side column sort on the Sniffs matrix
 re-orders only what's already on the page for that viewer and never calls
 the backend, so it can't be mistaken for a server-side ranking.
 
-### Sniffs → Scents → Overall Scent → Truffles
+### Sniffs → Scents → Score → Rank → Truffles
 
 Sniffer's product surface (`apps/web/src/app/(protected)/sniffer/`) is
 organized around one pipeline that both the UI and this document use
 consistently:
 
-- **Sniffs** — factual, per-instrument measurements Sniffer has actually
-  computed. Today: `return_5m`, `return_1h`, `rsi_14_5m`, `rsi_14_15m`,
-  `rsi_14_1h`, `rsi_14_4h` (see "Sniffer measures" above). Real now, and
-  the Sniffs matrix (`SnifferSniffs`/`SnifferTable`) is a secondary
-  inspection/research surface — it answers "what does Sniffer currently
-  know about each coin?", nothing more. "Sniff" is purely the UI/product
-  term; the backend still calls this concept a Feature
-  (`app/features/`, `FeatureEngine`, `SnifferInstrument`'s field keys like
-  `rsi_14_5m`) — those internal names are deliberately unchanged.
-- **Scents** — future interpreted quantitative dimensions built from
-  Sniffs (e.g. a future Trend Scent, Pullback Scent — what a "Pillar"
-  was called in earlier design language, then briefly "Scent Notes"; both
-  are retired in favor of "Scents"). Answers "how does Sniffer interpret
-  important dimensions?" Not implemented, and none are defined yet — no
-  Trend, Pullback, Momentum, Stability, Activity, Liquidity, Volatility,
-  or any other dimension exists in the code, only the concept of the
-  layer.
-- **Overall Scent** — the UI/product term for a future per-direction
-  desirability strength derived from Scents, backed internally by
-  `long_score`/`short_score`, each independently in `[0, 1]`. Not
-  implemented. Long and Short Overall Scent are not two ends of one
-  scale — a coin can score high on both, low on both, or anywhere in
-  between, so nothing in the data model or UI may assume they're mutually
-  exclusive. The internal names `long_score`/`short_score` stay as they
-  are; the Truffle tables' `Scent` column is the compact UI label for this
-  value.
-- **Ranking** — an internal ordering produced independently per direction
-  (Long ordered by `long_score` descending, Short by `short_score`
-  descending) that feeds the 🍄 Truffles view. Not implemented, and not a
-  UI surface of its own — see "Rename note" below.
-- **🍄 Truffles** — the opportunities surfaced to the user, downstream of
-  Ranking: Sniffer's primary *operational* UI surface once real scoring
-  exists, with the Sniffs matrix remaining the secondary research view.
-  Not implemented yet.
+- **Sniffs** = Feature. Factual, per-instrument measurements Sniffer has
+  actually computed — facts, never judgments. Today: `return_5m`,
+  `return_1h`, `rsi_14_5m`, `rsi_14_15m`, `rsi_14_1h`, `rsi_14_4h` (see
+  "Sniffer measures" above). Real now, and the Sniffs matrix
+  (`SnifferSniffs`/`SnifferTable`) is a secondary inspection/research
+  surface — it answers "what does Sniffer currently know about each
+  coin?", nothing more. "Sniff" is purely the UI/product term; the
+  backend still calls this concept a Feature (`app/features/`,
+  `FeatureEngine`, `SnifferInstrument`'s field keys like `rsi_14_5m`) —
+  those internal names are deliberately unchanged: "Sniff" is only how a
+  Feature is presented to the user, not a reason to rename stable backend
+  architecture.
+- **Scents** = Pillar. Future interpreted quantitative dimensions built
+  from one or more Sniffs (e.g. a future Trend Scent, Pullback Scent —
+  what a "Pillar" was called in earlier design language, then briefly
+  "Scent Notes"; both are retired in favor of "Scents"). A Scent is
+  interpretation, not a raw measurement — it answers "how does Sniffer
+  read this dimension of the market?" Not implemented, and none are
+  defined yet — no Trend, Pullback, Momentum, Stability, Activity,
+  Liquidity, Volatility, or any other dimension exists in the code, only
+  the concept of the layer. Scents describe one symbol, not the whole
+  universe, so they have no standalone global page — they belong on
+  `/sniffer/{symbol}` (see below), the explanation of how a symbol
+  eventually gets its Score.
+- **Score** (Long Score / Short Score) — the final per-direction
+  directional desirability for a symbol, aggregated from its Scents,
+  backed internally by `long_score`/`short_score`, each independently in
+  `[0, 1]`. Not implemented. Deliberately *not* called "Long/Short Scent"
+  — "Scent" is reserved for the intermediate Pillar-level dimensions a
+  Score is built from, not the aggregate itself, so the two layers stay
+  distinguishable in conversation and in the UI. Long and Short Score are
+  not two ends of one scale — a coin can score high on both, low on both,
+  or anywhere in between, so nothing in the data model or UI may assume
+  they're mutually exclusive.
+- **Rank** (Long Rank / Short Rank) — a symbol's position relative to the
+  rest of the analyzed universe for that direction (Long ordered by
+  `long_score` descending, Short by `short_score` descending). Not
+  implemented. Previously documented as a purely internal ordering
+  mechanism with no UI surface of its own; now a first-class step shown
+  on `/sniffer/{symbol}` alongside Score, since "how does this symbol
+  compare to the rest of the universe" is a genuinely different, useful
+  fact from "what is this symbol's raw Score" — see "Rename note" below.
+- **🍄 Truffles** — a symbol that qualifies highly enough in the ranking
+  to be surfaced as an opportunity, downstream of Rank: Sniffer's primary
+  *operational* UI surface once real qualification exists, with the
+  Sniffs matrix remaining the secondary research view. A Truffle is not
+  synonymous with a Score or a Rank — it's the qualification decision
+  built from them. Not implemented yet. The Truffle tables' `Score`
+  column shows the value a symbol's rank is based on, not the rank
+  position itself (that's the `#` column).
 
 **Routing.** Three routes under `apps/web/src/app/(protected)/sniffer/`,
 one shared shell (`layout.tsx`: the `🐽 Sniffer` title plus `SnifferNav`
@@ -607,47 +621,78 @@ Symbol cell links to `/sniffer/{symbol}`; that link is independent of
 sorting/filtering, which both still operate on the plain symbol string.
 
 **Symbol detail (`/sniffer/{symbol}`).** The consolidated microscope for
-one symbol — Truffle status, Long Scent, Short Scent (all "N/A" today,
-never `0`: `0` will eventually be a legitimate score, so it must never be
-used as a stand-in for "not computed yet"), a Scents section
-(`SnifferScents`, reused here rather than as a standalone route — see
-"Rename note" below — deliberately showing only "No scents yet"), and a
-Sniffs section grouped exactly like the matrix's headers (Returns, RSI),
-built from the same `FEATURE_COLUMNS` config so its numbers can never
-diverge from the matrix's. Fetches the same `getLatestSnifferFrame()` the
-Sniffs matrix already uses and finds the matching instrument client-side
+one symbol, laid out in the same order the pipeline flows — facts first,
+conclusions last:
+
+```
+SYMBOL
+  Sniffs   — factual measurements, grouped like the matrix (Returns, RSI)
+  Scents   — the interpreted dimensions that would explain the Score
+  Score    — Long / Short, N/A today
+  Rank     — Long / Short, N/A today
+  🍄 Truffle — N/A today
+```
+
+Score, Rank, and Truffle status are all "N/A" today, never `0`: `0` will
+eventually be a legitimate score, so it must never be used as a stand-in
+for "not computed yet". The Scents section (`SnifferScents`, reused here
+rather than as a standalone route — see "Rename note" below) deliberately
+shows only "No scents yet" — no Trend, Pullback, or any other dimension is
+invented. The Sniffs section is built from the same `FEATURE_COLUMNS`
+config the matrix uses, so its numbers can never diverge from the
+matrix's. Fetches the same `getLatestSnifferFrame()` the Sniffs matrix
+already uses and finds the matching instrument client-side
 (case-insensitively) — no new backend endpoint. An unmatched or
 not-yet-analyzed symbol renders a plain, honest inline message, never a
 fabricated row or a hard crash.
 
-No Scents, ranking, or Truffles API exists either (`GET
-/api/sniffer/scents/latest`, `GET /api/sniffer/rankings/latest`, `GET
-/api/sniffer/truffles/latest`, or similar all remain unimplemented) — an
-honest missing endpoint rather than one returning fake data.
+No Scents, Score, Rank, or Truffles API exists either (`GET
+/api/sniffer/scents/latest`, `GET /api/sniffer/scores/latest`, `GET
+/api/sniffer/rank/latest`, `GET /api/sniffer/truffles/latest`, or similar
+all remain unimplemented) — an honest missing endpoint rather than one
+returning fake data.
 
 **Rename note.** The Sniffer UI nav was originally called "Rankings"; it is
-now "🍄 Truffles" since Ranking is an internal ordering mechanism, while
-Truffles — the qualified opportunities a ranking eventually produces — is
-what the UI actually shows the user. `long_score`/`short_score` remain the
-correct internal names for that future math; only the user-facing table
-column is called "Scent". The design-language term "Pillars" went through
-"Scent Notes" before settling on "Scents" for this same future
-interpreted-dimension layer; "Overall Scent" is the (also renamed) term
-for the aggregate per-direction desirability one layer downstream of
-Scents. The UI/product term for Sniffer's factual measurements is now
-"Sniffs" (`/sniffer/sniffs`, previously `/sniffer/features`, itself
-previously `?view=features`) — this is a UI-only rename: the backend's
-`Feature`/`FeatureEngine`/`app/features/` and every metric key
-(`return_5m`, `rsi_14_5m`, ...) are deliberately unchanged, since "Sniff"
-is only how a Feature is presented to the user, not a reason to rename
-stable backend architecture. `/sniffer` itself briefly became a separate
-"Dashboard" (distinct from a `/sniffer/truffles` route) before Dashboard
-and Truffles were recognized as the same thing and merged back into one
-page at `/sniffer` — there is no "Dashboard" nav item; "🍄 Truffles" is
-`/sniffer`. Scents was removed as a standalone top-level tab/route
-(previously `?view=scents`) — Scents describes one symbol's interpreted
-dimensions, so it lives on `/sniffer/{symbol}` instead of an empty global
-matrix with nothing yet to show.
+now "🍄 Truffles" since Ranking is a mechanism, while Truffles — the
+qualified opportunities ranking eventually produces — is what the UI
+actually shows the user. The design-language term "Pillars" went through
+"Scent Notes" before settling on "Scents" for the interpreted-dimension
+layer built from Sniffs. The UI/product term for Sniffer's factual
+measurements is "Sniffs" (`/sniffer/sniffs`, previously
+`/sniffer/features`, itself previously `?view=features`) — this is a
+UI-only rename: the backend's `Feature`/`FeatureEngine`/`app/features/`
+and every metric key (`return_5m`, `rsi_14_5m`, ...) are deliberately
+unchanged, since "Sniff" is only how a Feature is presented to the user,
+not a reason to rename stable backend architecture.
+
+Most recently, a nomenclature audit found the UI had drifted from its own
+backend naming: the symbol page showed "Long Scent"/"Short Scent" for the
+final per-direction aggregate, and the Truffle tables labeled that same
+value's column "Scent" — but `long_score`/`short_score` had *always* been
+the intended internal name for that concept, and "Score" is what those
+names actually say. The UI, not the backend, was the inconsistent side;
+the fix renamed the UI labels to "Long/Short **Score**" rather than
+touching the (already-correct) internal names. "Scent" is now reserved
+exclusively for the intermediate Pillar-level dimensions (Trend, Pullback,
+...) that a Score is built from, so the two layers stay distinguishable.
+Ranking's status was also promoted: it used to be documented as a purely
+internal mechanism with no UI surface of its own; it's now **Rank**
+(Long Rank / Short Rank), a first-class concept shown on
+`/sniffer/{symbol}` next to Score, since "how does this symbol compare to
+the rest of the universe" is a genuinely different fact worth showing
+from "what is this symbol's raw Score". Two aspirational, never-implemented
+terms — "desirability functions" and "Entry Fitness" — were retired from
+the high-level diagrams above in favor of the concrete `Score`/`Rank`
+vocabulary now that the full pipeline is named end to end.
+
+`/sniffer` itself briefly became a separate "Dashboard" (distinct from a
+`/sniffer/truffles` route) before Dashboard and Truffles were recognized
+as the same thing and merged back into one page at `/sniffer` — there is
+no "Dashboard" nav item; "🍄 Truffles" is `/sniffer`. Scents was removed
+as a standalone top-level tab/route (previously `?view=scents`) — Scents
+describes one symbol's interpreted dimensions, so it lives on
+`/sniffer/{symbol}` instead of an empty global matrix with nothing yet to
+show.
 
 ## What's actually implemented (this milestone)
 

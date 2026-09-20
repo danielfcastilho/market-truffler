@@ -1,12 +1,15 @@
 /**
- * One directional 🍄 Truffle table (`#`, `Symbol`, `Scent` columns), used
+ * One directional 🍄 Truffle table (`#`, `Symbol`, `Score` columns), used
  * for the Long and Short panels on the 🍄 Truffles dashboard (`/sniffer`
- * itself). Sniffer has no scoring, ranking, or Truffle qualification yet,
- * so this always renders only a truthful empty state — no Scent, rank
- * number, or placeholder coin is ever fabricated. Kept as its own small
- * component (rather than inlined twice) so it's ready to take a `limit`
- * prop once real ranking exists and the dashboard needs to show more than
- * a top 5.
+ * itself). `#` is this symbol's Rank position within the direction; the
+ * `Score` column shows the Long/Short Score that rank is based on — never
+ * labeled "Scent", which is reserved for the intermediate Pillar-level
+ * dimensions a Score is built from, not the aggregate itself. Sniffer has
+ * no scoring, ranking, or Truffle qualification yet, so this always
+ * renders only a truthful empty state — no Score, rank number, or
+ * placeholder coin is ever fabricated. Kept as its own small component
+ * (rather than inlined twice) so it's ready to take a `limit` prop once
+ * real ranking exists and the dashboard needs to show more than a top 5.
  */
 export function TrufflePanel({ label }: { label: string }) {
   return (
@@ -17,7 +20,7 @@ export function TrufflePanel({ label }: { label: string }) {
           <tr className="border-b border-dashed border-border text-left text-muted-foreground">
             <th className="pb-2 font-medium">#</th>
             <th className="pb-2 font-medium">Symbol</th>
-            <th className="pb-2 text-right font-medium">Scent</th>
+            <th className="pb-2 text-right font-medium">Score</th>
           </tr>
         </thead>
         <tbody>

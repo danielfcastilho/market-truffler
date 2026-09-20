@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { it, expect } from "vitest";
 import { SnifferSymbolDetail } from "./sniffer-symbol-detail";
 
@@ -53,15 +53,29 @@ it("shows N/A for unavailable Sniffs, never 0", () => {
   expect(screen.queryByText("0.00%")).not.toBeInTheDocument();
 });
 
-it("shows Truffle status, Long Scent, and Short Scent as N/A — never fabricated, never 0", () => {
+it("shows Long/Short Score as N/A — never fabricated, never 0, never labeled Scent", () => {
   render(<SnifferSymbolDetail symbol="BTCUSDT" frame={FRAME} />);
-  expect(screen.getByText("Truffle")).toBeInTheDocument();
-  expect(screen.getByText("Long Scent")).toBeInTheDocument();
-  expect(screen.getByText("Short Scent")).toBeInTheDocument();
-  // Truffle/Long Scent/Short Scent + 2 null RSI/return values on BTCUSDT
-  // (rsi_14_15m) all render "N/A" — assert at least the three status rows.
-  const naValues = screen.getAllByText("N/A");
-  expect(naValues.length).toBeGreaterThanOrEqual(3);
+  const scoreSection = screen.getByRole("heading", { name: "Score" }).parentElement!;
+  expect(within(scoreSection).getByText("Long")).toBeInTheDocument();
+  expect(within(scoreSection).getByText("Short")).toBeInTheDocument();
+  expect(within(scoreSection).getAllByText("N/A")).toHaveLength(2);
+  // "Scent" is reserved for the intermediate Pillar-level dimensions —
+  // never the final Long/Short aggregate.
+  expect(screen.queryByText("Long Scent")).not.toBeInTheDocument();
+  expect(screen.queryByText("Short Scent")).not.toBeInTheDocument();
+});
+
+it("shows Long/Short Rank as N/A — never fabricated, never 0", () => {
+  render(<SnifferSymbolDetail symbol="BTCUSDT" frame={FRAME} />);
+  const rankSection = screen.getByRole("heading", { name: "Rank" }).parentElement!;
+  expect(within(rankSection).getByText("Long")).toBeInTheDocument();
+  expect(within(rankSection).getByText("Short")).toBeInTheDocument();
+  expect(within(rankSection).getAllByText("N/A")).toHaveLength(2);
+});
+
+it("shows 🍄 Truffle status as N/A — never fabricated, never 0", () => {
+  render(<SnifferSymbolDetail symbol="BTCUSDT" frame={FRAME} />);
+  expect(screen.getByText("🍄 Truffle")).toBeInTheDocument();
 });
 
 it("has an empty, unavailable Scents section — no dimension is invented", () => {
@@ -73,11 +87,21 @@ it("has an empty, unavailable Scents section — no dimension is invented", () =
   }
 });
 
+it("lays out sections in pipeline order: Sniffs, Scents, Score, Rank, Truffle", () => {
+  render(<SnifferSymbolDetail symbol="BTCUSDT" frame={FRAME} />);
+  const headings = screen.getAllByRole("heading").map((h) => h.textContent);
+  // BTCUSDT (symbol) is first; Sniffs' own group sub-headings (Returns/RSI)
+  // aren't <h2>/<h3> "heading" roles the same way, so this just orders the
+  // top-level sections.
+  const order = headings.filter((h) => ["Sniffs", "Scents", "Score", "Rank"].includes(h ?? ""));
+  expect(order).toEqual(["Sniffs", "Scents", "Score", "Rank"]);
+});
+
 it("handles an unknown symbol cleanly, without fabricating data", () => {
   render(<SnifferSymbolDetail symbol="DOESNOTEXISTUSDT" frame={FRAME} />);
   expect(screen.getByRole("heading", { name: "DOESNOTEXISTUSDT" })).toBeInTheDocument();
   expect(screen.getByText(/No Sniffer data for DOESNOTEXISTUSDT/)).toBeInTheDocument();
-  expect(screen.queryByText("Truffle")).not.toBeInTheDocument();
+  expect(screen.queryByText("🍄 Truffle")).not.toBeInTheDocument();
   expect(screen.queryByText("N/A")).not.toBeInTheDocument();
 });
 
