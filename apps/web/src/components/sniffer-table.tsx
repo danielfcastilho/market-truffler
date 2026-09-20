@@ -1,40 +1,49 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import type { SnifferInstrument } from "@/lib/server-api";
+import { FEATURE_COLUMNS, groupColumns, type FeatureKey } from "@/lib/sniffer-feature-columns";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
-type ReturnColumn = "return_5m" | "return_1h";
-type RsiColumn = "rsi_14_5m" | "rsi_14_15m" | "rsi_14_1h" | "rsi_14_4h";
-type SortColumn = "symbol" | ReturnColumn | RsiColumn;
+type SortColumn = "symbol" | FeatureKey;
 type SortDirection = "asc" | "desc";
 
-const RETURN_COLUMNS: { key: ReturnColumn; label: string }[] = [
-  { key: "return_5m", label: "return_5m" },
-  { key: "return_1h", label: "return_1h" },
-];
-
-// Same canonical order as the underlying MARKET timeframes: 5m, 15m, 1h, 4h.
-const RSI_COLUMNS: { key: RsiColumn; label: string }[] = [
-  { key: "rsi_14_5m", label: "rsi_14_5m" },
-  { key: "rsi_14_15m", label: "rsi_14_15m" },
-  { key: "rsi_14_1h", label: "rsi_14_1h" },
-  { key: "rsi_14_4h", label: "rsi_14_4h" },
-];
+const GROUPS = groupColumns(FEATURE_COLUMNS);
 
 /**
- * Purely client-side, viewer-local sorting. This is not a ranking feature:
- * the default is alphabetical by symbol (neutral, implies nothing about
- * desirability), and toggling any column only reorders what's already on
- * the page for the person looking at it — it never calls the backend,
- * which has no ranking/sort concept of its own.
+ * The Sniffs matrix: a horizontally scrollable analytical table, not a
+ * fixed-width grid. As more Sniffs are added (more `FEATURE_COLUMNS`
+ * entries), the matrix grows wider and scrolls — it never shrinks column
+ * content or collapses to pagination. The Symbol column and the header
+ * stay pinned via CSS `position: sticky` inside the matrix's own scroll
+ * container, so identity and column labels are never lost while scanning
+ * across ~771 rows and a growing number of columns. Every Symbol links to
+ * `/sniffer/{symbol}` — that navigation is independent of sorting/
+ * filtering, which both still operate on the plain `instrument.symbol`
+ * string underneath the link.
+ *
+ * Purely client-side, viewer-local sorting and filtering. This is not a
+ * ranking feature: the default is alphabetical by symbol (neutral, implies
+ * nothing about desirability), and toggling any column or typing into the
+ * filter only reorders/narrows what's already on the page for the person
+ * looking at it — it never calls the backend, which has no ranking/sort
+ * concept of its own.
  */
 export function SnifferTable({ instruments }: { instruments: SnifferInstrument[] }) {
   const [sortColumn, setSortColumn] = useState<SortColumn>("symbol");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+  const [filter, setFilter] = useState("");
+
+  const filtered = useMemo(() => {
+    const query = filter.trim().toUpperCase();
+    if (!query) return instruments;
+    return instruments.filter((instrument) => instrument.symbol.toUpperCase().includes(query));
+  }, [instruments, filter]);
 
   const sorted = useMemo(() => {
-    const rows = [...instruments];
+    const rows = [...filtered];
     rows.sort((a, b) => {
       let comparison: number;
       if (sortColumn === "symbol") {
@@ -50,7 +59,7 @@ export function SnifferTable({ instruments }: { instruments: SnifferInstrument[]
       return sortDirection === "asc" ? comparison : -comparison;
     });
     return rows;
-  }, [instruments, sortColumn, sortDirection]);
+  }, [filtered, sortColumn, sortDirection]);
 
   function toggleSort(column: SortColumn) {
     if (sortColumn === column) {
@@ -62,61 +71,101 @@ export function SnifferTable({ instruments }: { instruments: SnifferInstrument[]
   }
 
   return (
-    <table className="w-full font-mono text-sm">
-      <thead>
-        <tr className="border-b border-dashed border-border text-left text-muted-foreground">
-          <SortableHeader
-            label="Symbol"
-            active={sortColumn === "symbol"}
-            direction={sortDirection}
-            onClick={() => toggleSort("symbol")}
-          />
-          {RETURN_COLUMNS.map((column) => (
-            <SortableHeader
-              key={column.key}
-              label={column.label}
-              active={sortColumn === column.key}
-              direction={sortDirection}
-              onClick={() => toggleSort(column.key)}
-              align="right"
-            />
-          ))}
-          {RSI_COLUMNS.map((column) => (
-            <SortableHeader
-              key={column.key}
-              label={column.label}
-              active={sortColumn === column.key}
-              direction={sortDirection}
-              onClick={() => toggleSort(column.key)}
-              align="right"
-            />
-          ))}
-        </tr>
-      </thead>
-      <tbody className="divide-y divide-border/60">
-        {sorted.map((instrument) => (
-          <tr key={instrument.instrument_id}>
-            <td className="py-2 pr-4 font-medium">{instrument.symbol}</td>
-            {RETURN_COLUMNS.map((column) => (
-              <td
-                key={column.key}
-                className={cn("py-2 text-right", returnClass(instrument[column.key]))}
+    <div className="space-y-3">
+      <Input
+        value={filter}
+        onChange={(event) => setFilter(event.target.value)}
+        placeholder="Filter symbol…"
+        aria-label="Filter by symbol"
+        className="max-w-48"
+      />
+
+      <div className="max-h-[70vh] overflow-auto rounded-md border border-border">
+        <table className="border-separate border-spacing-0 font-mono text-sm">
+          <thead className="sticky top-0 z-20 bg-background">
+            <tr className="text-left text-muted-foreground">
+              <th
+                rowSpan={2}
+                scope="col"
+                className="sticky left-0 z-30 border-b border-r border-border bg-background pb-2 pl-3 align-bottom"
               >
-                {formatReturn(instrument[column.key])}
-              </td>
+                <SortableHeader
+                  label="Symbol"
+                  active={sortColumn === "symbol"}
+                  direction={sortDirection}
+                  onClick={() => toggleSort("symbol")}
+                />
+              </th>
+              {GROUPS.map((group) => (
+                <th
+                  key={group.name}
+                  colSpan={group.span}
+                  scope="colgroup"
+                  className="border-b border-border/40 bg-background pb-1 text-center font-medium"
+                >
+                  {group.name}
+                </th>
+              ))}
+            </tr>
+            <tr className="text-left text-muted-foreground">
+              {FEATURE_COLUMNS.map((column) => (
+                <th
+                  key={column.key}
+                  scope="col"
+                  title={column.key}
+                  style={{ minWidth: column.minWidthPx }}
+                  className="border-b border-border bg-background pb-2 pr-3 text-right"
+                >
+                  <SortableHeader
+                    label={column.label}
+                    active={sortColumn === column.key}
+                    direction={sortDirection}
+                    onClick={() => toggleSort(column.key)}
+                    align="right"
+                  />
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border/60">
+            {sorted.map((instrument) => (
+              <tr key={instrument.instrument_id}>
+                <td className="sticky left-0 z-10 min-w-40 whitespace-nowrap border-r border-border bg-background py-2 pl-3 pr-4 font-medium">
+                  <Link
+                    href={`/sniffer/${encodeURIComponent(instrument.symbol)}`}
+                    className="hover:underline"
+                  >
+                    {instrument.symbol}
+                  </Link>
+                </td>
+                {FEATURE_COLUMNS.map((column) => (
+                  <td
+                    key={column.key}
+                    style={{ minWidth: column.minWidthPx }}
+                    className={cn(
+                      "whitespace-nowrap py-2 pr-3 text-right",
+                      column.valueClassName(instrument[column.key]),
+                    )}
+                  >
+                    {column.format(instrument[column.key])}
+                  </td>
+                ))}
+              </tr>
             ))}
-            {RSI_COLUMNS.map((column) => (
-              <td
-                key={column.key}
-                className={cn("py-2 text-right", rsiClass(instrument[column.key]))}
-              >
-                {formatRsi(instrument[column.key])}
-              </td>
-            ))}
-          </tr>
-        ))}
-      </tbody>
-    </table>
+            {sorted.length === 0 && (
+              <tr>
+                <td
+                  colSpan={1 + FEATURE_COLUMNS.length}
+                  className="py-6 text-center text-muted-foreground/70"
+                >
+                  No symbols match &quot;{filter}&quot;
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }
 
@@ -134,48 +183,17 @@ function SortableHeader({
   align?: "left" | "right";
 }) {
   return (
-    <th className={cn("pb-2 font-medium", align === "right" && "text-right")}>
-      <button
-        type="button"
-        onClick={onClick}
-        className={cn(
-          "inline-flex items-center gap-1 hover:text-foreground",
-          active && "text-foreground",
-        )}
-      >
-        {label}
-        {active && <span className="text-xs">{direction === "asc" ? "▲" : "▼"}</span>}
-      </button>
-    </th>
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "inline-flex items-center gap-1 hover:text-foreground",
+        align === "right" && "flex-row-reverse",
+        active && "text-foreground",
+      )}
+    >
+      {label}
+      {active && <span className="text-xs">{direction === "asc" ? "▲" : "▼"}</span>}
+    </button>
   );
-}
-
-function returnClass(value: string | null): string {
-  if (value == null) return "text-muted-foreground/70";
-  const numeric = Number(value);
-  if (numeric > 0) return "text-primary";
-  if (numeric < 0) return "text-destructive";
-  return "text-foreground";
-}
-
-function formatReturn(value: string | null): string {
-  if (value == null) return "N/A";
-  const percent = Number(value) * 100;
-  const sign = percent > 0 ? "+" : "";
-  return `${sign}${percent.toFixed(2)}%`;
-}
-
-// RSI is a factual measurement, not a signal — deliberately no green/red or
-// any other value-based styling (no "bullish"/"bearish"/"overbought"/
-// "oversold" framing). The only distinction made here is real vs.
-// unavailable, exactly like every other feature column.
-function rsiClass(value: string | null): string {
-  return value == null ? "text-muted-foreground/70" : "text-foreground";
-}
-
-// A plain number (e.g. "63.42"), never a percentage — RSI is already a
-// 0-100 index, not a fraction to be multiplied.
-function formatRsi(value: string | null): string {
-  if (value == null) return "N/A";
-  return Number(value).toFixed(2);
 }

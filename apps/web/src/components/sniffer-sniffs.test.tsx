@@ -1,15 +1,15 @@
 import { render, screen } from "@testing-library/react";
 import { it, expect } from "vitest";
-import { SnifferFeatures } from "./sniffer-features";
+import { SnifferSniffs } from "./sniffer-sniffs";
 
 it("shows a no-analysis message when there is no frame yet", () => {
-  render(<SnifferFeatures frame={null} />);
+  render(<SnifferSniffs frame={null} />);
   expect(screen.getByText(/No Sniffer analysis yet/)).toBeInTheDocument();
 });
 
-it("shows the frame metadata and feature matrix when a frame exists", () => {
+it("shows the frame metadata and Sniffs matrix when a frame exists", () => {
   render(
-    <SnifferFeatures
+    <SnifferSniffs
       frame={{
         frame_time: "2026-01-01T22:18:00Z",
         analyzed_at: "2026-01-01T22:18:05Z",

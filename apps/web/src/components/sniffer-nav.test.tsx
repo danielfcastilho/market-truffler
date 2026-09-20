@@ -1,39 +1,47 @@
 import { render, screen } from "@testing-library/react";
-import { it, expect } from "vitest";
+import { it, expect, vi, beforeEach } from "vitest";
+import { usePathname } from "next/navigation";
 import { SnifferNav } from "./sniffer-nav";
 
-it("exposes navigation for Truffles, Notes, and Features", () => {
-  render(<SnifferNav view="truffles" />);
+vi.mock("next/navigation", () => ({
+  usePathname: vi.fn(),
+}));
+
+function setRoute(pathname: string) {
+  vi.mocked(usePathname).mockReturnValue(pathname);
+}
+
+beforeEach(() => {
+  setRoute("/sniffer");
+});
+
+it("exposes navigation for exactly Truffles and Sniffs — no Dashboard or Scents tab", () => {
+  render(<SnifferNav />);
   expect(screen.getByRole("link", { name: "🍄 Truffles" })).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "Notes" })).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "Features" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Sniffs" })).toBeInTheDocument();
+  expect(screen.getAllByRole("link")).toHaveLength(2);
+  expect(screen.queryByRole("link", { name: "Dashboard" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Scents" })).not.toBeInTheDocument();
 });
 
-it("marks Truffles as the active view and links Notes/Features correctly", () => {
-  render(<SnifferNav view="truffles" />);
+it("marks 🍄 Truffles as the active tab on /sniffer (the Truffles dashboard) and links Sniffs to its own route", () => {
+  render(<SnifferNav />);
   expect(screen.getByRole("link", { name: "🍄 Truffles" })).toHaveAttribute("aria-current", "page");
-  expect(screen.getByRole("link", { name: "Notes" })).not.toHaveAttribute("aria-current");
-  expect(screen.getByRole("link", { name: "Features" })).not.toHaveAttribute("aria-current");
-  expect(screen.getByRole("link", { name: "Notes" })).toHaveAttribute(
-    "href",
-    "/sniffer?view=notes",
-  );
-  expect(screen.getByRole("link", { name: "Features" })).toHaveAttribute(
-    "href",
-    "/sniffer?view=features",
-  );
+  expect(screen.getByRole("link", { name: "🍄 Truffles" })).toHaveAttribute("href", "/sniffer");
+  expect(screen.getByRole("link", { name: "Sniffs" })).not.toHaveAttribute("aria-current");
+  expect(screen.getByRole("link", { name: "Sniffs" })).toHaveAttribute("href", "/sniffer/sniffs");
 });
 
-it("marks Notes as the active view when on the notes view", () => {
-  render(<SnifferNav view="notes" />);
-  expect(screen.getByRole("link", { name: "Notes" })).toHaveAttribute("aria-current", "page");
+it("marks Sniffs as the active tab on /sniffer/sniffs", () => {
+  setRoute("/sniffer/sniffs");
+  render(<SnifferNav />);
+  expect(screen.getByRole("link", { name: "Sniffs" })).toHaveAttribute("aria-current", "page");
   expect(screen.getByRole("link", { name: "🍄 Truffles" })).not.toHaveAttribute("aria-current");
-  expect(screen.getByRole("link", { name: "Features" })).not.toHaveAttribute("aria-current");
 });
 
-it("marks Features as the active view when on the features view", () => {
-  render(<SnifferNav view="features" />);
-  expect(screen.getByRole("link", { name: "Features" })).toHaveAttribute("aria-current", "page");
+it("highlights no tab on a symbol detail route", () => {
+  setRoute("/sniffer/BTCUSDT");
+  render(<SnifferNav />);
   expect(screen.getByRole("link", { name: "🍄 Truffles" })).not.toHaveAttribute("aria-current");
-  expect(screen.getByRole("link", { name: "Notes" })).not.toHaveAttribute("aria-current");
+  expect(screen.getByRole("link", { name: "Sniffs" })).not.toHaveAttribute("aria-current");
 });
