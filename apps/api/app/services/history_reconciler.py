@@ -25,6 +25,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -59,6 +60,19 @@ SessionFactory = Callable[[], AsyncSession]
 NewSymbolsHook = Callable[[list[str]], "Awaitable[None]"]
 
 
+@dataclass
+class HistoryReconcilerStatus:
+    """Read-only snapshot of the reconciler's most recent live Bybit REST
+    contact — from its own already-scheduled universe-refresh work, never a
+    fresh call made on Vitals' behalf. `last_universe_refresh_ok=None`
+    means "hasn't run yet" (only possible before `start()`'s initial
+    synchronous refresh completes); Vitals treats that the same as "down"
+    since it can't yet claim reachability either way."""
+
+    last_universe_refresh_at: datetime | None = None
+    last_universe_refresh_ok: bool | None = None
+
+
 class HistoryReconciler:
     def __init__(
         self,
@@ -90,10 +104,15 @@ class HistoryReconciler:
         self._stop_event: asyncio.Event | None = None
         self._tasks: list[asyncio.Task[None]] = []
         self._running = False
+        self._status = HistoryReconcilerStatus()
 
     @property
     def running(self) -> bool:
         return self._running
+
+    @property
+    def status(self) -> HistoryReconcilerStatus:
+        return self._status
 
     async def start(self) -> None:
         self._stop_event = asyncio.Event()
@@ -140,7 +159,12 @@ class HistoryReconciler:
             discovered = await self._market_universe.discover_universe()
         except MarketUniverseUnavailable:
             logger.warning("history_reconciler_universe_refresh_failed")
+            self._status.last_universe_refresh_at = datetime.now(UTC)
+            self._status.last_universe_refresh_ok = False
             return
+
+        self._status.last_universe_refresh_at = datetime.now(UTC)
+        self._status.last_universe_refresh_ok = True
 
         now = datetime.now(UTC)
         async with self._session_factory() as session:

@@ -2,27 +2,20 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.core.deps import get_market_collector, get_market_universe_service
-from app.domain.market import Instrument
+from app.core.deps import get_history_reconciler, get_market_collector
 from app.main import app
 from app.models.frame import MarketFrame, MarketFrameMember
 from app.models.instrument import Instrument as InstrumentRow
 from app.repositories.frame_repository import FrameRepository
+from app.services.history_reconciler import HistoryReconcilerStatus
 from app.services.market_collector import MarketCollectorStatus
-from app.services.market_universe import MarketUniverseUnavailable
 
 RETENTION_DAYS = 365
 
 
-class _FakeService:
-    def __init__(self, universe: list[Instrument] | None = None, unavailable: bool = False) -> None:
-        self._universe = universe or []
-        self._unavailable = unavailable
-
-    async def discover_universe(self) -> list[Instrument]:
-        if self._unavailable:
-            raise MarketUniverseUnavailable("bybit is down")
-        return self._universe
+class _FakeReconciler:
+    def __init__(self, status: HistoryReconcilerStatus) -> None:
+        self.status = status
 
 
 class _FakeCollector:
@@ -31,6 +24,29 @@ class _FakeCollector:
 
 
 _IDLE_COLLECTOR_STATUS = MarketCollectorStatus()
+# Mirrors the real HistoryReconciler's state immediately after its startup
+# universe refresh succeeds — the common case for these tests, none of
+# which are exercising bybit_connectivity itself.
+_OK_RECONCILER_STATUS = HistoryReconcilerStatus(
+    last_universe_refresh_at=datetime.now(UTC), last_universe_refresh_ok=True
+)
+
+
+async def _seed_active_instruments(db_session, symbols: list[str]) -> None:
+    now = datetime.now(UTC)
+    for symbol in symbols:
+        db_session.add(
+            InstrumentRow(
+                exchange="bybit",
+                symbol=symbol,
+                base_coin=symbol.removesuffix("USDT"),
+                quote_coin="USDT",
+                is_active=True,
+                first_seen_at=now,
+                last_seen_at=now,
+            )
+        )
+    await db_session.commit()
 
 
 async def _login(client, test_user):
@@ -41,13 +57,16 @@ async def _login(client, test_user):
     assert response.status_code == 200
 
 
-def _override(service=None, collector_status: MarketCollectorStatus = _IDLE_COLLECTOR_STATUS):
-    app.dependency_overrides[get_market_universe_service] = lambda: service or _FakeService()
+def _override(
+    reconciler_status: HistoryReconcilerStatus = _OK_RECONCILER_STATUS,
+    collector_status: MarketCollectorStatus = _IDLE_COLLECTOR_STATUS,
+):
+    app.dependency_overrides[get_history_reconciler] = lambda: _FakeReconciler(reconciler_status)
     app.dependency_overrides[get_market_collector] = lambda: _FakeCollector(collector_status)
 
 
 def _clear_overrides():
-    del app.dependency_overrides[get_market_universe_service]
+    del app.dependency_overrides[get_history_reconciler]
     del app.dependency_overrides[get_market_collector]
 
 
@@ -60,16 +79,21 @@ async def test_market_status_requires_authentication(client):
     assert response.status_code == 401
 
 
-async def test_market_status_reports_ok_with_symbol_count(client, test_user):
+async def test_market_status_never_calls_bybit_directly(client, test_user, db_session, monkeypatch):
+    """The whole point of this fix: opening Vitals must never itself issue a
+    live Bybit REST call. `bybit_connectivity`/`symbols_tracked` must come
+    from already-maintained state (the reconciler's own status, and a
+    persisted instrument count) — never a fresh `discover_universe()`."""
+    from app.services.market_universe import MarketUniverseService
+
+    async def _fail_if_called(self, *args, **kwargs):
+        raise AssertionError("market_status must never call Bybit directly")
+
+    monkeypatch.setattr(MarketUniverseService, "discover_universe", _fail_if_called)
+
+    await _seed_active_instruments(db_session, ["BTCUSDT", "ETHUSDT"])
     await _login(client, test_user)
-    _override(
-        service=_FakeService(
-            universe=[
-                Instrument(symbol="BTCUSDT", base_coin="BTC", quote_coin="USDT"),
-                Instrument(symbol="ETHUSDT", base_coin="ETH", quote_coin="USDT"),
-            ]
-        )
-    )
+    _override()
     try:
         response = await client.get("/api/market/status")
     finally:
@@ -81,9 +105,33 @@ async def test_market_status_reports_ok_with_symbol_count(client, test_user):
     assert body["symbols_tracked"] == 2
 
 
-async def test_market_status_reports_down_when_bybit_unavailable(client, test_user):
+async def test_market_status_never_hydrates_full_frame_member_candle_data(
+    client, test_user, monkeypatch
+):
+    """The other half of the fix: market_status must use
+    `get_latest_finalized_summary` (frame-level metadata only), never
+    `get_latest_finalized`/`_fetch_members`'s per-member OHLCV join — that
+    join alone measured ~16s locally and was the dominant Vitals cost."""
+
+    async def _fail_if_called(self, *args, **kwargs):
+        raise AssertionError("market_status must never hydrate full frame members")
+
+    monkeypatch.setattr(FrameRepository, "_fetch_members", _fail_if_called)
+
     await _login(client, test_user)
-    _override(service=_FakeService(unavailable=True))
+    _override()
+    try:
+        response = await client.get("/api/market/status")
+    finally:
+        _clear_overrides()
+
+    assert response.status_code == 200
+
+
+async def test_market_status_reports_ok_with_symbol_count(client, test_user, db_session):
+    await _seed_active_instruments(db_session, ["BTCUSDT", "ETHUSDT"])
+    await _login(client, test_user)
+    _override(reconciler_status=_OK_RECONCILER_STATUS)
     try:
         response = await client.get("/api/market/status")
     finally:
@@ -91,8 +139,74 @@ async def test_market_status_reports_down_when_bybit_unavailable(client, test_us
 
     assert response.status_code == 200
     body = response.json()
+    assert body["bybit_connectivity"] == "ok"
+    assert body["symbols_tracked"] == 2
+
+
+async def test_market_status_reports_down_when_last_universe_refresh_failed(client, test_user):
+    await _login(client, test_user)
+    _override(
+        reconciler_status=HistoryReconcilerStatus(
+            last_universe_refresh_at=datetime.now(UTC), last_universe_refresh_ok=False
+        )
+    )
+    try:
+        response = await client.get("/api/market/status")
+    finally:
+        _clear_overrides()
+
+    assert response.status_code == 200
+    assert response.json()["bybit_connectivity"] == "down"
+
+
+async def test_market_status_treats_no_refresh_yet_the_same_as_down(client, test_user):
+    """`last_universe_refresh_ok=None` (hasn't run yet) can't claim
+    reachability either way — Vitals must not report "ok" for it."""
+    await _login(client, test_user)
+    _override(reconciler_status=HistoryReconcilerStatus())
+    try:
+        response = await client.get("/api/market/status")
+    finally:
+        _clear_overrides()
+
+    assert response.json()["bybit_connectivity"] == "down"
+
+
+async def test_market_status_symbols_tracked_stays_a_real_count_even_when_bybit_is_down(
+    client, test_user, db_session
+):
+    """symbols_tracked is a persisted fact, decoupled from the live Bybit
+    probe outcome — it must not collapse to N/A just because the most
+    recent background refresh happened to fail."""
+    await _seed_active_instruments(db_session, ["BTCUSDT"])
+    await _login(client, test_user)
+    _override(
+        reconciler_status=HistoryReconcilerStatus(
+            last_universe_refresh_at=datetime.now(UTC), last_universe_refresh_ok=False
+        )
+    )
+    try:
+        response = await client.get("/api/market/status")
+    finally:
+        _clear_overrides()
+
+    body = response.json()
     assert body["bybit_connectivity"] == "down"
-    assert body["symbols_tracked"] is None
+    assert body["symbols_tracked"] == 1
+
+
+async def test_market_status_symbols_tracked_is_zero_not_na_with_no_active_instruments(
+    client, test_user
+):
+    await _login(client, test_user)
+    _override()
+    try:
+        response = await client.get("/api/market/status")
+    finally:
+        _clear_overrides()
+
+    # A real, empty repository read — 0 is truthful, never N/A.
+    assert response.json()["symbols_tracked"] == 0
 
 
 async def test_market_status_reports_market_data_down_when_collector_has_no_active_connections(

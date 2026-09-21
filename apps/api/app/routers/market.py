@@ -5,14 +5,13 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, status
 
 from app.core.config import get_settings
-from app.core.deps import CurrentUserDep, DbSessionDep, MarketCollectorDep, MarketUniverseServiceDep
+from app.core.deps import CurrentUserDep, DbSessionDep, HistoryReconcilerDep, MarketCollectorDep
 from app.domain.frame import MarketFrame as MarketFrameDomain
 from app.repositories.frame_repository import FrameRepository
 from app.repositories.instrument_repository import InstrumentRepository
 from app.schemas.frame import FrameCandleContext, FrameMember, MarketFrameResponse
 from app.schemas.market import MarketStatus
 from app.services.historical_coverage import compute_historical_coverage
-from app.services.market_universe import MarketUniverseUnavailable
 
 router = APIRouter(tags=["market"])
 logger = logging.getLogger(__name__)
@@ -43,7 +42,7 @@ def _to_frame_response(frame: MarketFrameDomain) -> MarketFrameResponse:
 
 @router.get("/api/market/status", response_model=MarketStatus)
 async def market_status(
-    universe_service: MarketUniverseServiceDep,
+    reconciler: HistoryReconcilerDep,
     collector: MarketCollectorDep,
     db: DbSessionDep,
     current_user: CurrentUserDep,
@@ -51,26 +50,49 @@ async def market_status(
     """Truthful Bybit REST connectivity, market universe size, live MARKET
     collector state, and historical reconciliation progress, for Vitals.
 
-    "bybit_connectivity"/"symbols_tracked" come from a fresh REST discovery
-    call — if Bybit can't be reached, this reports "down" with no symbol
-    count rather than raising.
+    Vitals is an observer: it must never trigger expensive operational work
+    merely to render a status page. This endpoint had two real, independent
+    latency bugs, both fixed here — a measured ~1.2-2s one and a much larger
+    measured ~16-28s one; the second was by far the dominant cost, so fixing
+    only the first would not have made Vitals materially faster:
+
+    - "bybit_connectivity" reads `HistoryReconciler`'s own most recent
+      universe-refresh outcome (`reconciler.status`) — the reconciler
+      already calls Bybit's REST `instruments-info` endpoint periodically
+      in the background (and once synchronously on startup, before it ever
+      starts serving requests), so this is a genuinely live signal with no
+      additional network I/O. This endpoint used to call
+      `MarketUniverseService.discover_universe()` directly on every
+      request instead; that single call alone measured ~1.2-2s against
+      real Bybit (a large, apparently uncached `instruments-info`
+      response).
+    - "symbols_tracked" reads the persisted active-instrument count
+      (`active_instruments` below, already needed for
+      "historical_coverage") instead of a fresh discovery call — the same
+      background reconciliation keeps it current, and it stays a truthful
+      "how many symbols do we track" answer even in the rare window where
+      the live Bybit probe itself is currently failing.
+    - "latest_market_frame"/"frame_completeness" now read
+      `FrameRepository.get_latest_finalized_summary` (frame-level metadata
+      only) instead of `get_latest_finalized`, which unconditionally joins
+      every member's full OHLCV context across all five timeframes — a
+      join that alone measured ~16s locally (unbounded per-timeframe
+      candle subqueries) and was actually the single largest contributor
+      to Vitals' load time, well past the REST call above. This endpoint
+      never needed that per-member candle data in the first place.
 
     "market_data"/"last_market_update"/"data_freshness_seconds" are a
-    read-only snapshot of the live MARKET collector, "historical_coverage"
-    a read-only snapshot of the background history reconciler's persisted
-    progress, and "latest_market_frame"/"frame_completeness" a read-only
-    snapshot of the most recently finalized Market Frame. All three run
-    continuously from application startup; this endpoint only observes
-    them — it never starts, stops, or otherwise drives bootstrap, recovery,
-    WebSocket connections, or frame construction.
+    read-only snapshot of the live MARKET collector, and
+    "historical_coverage" a read-only snapshot of the background history
+    reconciler's persisted progress. All of this runs continuously from
+    application startup; this endpoint only observes it — it never starts,
+    stops, or otherwise drives bootstrap, recovery, WebSocket connections,
+    universe discovery, or frame construction.
     """
-    bybit_connectivity: Literal["ok", "down"]
-    symbols_tracked: int | None
-    try:
-        universe = await universe_service.discover_universe()
-        bybit_connectivity, symbols_tracked = "ok", len(universe)
-    except MarketUniverseUnavailable:
-        bybit_connectivity, symbols_tracked = "down", None
+    reconciler_status = reconciler.status
+    bybit_connectivity: Literal["ok", "down"] = (
+        "ok" if reconciler_status.last_universe_refresh_ok else "down"
+    )
 
     collector_status = collector.status
     market_data: Literal["ok", "down"] = (
@@ -82,11 +104,18 @@ async def market_status(
     )
 
     active_instruments = await InstrumentRepository(db).list_active()
+    # A real (possibly empty) repository read, not a live probe — 0 is a
+    # truthful count here, never conflated with "unavailable"/N/A.
+    symbols_tracked: int | None = len(active_instruments)
     historical_coverage = compute_historical_coverage(
         active_instruments, datetime.now(UTC), get_settings().market_history_retention_days
     )
 
-    latest_frame = await FrameRepository(db).get_latest_finalized()
+    # Metadata only (frame_time/completeness) — never the fully-hydrated
+    # per-member OHLCV join `get_latest_finalized` does, which this row
+    # doesn't need and which was by far the most expensive part of this
+    # endpoint (see `FrameRepository.get_latest_finalized_summary`).
+    latest_frame = await FrameRepository(db).get_latest_finalized_summary()
     latest_market_frame = latest_frame.frame_time if latest_frame else None
     frame_completeness = latest_frame.completeness if latest_frame else None
 

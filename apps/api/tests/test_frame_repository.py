@@ -335,6 +335,49 @@ async def test_get_latest_finalized_returns_none_when_nothing_finalized_yet(db_s
     assert await repo.get_latest_finalized() is None
 
 
+async def test_get_latest_finalized_summary_reports_frame_metadata_without_hydrating_members(
+    db_session, instrument_id
+):
+    """The Vitals-facing read: same frame_time/completeness as
+    `get_latest_finalized`, but `members` must stay empty — this must
+    never run the per-timeframe candle join `get_latest_finalized` does."""
+    hour_start = FRAME_TIME - timedelta(hours=1)
+    await _seed_full_hour_of_1m(db_session, instrument_id, hour_start)
+
+    repo = FrameRepository(db_session)
+    await repo.create_building(
+        FRAME_TIME, expected_instrument_ids=[instrument_id], now=datetime.now(UTC)
+    )
+    members = await _member_rows_for(db_session, instrument_id, FRAME_TIME)
+    await repo.finalize(FRAME_TIME, members, now=datetime.now(UTC))
+
+    summary = await repo.get_latest_finalized_summary()
+    assert summary is not None
+    assert summary.frame_time == FRAME_TIME
+    assert summary.status == FrameStatus.COMPLETE
+    assert summary.completeness == 1.0
+    assert summary.members == []  # never hydrated — that's the whole point
+
+
+async def test_get_latest_finalized_summary_ignores_a_still_building_frame(db_session):
+    repo = FrameRepository(db_session)
+    later = FRAME_TIME + timedelta(minutes=1)
+    await repo.create_building(FRAME_TIME, expected_instrument_ids=[1], now=datetime.now(UTC))
+    await repo.finalize(FRAME_TIME, [], now=datetime.now(UTC))
+    await repo.create_building(later, expected_instrument_ids=[1], now=datetime.now(UTC))
+
+    summary = await repo.get_latest_finalized_summary()
+    assert summary is not None
+    assert summary.frame_time == FRAME_TIME  # not the newer, still-BUILDING one
+
+
+async def test_get_latest_finalized_summary_returns_none_when_nothing_finalized_yet(db_session):
+    repo = FrameRepository(db_session)
+    await repo.create_building(FRAME_TIME, expected_instrument_ids=[1], now=datetime.now(UTC))
+
+    assert await repo.get_latest_finalized_summary() is None
+
+
 # -- get_expected_instrument_ids (crash-recovery follow-up) -------------------------
 
 

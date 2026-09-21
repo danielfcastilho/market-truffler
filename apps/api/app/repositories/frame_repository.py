@@ -154,19 +154,53 @@ class FrameRepository:
         return await self._hydrate(row)
 
     async def get_latest_finalized(self) -> MarketFrame | None:
-        """The most recently finalized (COMPLETE or PARTIAL) frame — the
-        dominant read for future consumers (e.g. Sniffer)."""
-        row = (
-            await self._session.execute(
-                select(MarketFrameRow)
-                .where(MarketFrameRow.status != FrameStatus.BUILDING.value)
-                .order_by(MarketFrameRow.frame_time.desc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
+        """The most recently finalized (COMPLETE or PARTIAL) frame, with
+        full joined per-member OHLCV context — the dominant read for
+        inspection/debugging consumers (e.g. `/api/market/frames/latest`).
+
+        Callers that only need frame-level facts (frame_time, status,
+        completeness) should use `get_latest_finalized_summary` instead —
+        see its docstring for why."""
+        row = await self._latest_finalized_row()
         if row is None:
             return None
         return await self._hydrate(row)
+
+    async def get_latest_finalized_summary(self) -> MarketFrame | None:
+        """Same frame as `get_latest_finalized`, but frame-level metadata
+        only (`members` always `[]`) — never runs `_fetch_members`'s
+        five-way join over unbounded per-timeframe candle subqueries.
+
+        That join is the single most expensive query in this service
+        (measured ~16s locally against a ~30-day/771-instrument universe,
+        because each of the five per-timeframe subqueries scans its whole
+        timeframe's candles with no time bound) and is wholly unnecessary
+        for a caller that only wants `frame_time`/`completeness` — e.g.
+        Vitals' "Latest market frame"/"Frame completeness" rows, which
+        must stay a cheap observation, never triggering this cost merely
+        because a human opened the page.
+        """
+        row = await self._latest_finalized_row()
+        if row is None:
+            return None
+        return MarketFrame(
+            frame_time=row.frame_time,
+            expected_instruments=row.expected_instruments,
+            available_instruments=row.available_instruments,
+            status=FrameStatus(row.status),
+            created_at=row.created_at,
+            finalized_at=row.finalized_at,
+            members=[],
+        )
+
+    async def _latest_finalized_row(self) -> MarketFrameRow | None:
+        result = await self._session.execute(
+            select(MarketFrameRow)
+            .where(MarketFrameRow.status != FrameStatus.BUILDING.value)
+            .order_by(MarketFrameRow.frame_time.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
 
     async def _hydrate(self, row: MarketFrameRow) -> MarketFrame:
         members = await self._fetch_members(row.frame_time)
