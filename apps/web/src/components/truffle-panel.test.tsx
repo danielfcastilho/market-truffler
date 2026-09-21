@@ -2,9 +2,13 @@ import { render, screen } from "@testing-library/react";
 import { it, expect } from "vitest";
 import { TrufflePanel } from "./truffle-panel";
 
-it("shows the given label and #/Symbol/Score columns", () => {
-  render(<TrufflePanel label="Top Long Truffles" />);
-  expect(screen.getByRole("heading", { name: "Top Long Truffles" })).toBeInTheDocument();
+it("renders no heading of its own — the active Truffle tab already identifies the direction", () => {
+  render(<TrufflePanel direction="long" />);
+  expect(screen.queryByRole("heading")).not.toBeInTheDocument();
+});
+
+it("shows #/Symbol/Score columns", () => {
+  render(<TrufflePanel direction="long" />);
   expect(screen.getByRole("columnheader", { name: "#" })).toBeInTheDocument();
   expect(screen.getByRole("columnheader", { name: "Symbol" })).toBeInTheDocument();
   expect(screen.getByRole("columnheader", { name: "Score" })).toBeInTheDocument();
@@ -14,9 +18,14 @@ it("shows the given label and #/Symbol/Score columns", () => {
 });
 
 it("truthfully shows no truffles yet without fabricating score, ranks, or coins", () => {
-  render(<TrufflePanel label="Top Long Truffles" />);
+  render(<TrufflePanel direction="short" />);
   expect(screen.getByRole("table")).toBeInTheDocument();
   // Header row plus exactly one empty-state row — no instrument rows.
   expect(screen.getAllByRole("row")).toHaveLength(2);
   expect(screen.getByText("No truffles yet")).toBeInTheDocument();
+});
+
+it("marks which direction's ranking it renders, for callers/tests to key off", () => {
+  render(<TrufflePanel direction="short" />);
+  expect(screen.getByRole("table")).toHaveAttribute("data-direction", "short");
 });

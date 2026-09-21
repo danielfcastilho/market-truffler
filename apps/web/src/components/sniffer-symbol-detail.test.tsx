@@ -73,9 +73,22 @@ it("shows Long/Short Rank as N/A — never fabricated, never 0", () => {
   expect(within(rankSection).getAllByText("N/A")).toHaveLength(2);
 });
 
-it("shows 🍄 Truffle status as N/A — never fabricated, never 0", () => {
+it("has no standalone Truffles section — a Truffle is a qualification badge, not its own metric", () => {
   render(<SnifferSymbolDetail symbol="BTCUSDT" frame={FRAME} />);
-  expect(screen.getByText("🍄 Truffle")).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Truffles" })).not.toBeInTheDocument();
+  expect(screen.queryByText("Green Truffle")).not.toBeInTheDocument();
+  expect(screen.queryByText("Red Truffle")).not.toBeInTheDocument();
+  expect(screen.queryByText("🍄 Truffle")).not.toBeInTheDocument();
+});
+
+it("shows no Truffle badge beside N/A Score rows while no qualification exists", () => {
+  const { container } = render(<SnifferSymbolDetail symbol="BTCUSDT" frame={FRAME} />);
+  const scoreSection = screen.getByRole("heading", { name: "Score" }).parentElement!;
+  // No badge (no icon, no accessible "Qualified as a ..." text) anywhere
+  // in Score — absence of the badge is correct, not a grey/disabled one.
+  expect(within(scoreSection).queryByText(/Qualified as a/)).not.toBeInTheDocument();
+  // No Truffle icon (an <svg>) is rendered anywhere on the page at all.
+  expect(container.querySelector("svg")).not.toBeInTheDocument();
 });
 
 it("has an empty, unavailable Scents section — no dimension is invented", () => {
@@ -87,7 +100,7 @@ it("has an empty, unavailable Scents section — no dimension is invented", () =
   }
 });
 
-it("lays out sections in pipeline order: Sniffs, Scents, Score, Rank, Truffle", () => {
+it("lays out sections in pipeline order: Sniffs, Scents, Score, Rank", () => {
   render(<SnifferSymbolDetail symbol="BTCUSDT" frame={FRAME} />);
   const headings = screen.getAllByRole("heading").map((h) => h.textContent);
   // BTCUSDT (symbol) is first; Sniffs' own group sub-headings (Returns/RSI)
@@ -101,7 +114,6 @@ it("handles an unknown symbol cleanly, without fabricating data", () => {
   render(<SnifferSymbolDetail symbol="DOESNOTEXISTUSDT" frame={FRAME} />);
   expect(screen.getByRole("heading", { name: "DOESNOTEXISTUSDT" })).toBeInTheDocument();
   expect(screen.getByText(/No Sniffer data for DOESNOTEXISTUSDT/)).toBeInTheDocument();
-  expect(screen.queryByText("🍄 Truffle")).not.toBeInTheDocument();
   expect(screen.queryByText("N/A")).not.toBeInTheDocument();
 });
 

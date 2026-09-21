@@ -1,21 +1,28 @@
 import type { SnifferFrame } from "@/lib/server-api";
 import { FEATURE_COLUMNS, groupColumnsByFamily } from "@/lib/sniffer-feature-columns";
 import { SnifferScents } from "@/components/sniffer-scents";
+import { TruffleQualificationBadge, type TruffleDirection } from "@/components/truffle-icon";
 import { cn } from "@/lib/utils";
 
 /**
  * The consolidated microscope for one tracked symbol, laid out in the
  * same order the pipeline flows — facts first, conclusions last: Sniffs
  * (factual measurements), Scents (the interpreted dimensions that would
- * explain a Score), Score (Long/Short directional desirability), Rank
+ * explain a Score), Score (Long/Short directional aggregate), and Rank
  * (this symbol's position within the analyzed universe for that
- * direction), and finally Truffle status. Reuses the exact same frame
- * data and column config (`FEATURE_COLUMNS`) the Sniffs matrix uses, so
- * this page's Sniffs numbers are always identical to the matrix's — no
- * separate backend endpoint, no duplicated formatting logic. Scent/Score/
- * Rank/Truffle qualification aren't implemented yet, so those rows are
- * always "N/A" here — never fabricated, never 0 (0 will eventually be a
- * real, meaningful score).
+ * direction). Reuses the exact same frame data and column config
+ * (`FEATURE_COLUMNS`) the Sniffs matrix uses, so this page's Sniffs
+ * numbers are always identical to the matrix's — no separate backend
+ * endpoint, no duplicated formatting logic. Scent/Score/Rank aren't
+ * implemented yet, so those rows are always "N/A" here — never
+ * fabricated, never 0 (0 will eventually be a real, meaningful score).
+ *
+ * A Truffle is not another metric alongside Score/Rank — it's a
+ * qualification badge ON a directional Score (see `StatRow`'s
+ * `qualification` prop and `TruffleQualificationBadge`). No qualification
+ * data/rule exists yet, so neither Score row passes one today; while that
+ * remains true, no badge renders at all (never a placeholder/greyed-out
+ * mushroom beside an N/A Score).
  */
 export function SnifferSymbolDetail({
   symbol,
@@ -65,10 +72,11 @@ export function SnifferSymbolDetail({
 
           {/* Score, Rank, and Truffle qualification aren't implemented
               yet — see docs/ARCHITECTURE.md's pipeline. Once a symbol can
-              be scored/ranked/qualified, this is where its 🍄 status
-              belongs. "Score" (not "Scent") is deliberate: Scent is
-              reserved for the intermediate Pillar-level dimensions above,
-              not this final aggregate. */}
+              be scored/ranked/qualified, these sections carry real
+              values, and a qualified Score row gets a Truffle badge (see
+              `StatRow`'s `qualification` prop). "Score" (not "Scent") is
+              deliberate: Scent is reserved for the intermediate
+              Pillar-level dimensions above, not this final aggregate. */}
           <div className="space-y-2">
             <h3 className="font-mono text-sm font-medium text-foreground">Score</h3>
             <div className="divide-y divide-border/60 font-mono text-sm">
@@ -84,10 +92,6 @@ export function SnifferSymbolDetail({
               <StatRow label="Short" value="N/A" valueClassName="text-muted-foreground/70" />
             </div>
           </div>
-
-          <div className="font-mono text-sm">
-            <StatRow label="🍄 Truffle" value="N/A" valueClassName="text-muted-foreground/70" />
-          </div>
         </>
       )}
     </div>
@@ -98,11 +102,15 @@ function StatRow({
   label,
   value,
   title,
+  qualification,
   valueClassName,
 }: {
   label: string;
   value: string;
   title?: string;
+  /** This direction's Score qualified as a Truffle — omit while no real
+   * qualification data/rule exists, rather than passing a placeholder. */
+  qualification?: TruffleDirection;
   valueClassName?: string;
 }) {
   return (
@@ -110,7 +118,10 @@ function StatRow({
       <span className="text-muted-foreground" title={title}>
         {label}
       </span>
-      <span className={cn("font-medium", valueClassName)}>{value}</span>
+      <span className="flex items-center gap-2">
+        <span className={cn("font-medium", valueClassName)}>{value}</span>
+        {qualification !== undefined && <TruffleQualificationBadge direction={qualification} />}
+      </span>
     </div>
   );
 }

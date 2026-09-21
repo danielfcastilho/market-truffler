@@ -1,6 +1,7 @@
 import { serverFetch, getSystemInfo, getMarketStatus, getSnifferStatus } from "@/lib/server-api";
 import { buildVitalsSections, type VitalsInput, type VitalStatus } from "@/lib/vitals";
 import { cn } from "@/lib/utils";
+import { PageContainer } from "@/components/page-container";
 
 async function getProbe(path: string): Promise<"ok" | "down"> {
   try {
@@ -30,7 +31,7 @@ export default async function VitalsPage() {
   const sections = buildVitalsSections(input);
 
   return (
-    <div className="mx-auto max-w-2xl px-4 py-10 md:px-8 md:py-14">
+    <PageContainer className="max-w-2xl">
       <h1 className="mb-8 text-2xl font-semibold tracking-tight">🩺 Vitals</h1>
 
       <div className="space-y-8 font-mono text-sm">
@@ -50,6 +51,6 @@ export default async function VitalsPage() {
           </div>
         ))}
       </div>
-    </div>
+    </PageContainer>
   );
 }

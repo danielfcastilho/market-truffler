@@ -1,17 +1,13 @@
 import { ModuleCard } from "@/components/module-card";
+import { PageContainer } from "@/components/page-container";
 
 export default function HomePage() {
   return (
-    <div className="mx-auto max-w-4xl px-4 py-10 md:px-8 md:py-14">
+    <PageContainer className="max-w-4xl">
       <div className="mb-10 space-y-3">
         <h1 className="text-2xl font-semibold tracking-tight md:text-3xl">
           🐷🍄 Market Truffler
         </h1>
-        <p className="max-w-2xl text-muted-foreground">
-          A foundation for a systematic crypto trading system. Sniffer digs through market data
-          to surface opportunities — truffles — and Warhog acts on them, with OINK CORP
-          developing and validating the strategy behind the scenes.
-        </p>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2">
@@ -40,6 +36,6 @@ export default function HomePage() {
           description="Is Market Truffler healthy and operating correctly?"
         />
       </div>
-    </div>
+    </PageContainer>
   );
 }
