@@ -19,7 +19,7 @@ a separate product area:
                       ▼
             🐽 SNIFFER — DISCOVERY
   (exchange connectivity, market-data acquisition,
-   Sniffs, Scents, Score, Rank)
+   Sniffs, Scents, Score, Rank, Qualification)
                       │
                       ▼
            🍄 opportunities / truffles
@@ -33,31 +33,42 @@ a separate product area:
 Separately, alongside but outside that runtime pipeline:
 
 ```
+     MARKET (historical truth)
+                      │
+                      ▼
           🧬 OINK CORP — RESEARCH
  (feature research, backtests, Martin Gale
   simulation, calibration, walk-forward validation)
                       │
+                      │ develops, validates, promotes
                       ▼
-           develops / validates strategy
+             SCENT MODEL vN
                       │
                       ▼
                    SNIFFER
-              (feeds its scoring)
+     (Scents → Score → Rank → Qualification → Truffles)
 ```
 
 OINK CORP is where the strategy is developed and validated; Sniffer is where
 that scoring runs in production, surfacing opportunities ("truffles") for
 Warhog to act on. OINK CORP is not a production runtime dependency — nothing
-in `docker-compose.yml` builds or starts it.
+in `docker-compose.yml` builds or starts it, and production Sniffer never
+depends on OINK CORP being live: it executes whatever Scent Model was last
+deliberately promoted, not whatever OINK CORP happens to be experimenting
+with right now. See "OINK CORP and the Scent Model" below for the versioned
+contract between the two.
 
 ### Domain responsibilities (future)
 
 **🐽 Sniffer — Discovery.** Exchange connectivity, historical backfills,
 WebSocket market streams, normalization, storage, data quality — and,
-downstream of that data, Sniffs, Scents, Score, Rank, and individual
-opportunity inspection.
+downstream of that data, Sniffs, Scents, Score, Rank, Qualification, and
+individual opportunity inspection.
 Discovery and analysis are one product area, not two: Sniffer's job is to
-turn market data into truffles.
+turn market data into truffles. Sniffer is a read-only production
+*interpretation* surface — it explains Sniff/Scent/Score/Rank/Qualification
+values, but is never where a user casually changes a strategy parameter
+(see "OINK CORP has knobs; Sniffer has gauges" below).
 
 **🐗 Warhog — Trading.** Entries, position sizing, Martin Gale progression,
 active-position management, recovery, emergency behavior, hedging, exits,
@@ -66,7 +77,9 @@ orders, fills, reconciliation.
 **🧬 OINK CORP — Research.** Quantitative experiments, feature research,
 backtests, Martin Gale simulation, calibration, ablation, walk-forward
 validation. A repository boundary and a conceptual home for research, not a
-service.
+service — it has the knobs (parameters, thresholds, candidate formulas)
+that Sniffer deliberately does not expose. See "OINK CORP and the Scent
+Model" below for how (and when) its output actually reaches production.
 
 **🩺 Vitals — System Health.** Not part of the trading pipeline — it sits
 outside it and observes all of it. Answers one question: "is Market Truffler
@@ -81,8 +94,8 @@ Sniffer's factual measurements — `return_5m`, `return_1h`, `rsi_14_5m`,
 `rsi_14_15m`, `rsi_14_1h`, `rsi_14_4h`, six metrics per instrument per
 Market Frame — are implemented (see "Sniffer measures" below). Beyond
 that, Warhog and OINK CORP remain fully unimplemented, and Sniffer itself
-has no other Sniffs, Scents, Score, Rank, or Truffle qualification yet.
-No Martin Gale parameters, entry/exit/hedge
+has no other Sniffs, Scents, Score, Rank, or Qualification yet — so no
+Truffles exist either. No Martin Gale parameters, entry/exit/hedge
 rules, or live execution architecture have been decided either. Those are
 later engineering/research milestones, and this codebase makes no
 assumptions about them.
@@ -517,12 +530,12 @@ implies no ranking. These endpoints and their response shape
 (`SnifferFrameResponse`/`SnifferInstrument`, see `app/schemas/sniffer.py`)
 represent **Sniffs** — factual measurements — and stay that way regardless
 of what the UI does with them; see "Sniffs → Scents → Score → Rank →
-Truffles" below for how the Sniffer product surface itself is organized
-around that same pipeline. A client-side column sort on the Sniffs matrix
-re-orders only what's already on the page for that viewer and never calls
-the backend, so it can't be mistaken for a server-side ranking.
+Qualification → Truffles" below for how the Sniffer product surface itself
+is organized around that same pipeline. A client-side column sort on the
+Sniffs matrix re-orders only what's already on the page for that viewer and
+never calls the backend, so it can't be mistaken for a server-side ranking.
 
-### Sniffs → Scents → Score → Rank → Truffles
+### Sniffs → Scents → Score → Rank → Qualification → Truffles
 
 Sniffer's product surface (`apps/web/src/app/(protected)/sniffer/`) is
 organized around one pipeline that both the UI and this document use
@@ -570,14 +583,37 @@ consistently:
   on `/sniffer/{symbol}` alongside Score, since "how does this symbol
   compare to the rest of the universe" is a genuinely different, useful
   fact from "what is this symbol's raw Score" — see "Rename note" below.
-- **🍄 Truffles** — a symbol that qualifies highly enough in the ranking
-  to be surfaced as an opportunity, downstream of Rank: Sniffer's primary
-  *operational* UI surface once real qualification exists, with the
-  Sniffs matrix remaining the secondary research view. A Truffle is not
-  synonymous with a Score or a Rank — it's the qualification decision
-  built from them. Not implemented yet. The Truffle tables' `Score`
-  column shows the value a symbol's rank is based on, not the rank
-  position itself (that's the `#` column).
+- **Qualification** — the classification step that decides whether one
+  direction's Score/Rank becomes a Truffle. Not a metric of its own and
+  not exposed as a value anywhere in the UI; it's a rule applied to Score
+  and Rank, producing a yes/no per direction. The settled V1 conceptual
+  rule requires **both** an absolute-quality gate and a relative-scarcity
+  gate:
+
+  ```
+  qualifies = Score >= minimum_score_threshold AND Rank <= 10
+  ```
+
+  applied independently per direction (`Green Truffle` from the Long side,
+  `Red Truffle` from the Short side — see below). The actual
+  `minimum_score_threshold` value is deliberately undecided — this
+  document does not invent one, and none is hardcoded anywhere in the
+  code. Top 10 is a **cap**, not a fill target: 0 symbols clearing the
+  threshold means 0 Truffles that direction, 25 clearing it means only the
+  best-ranked 10 become Truffles, and Sniffer must never lower the
+  threshold or otherwise fabricate opportunities just to fill ten slots.
+  Not implemented yet — see "OINK CORP and the Scent Model" below for
+  where such a threshold would eventually be decided and by what process.
+- **🍄 Truffles** — a symbol/direction that has passed Qualification.
+  Sniffer's primary *operational* UI surface once real qualification
+  exists, with the Sniffs matrix remaining the secondary research view. A
+  Truffle is not synonymous with a Score or a Rank, nor merely "the #1
+  symbol" or "every member of a fixed Top N" — it's the qualification
+  decision built from them, and a symbol can independently end up
+  Green-qualified, Red-qualified, both, or neither. Not implemented yet.
+  The Truffle tables' `Score` column shows the value a symbol's rank is
+  based on, not the rank position itself (that's the `#` column, i.e.
+  Rank).
 
 **Routing.** Three routes under `apps/web/src/app/(protected)/sniffer/`,
 one shared shell (`layout.tsx`: the `🐽 Sniffer` title plus `SnifferNav`
@@ -596,19 +632,32 @@ one shared shell (`layout.tsx`: the `🐽 Sniffer` title plus `SnifferNav`
 no separate "Dashboard" view; Truffles *are* the dashboard's main content,
 not a different product, and the nav's "🍄 Truffles" tab points at and is
 active on `/sniffer` itself. Answers "what is Sniffer seeing right now?":
-frame context (latest frame time, symbols analyzed), an "Inspect
-symbol…" control (`SnifferSymbolSearch`) that navigates straight to
-`/sniffer/{symbol}` for whatever's typed, and each direction's top 🍄
-Truffles side by side (`TrufflePanel`, "Top Long Truffles"/"Top Short
-Truffles"). Deliberately sparse — no charts, no KPI cards, no fabricated
-activity — and has zero awareness of Warhog, trades, positions, or PnL:
-Sniffer analyzes the market independently of whether anything is being
-traded (see "Domain responsibilities" above — Discovery and Trading are
-deliberately separate product areas). Since Truffle scoring doesn't exist
-yet, both panels render the exact same truthful "No truffles yet" empty
-state — never a fabricated top 5. `TrufflePanel` takes no `limit` today
-(there's nothing to truncate yet) but is written generically enough to
-grow past five entries once real ranking exists.
+frame context (latest frame time, symbols analyzed) and an "Inspect
+symbol…" control (`SnifferSymbolSearch`, navigates straight to
+`/sniffer/{symbol}` for whatever's typed) sit above a secondary
+**Green Truffles / Red Truffles** tab control (`TruffleDirectionTabs`) —
+only one directional ranking table is shown at a time, so it gets the
+full content width instead of splitting it with a sibling table. Green is
+the default tab; that's a UI default only, never a claim that Long is
+mathematically preferred. The `#` / `Symbol` / `Score` ranking table
+(`TrufflePanel`) itself carries no heading of its own — the active tab's
+icon + "Green Truffles"/"Red Truffles" text already identifies the
+direction. The dashboard is deliberately sparse — no charts, no KPI cards,
+no fabricated activity — and has zero awareness of Warhog, trades,
+positions, or PnL: Sniffer analyzes the market independently of whether
+anything is being traded (see "Domain responsibilities" above — Discovery
+and Trading are deliberately separate product areas). Since Score/Rank/
+Qualification don't exist yet, both directions render the exact same
+truthful "No truffles yet" empty state — never a fabricated ranking. Once
+qualification exists, each direction's table can hold anywhere from 0 to
+10 rows (Qualification's Top-10 cap — see above), never padded or
+paginated to look fuller than it is.
+
+The custom `TruffleIcon` component (`truffle-icon.tsx`) is the one visual
+source of truth for the green/red directional mushroom used both by these
+tabs and by the qualification badge on `/sniffer/{symbol}` (see below) —
+both directions render the identical silhouette; only the cap's fill color
+differs.
 
 *(`/sniffer/truffles` briefly existed as a separate route before Dashboard
 and Truffles were recognized as the same thing and merged; it now
@@ -628,29 +677,58 @@ conclusions last:
 SYMBOL
   Sniffs   — factual measurements, grouped like the matrix (Returns, RSI)
   Scents   — the interpreted dimensions that would explain the Score
-  Score    — Long / Short, N/A today
+  Score    — Long / Short, N/A today (a qualified direction's Truffle
+             badge, once Qualification exists, renders here — see below)
   Rank     — Long / Short, N/A today
-  🍄 Truffle — N/A today
 ```
 
-Score, Rank, and Truffle status are all "N/A" today, never `0`: `0` will
-eventually be a legitimate score, so it must never be used as a stand-in
-for "not computed yet". The Scents section (`SnifferScents`, reused here
-rather than as a standalone route — see "Rename note" below) deliberately
-shows only "No scents yet" — no Trend, Pullback, or any other dimension is
-invented. The Sniffs section is built from the same `FEATURE_COLUMNS`
-config the matrix uses, so its numbers can never diverge from the
-matrix's. Fetches the same `getLatestSnifferFrame()` the Sniffs matrix
-already uses and finds the matching instrument client-side
-(case-insensitively) — no new backend endpoint. An unmatched or
-not-yet-analyzed symbol renders a plain, honest inline message, never a
-fabricated row or a hard crash.
+There is deliberately **no standalone "Truffles" section** here. A Truffle
+is a classification of a directional Score, not another numeric stage
+alongside Score/Rank — so it has no row or metric of its own. Instead,
+`StatRow` (the shared label/value row both Score and Rank are built from)
+accepts an optional `qualification` prop; when a direction's Score has
+qualified, that row renders `TruffleQualificationBadge` — the same
+`TruffleIcon` used on the dashboard tabs — immediately beside the Score
+value (never duplicated beside Rank), e.g. conceptually:
 
-No Scents, Score, Rank, or Truffles API exists either (`GET
+```
+Score
+  Long      0.91   🟢   ← qualified: Green Truffle badge beside Long Score
+  Short     0.34
+
+Rank
+  Long        #3
+  Short      #412
+```
+
+The badge's placement beside Score is a **presentation** choice (the
+cleanest way to show "this directional opportunity qualified"), not a
+claim about computational order — Qualification still conceptually runs
+*after* both Score and Rank exist (see "Qualification" above), it's just
+rendered next to Score. Today neither Score row passes a `qualification`
+value (no qualification rule exists yet), so no badge renders at all —
+never a greyed-out/disabled mushroom, never a "Truffle: N/A" placeholder.
+Absence of the badge is the correct representation while Qualification is
+unimplemented.
+
+Score and Rank are "N/A" today, never `0`: `0` will eventually be a
+legitimate score, so it must never be used as a stand-in for "not computed
+yet". The Scents section (`SnifferScents`, reused here rather than as a
+standalone route — see "Rename note" below) deliberately shows only "No
+scents yet" — no Trend, Pullback, or any other dimension is invented. The
+Sniffs section is built from the same `FEATURE_COLUMNS` config the matrix
+uses, so its numbers can never diverge from the matrix's. Fetches the same
+`getLatestSnifferFrame()` the Sniffs matrix already uses and finds the
+matching instrument client-side (case-insensitively) — no new backend
+endpoint. An unmatched or not-yet-analyzed symbol renders a plain, honest
+inline message, never a fabricated row or a hard crash.
+
+No Scents, Score, Rank, Qualification, or Truffles API exists either (`GET
 /api/sniffer/scents/latest`, `GET /api/sniffer/scores/latest`, `GET
 /api/sniffer/rank/latest`, `GET /api/sniffer/truffles/latest`, or similar
 all remain unimplemented) — an honest missing endpoint rather than one
-returning fake data.
+returning fake data. No placeholder endpoint has been added to make this
+architecture look more implemented than it is.
 
 **Rename note.** The Sniffer UI nav was originally called "Rankings"; it is
 now "🍄 Truffles" since Ranking is a mechanism, while Truffles — the
@@ -694,6 +772,123 @@ describes one symbol's interpreted dimensions, so it lives on
 `/sniffer/{symbol}` instead of an empty global matrix with nothing yet to
 show.
 
+Two more recent corrections: the dashboard's two rankings were originally
+shown side by side, headed "Top Long Truffles"/"Top Short Truffles"; they
+are now **Green Truffles / Red Truffles** secondary tabs (only one
+ranking visible at a time — see "🍄 Truffles dashboard" above), since
+Green/Red is the settled directional-Truffle visual language and
+"Top Long/Short Truffles" both repeated "Truffles" as if it were the
+metric name and mixed Long/Short (Score/Rank's technical direction)
+with the product-facing Truffle vocabulary. And the symbol page
+originally had a standalone `🍄 Truffle — N/A` section (later briefly
+`Green Truffle`/`Red Truffle` N/A rows) after Rank, treating Truffle
+qualification as a fourth metric alongside Sniffs/Scents/Score/Rank; it
+was removed once "a Truffle is a classification of a Score, not another
+metric" was settled — see "Symbol detail" above for the current
+badge-beside-Score representation.
+
+### OINK CORP and the Scent Model
+
+OINK CORP and Sniffer are deliberately decoupled by a versioned contract,
+not a live dependency:
+
+```
+notebooks / experiments
+         ↓
+   candidate model
+         ↓
+    validation
+         ↓
+     PROMOTE
+         ↓
+  Scent Model v1
+         ↓
+     Sniffer
+```
+
+OINK CORP experiments freely — nothing about production Sniffer changes
+merely because an experiment exists in `research/oink_corp`. A candidate
+mathematical definition must be deliberately **promoted** to an active
+versioned Scent Model before Sniffer ever executes it. A future example of
+what that might look like (not implemented, no registry/schema/promotion
+workflow exists yet):
+
+```
+Scent Model v1   ACTIVE
+Scent Model v2   EXPERIMENT
+Scent Model v3   REJECTED
+```
+
+The invariant this protects: if a number affects whether something
+becomes a Truffle, its mathematical definition should eventually be
+traceable to the active versioned Scent Model that OINK CORP produced and
+validated — never an ad hoc formula that only lives in Sniffer's code with
+no research trail behind it.
+
+**Questions OINK CORP is where to investigate** (not answered by this
+document, and explicitly out of scope for this milestone): which Scents
+should exist; which Sniffs feed each one; how a raw Sniff gets interpreted
+into a desirability judgment; whether that interpretation is a simple
+weighted function or something nonlinear/multivariable; how Scents combine
+into Score; whether Long and Short should start symmetric; what minimum
+Score threshold should qualify a Truffle (see "Qualification" above — this
+is exactly the undecided `minimum_score_threshold`); whether Top 10 is the
+right scarcity cap compared to alternatives; and whether a candidate model
+actually survives historical/out-of-sample/walk-forward validation.
+
+**OINK CORP has knobs; Sniffer has gauges.** Sniffer is a read-only
+production interpretation surface: it can eventually explain a Sniff
+value, a Scent value, Long/Short Score, Long/Short Rank, and Truffle
+Qualification, but it is never where a user casually adjusts a strategy
+parameter. Research/calibration controls belong conceptually to OINK
+CORP, not to any UI shipped under `/sniffer`.
+
+**Explainability is mandatory; weights are optional.** Every
+Sniff → Scent → Score transformation should eventually expose enough
+information to explain how its output was obtained. For a simple weighted
+model that might look like `raw Sniff → interpretation function →
+interpreted desirability → Influence → contribution` ("Influence" is the
+preferred product/UI word once a true mathematical weight exists — never
+assume every model has one). A future Scent may instead be nonlinear or
+multivariable (e.g. `PullbackLong = f(rsi_5m, rsi_15m, return_5m, ...)`),
+in which case there may be no mathematically honest per-feature
+weight/contribution to show — explainability must never be fabricated
+just to keep the UI uniform across Scents that don't share a common
+mathematical shape.
+
+**Interpretation, not a generic penalty subsystem.** Raw Sniffs are
+factual measurements and must not themselves encode strategy judgment
+(e.g. `rsi_5m = 31` is a fact, not a verdict). A future model applies its
+own interpretation function (`f_pullback_long_rsi5m(31) → interpreted
+desirability`), which can naturally represent attractive/neutral/
+undesirable regions on its own — a separate generic "Penalty" mechanism
+should exist only if future research actually justifies one, not merely
+because some raw Sniff values happen to look unfavorable.
+
+**Future research organization** (illustrative only — none of this exists
+yet, and no empty notebooks should be created just to match the diagram):
+
+```
+research/oink_corp/
+    notebooks/
+        sniffs/
+            return_5m.ipynb
+            rsi_14_5m.ipynb
+        scents/
+            trend_long.ipynb
+            pullback_long.ipynb
+        scores/
+            long_score.ipynb
+            short_score.ipynb
+        qualification/
+            truffle_qualification.ipynb
+```
+
+Notebooks are research/specification artifacts, never production runtime.
+Whatever mathematics is eventually promoted should live in normal, tested
+production code shared appropriately with research, so notebook math can
+never silently drift from what Sniffer actually executes.
+
 ## What's actually implemented (this milestone)
 
 ```
@@ -717,8 +912,9 @@ show.
   proxies `/api/*` to the backend so the browser only ever talks to one
   origin. `/sniffer` is the 🍄 Truffles dashboard (Sniffer's primary
   page), with the Sniffs matrix (`/sniffer/sniffs`) and per-symbol detail
-  (`/sniffer/{symbol}`) as sibling routes (see "Sniffs → Scents → Overall
-  Scent → Truffles" above) — all sharing one `sniffer/layout.tsx` shell.
+  (`/sniffer/{symbol}`) as sibling routes (see "Sniffs → Scents → Score →
+  Rank → Qualification → Truffles" above) — all sharing one
+  `sniffer/layout.tsx` shell.
 - **`apps/api`** (FastAPI, Pydantic, SQLAlchemy 2, Alembic): the backend.
   Owns the `User` model, session issuance/verification, and the
   database-touching endpoints (`/health`, `/ready`, `/api/me`,
