@@ -24,6 +24,10 @@ const FRAME = {
       oi_change_1h: null,
       oi_change_4h: null,
       oi_change_24h: null,
+      volatility_15m: null,
+      volatility_1h: "0.023",
+      volatility_4h: null,
+      volatility_24h: null,
     },
     {
       instrument_id: 2,
@@ -42,6 +46,10 @@ const FRAME = {
       oi_change_1h: null,
       oi_change_4h: null,
       oi_change_24h: null,
+      volatility_15m: null,
+      volatility_1h: null,
+      volatility_4h: null,
+      volatility_24h: null,
     },
   ],
 };
@@ -55,18 +63,20 @@ it("shows the symbol heading and its real existing Sniffs", () => {
   expect(screen.getByText("50.00")).toBeInTheDocument();
   expect(screen.getByText("10.00")).toBeInTheDocument();
   expect(screen.getByText("+5.12%")).toBeInTheDocument(); // oi_change_5m
+  expect(screen.getByText("2.30%")).toBeInTheDocument(); // volatility_1h, unsigned
 });
 
-it("groups Sniffs into Returns, RSI, and OI Δ sections", () => {
+it("groups Sniffs into Returns, RSI, OI Δ, and Volatility sections", () => {
   render(<SnifferSymbolDetail symbol="BTCUSDT" frame={FRAME} />);
   expect(screen.getByText("Returns")).toBeInTheDocument();
   expect(screen.getByText("RSI")).toBeInTheDocument();
   expect(screen.getByText("OI Δ")).toBeInTheDocument();
+  expect(screen.getByText("Volatility")).toBeInTheDocument();
 });
 
 it("shows N/A for unavailable Sniffs, never 0", () => {
   render(<SnifferSymbolDetail symbol="ETHUSDT" frame={FRAME} />);
-  expect(screen.getAllByText("N/A").length).toBeGreaterThanOrEqual(14); // 14 Sniffs, all null
+  expect(screen.getAllByText("N/A").length).toBeGreaterThanOrEqual(18); // 18 Sniffs, all null
   expect(screen.queryByText("0.00")).not.toBeInTheDocument();
   expect(screen.queryByText("0.00%")).not.toBeInTheDocument();
 });
@@ -111,10 +121,15 @@ it("shows no Truffle badge beside N/A Score rows while no qualification exists",
 
 it("has an empty, unavailable Scents section — no dimension is invented", () => {
   render(<SnifferSymbolDetail symbol="BTCUSDT" frame={FRAME} />);
-  expect(screen.getByRole("heading", { name: "Scents" })).toBeInTheDocument();
-  expect(screen.getByText("No scents yet")).toBeInTheDocument();
+  const scentsSection = screen.getByRole("heading", { name: "Scents" }).parentElement!;
+  expect(scentsSection).toBeInTheDocument();
+  expect(within(scentsSection).getByText("No scents yet")).toBeInTheDocument();
+  // Scoped to the Scents section specifically: "Volatility" is now a
+  // legitimate Sniffs-section family heading (a real, factual
+  // measurement), so checking its absence globally would be a false
+  // failure — this checks it's never invented as a *Scent* dimension.
   for (const name of ["Trend", "Pullback", "Momentum", "Stability", "Volatility"]) {
-    expect(screen.queryByText(name)).not.toBeInTheDocument();
+    expect(within(scentsSection).queryByText(name)).not.toBeInTheDocument();
   }
 });
 

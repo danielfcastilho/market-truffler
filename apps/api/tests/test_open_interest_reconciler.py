@@ -111,6 +111,30 @@ def _reconciler(session_factory, bybit_client, **overrides) -> OpenInterestRecon
     return OpenInterestReconciler(session_factory, bybit_client, **kwargs)
 
 
+# -- retention/required_warmup invariant ----------------------------------------
+
+
+def test_default_retention_always_exceeds_required_warmup(session_factory):
+    """Regression guard: retention must never be shorter than
+    required_warmup, or every poll round would prune the very bootstrap
+    progress it just walked back to, and no symbol could ever reach OI
+    READY. A deep required_warmup (e.g. volatility_24h's 15 days) must
+    still get a safely-longer default retention with zero explicit
+    configuration."""
+    client = _FakeBybitClient()
+    deep_warmup = timedelta(days=15)
+    reconciler = OpenInterestReconciler(session_factory, client, required_warmup=deep_warmup)
+    assert reconciler._retention > deep_warmup
+
+
+def test_an_explicit_retention_override_is_still_honored(session_factory):
+    client = _FakeBybitClient()
+    reconciler = OpenInterestReconciler(
+        session_factory, client, required_warmup=timedelta(hours=1), retention=timedelta(days=9)
+    )
+    assert reconciler._retention == timedelta(days=9)
+
+
 # -- bootstrap -----------------------------------------------------------------
 
 

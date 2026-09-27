@@ -57,12 +57,13 @@ class MarketFrameMember(Base):
     (frame-level `available_instruments` counts these rows; the gap versus
     `expected_instruments` is what made the frame PARTIAL).
 
-    `open_time_4h` is nullable: it is always populated for a member
-    finalized once 4h tracking existed and that instrument already had a
-    closed 4h candle, and is genuinely `NULL` for members finalized before
-    4h tracking existed, or when an instrument's first 4h bucket hadn't
-    closed yet — see `app.domain.frame.MarketFrameMember.h4` for why 4h is
-    deliberately not part of the COMPLETE/PARTIAL membership gate.
+    `open_time_4h`/`open_time_24h` are nullable: each is always populated
+    for a member finalized once that timeframe's tracking existed and the
+    instrument already had a closed candle for it, and is genuinely
+    `NULL` for members finalized before that timeframe's tracking existed,
+    or when an instrument's first bucket for it hadn't closed yet — see
+    `app.domain.frame.MarketFrameMember.h4`/`h24` for why neither is part
+    of the COMPLETE/PARTIAL membership gate.
 
     Each timeframe is referenced by its `open_time` alone — the identifying
     half of `market_candles`' own composite key
@@ -97,3 +98,4 @@ class MarketFrameMember(Base):
     open_time_15m: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     open_time_1h: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     open_time_4h: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    open_time_24h: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)

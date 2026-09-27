@@ -35,6 +35,10 @@ def _to_response(result: SnifferFrameResult) -> SnifferFrameResponse:
                 oi_change_1h=i.features.get("oi_change_1h"),
                 oi_change_4h=i.features.get("oi_change_4h"),
                 oi_change_24h=i.features.get("oi_change_24h"),
+                volatility_15m=i.features.get("volatility_15m"),
+                volatility_1h=i.features.get("volatility_1h"),
+                volatility_4h=i.features.get("volatility_4h"),
+                volatility_24h=i.features.get("volatility_24h"),
             )
             for i in sorted(result.instruments, key=lambda i: i.symbol)
         ],

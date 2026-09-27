@@ -11,7 +11,7 @@ from app.db.types import UTCDateTime
 # losing precision — deliberately generous rather than tuned per-symbol.
 _AMOUNT = Numeric(30, 12)
 
-TIMEFRAMES = ("1m", "5m", "15m", "1h", "4h")
+TIMEFRAMES = ("1m", "5m", "15m", "1h", "4h", "24h")
 
 
 class Candle(Base):
@@ -26,9 +26,9 @@ class Candle(Base):
     see `app.services.partition_manager`), which is why it must be part of
     every unique key on this table.
 
-    Only 1m rows are exchange-observed; 5m/15m/1h/4h rows are always derived
-    locally from a complete set of stored 1m rows (never fetched from Bybit
-    directly) — see `app.services.candle_aggregation`.
+    Only 1m rows are exchange-observed; 5m/15m/1h/4h/24h rows are always
+    derived locally from a complete set of stored 1m rows (never fetched
+    from Bybit directly) — see `app.services.candle_aggregation`.
     """
 
     __tablename__ = "market_candles"

@@ -32,6 +32,10 @@ it("shows the frame metadata and Sniffs matrix when a frame exists", () => {
             oi_change_1h: null,
             oi_change_4h: null,
             oi_change_24h: null,
+            volatility_15m: null,
+            volatility_1h: null,
+            volatility_4h: null,
+            volatility_24h: null,
           },
         ],
       }}

@@ -62,15 +62,18 @@ class MarketFrameMember:
     at finalization — an instrument missing even one of those simply has no
     member (see `MarketFrame.available_instruments`).
 
-    `h4` is additional, non-gating context: the latest fully-closed 4h
-    candle at frame_time, when one exists. It is `None` — never
-    fabricated — for a member finalized before 4h tracking existed, or
-    whenever an instrument's first 4h bucket hasn't closed yet (4h buckets
-    take up to 4x longer to first become available than 1h). Gating
-    COMPLETE/PARTIAL on `h4` too would make newly-listed instruments PARTIAL
-    for up to 4 hours for a reason unrelated to their actual live-data
-    health, so it deliberately isn't part of the completeness contract —
-    only rsi_14_4h (see `app.features.rsi`) depends on it being present.
+    `h4`/`h24` are additional, non-gating context: the latest fully-closed
+    4h/24h candle at frame_time, when one exists. Each is `None` — never
+    fabricated — for a member finalized before that timeframe's tracking
+    existed, or whenever an instrument's first bucket for it hasn't closed
+    yet (a 24h bucket takes up to 24x longer to first become available
+    than 1h — much longer than 4h's own up-to-4x delay). Gating
+    COMPLETE/PARTIAL on either would make newly-listed instruments PARTIAL
+    for hours (up to a full day for `h24`) for a reason unrelated to their
+    actual live-data health, so neither is part of the completeness
+    contract — only rsi_14_4h (see `app.features.rsi`) and the
+    volatility_* features (see `app.features.volatility`) depend on either
+    being present.
     """
 
     instrument_id: int
@@ -80,6 +83,7 @@ class MarketFrameMember:
     m15: FrameCandleContext
     h1: FrameCandleContext
     h4: FrameCandleContext | None = None
+    h24: FrameCandleContext | None = None
 
 
 @dataclass(frozen=True)

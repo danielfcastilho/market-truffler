@@ -70,7 +70,7 @@ class OpenInterestReconciler:
         bybit_client: BybitClient,
         *,
         required_warmup: timedelta,
-        retention: timedelta = timedelta(days=2),
+        retention: timedelta | None = None,
         poll_interval_seconds: float = 300.0,
         max_concurrent_instruments: int = 5,
         request_delay_seconds: float = 0.2,
@@ -78,7 +78,18 @@ class OpenInterestReconciler:
         self._session_factory = session_factory
         self._bybit_client = bybit_client
         self._required_warmup = required_warmup
-        self._retention = retention
+        # Must never be shorter than `required_warmup`, or every poll round
+        # would prune bootstrap progress it just walked back to — the
+        # reconciler would perpetually re-fetch the same window and no
+        # symbol could ever reach READY for OI. Defaults to
+        # `required_warmup` plus a one-day buffer rather than an
+        # independent constant, so it automatically stays consistent as
+        # `REQUIRED_WARMUP` grows with future features (see
+        # `app.features.engine.REQUIRED_WARMUP`) — an explicit override is
+        # still honored (e.g. tests), but must uphold the same invariant.
+        self._retention = (
+            retention if retention is not None else required_warmup + timedelta(days=1)
+        )
         self._poll_interval = poll_interval_seconds
         self._max_concurrent = max_concurrent_instruments
         self._request_delay = request_delay_seconds

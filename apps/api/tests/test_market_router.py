@@ -158,7 +158,7 @@ async def test_market_status_reports_readiness_counts_across_the_active_universe
                 first_seen_at=now,
                 last_seen_at=now,
             ),
-            InstrumentRow(  # some backward progress, short of 60h -> BACKFILLING
+            InstrumentRow(  # some backward progress, short of REQUIRED_WARMUP -> BACKFILLING
                 exchange="bybit",
                 symbol="MIDUSDT",
                 base_coin="MID",
@@ -171,7 +171,8 @@ async def test_market_status_reports_readiness_counts_across_the_active_universe
                 history_synced_through=now,
                 oi_synced_from=now - timedelta(hours=10),
             ),
-            InstrumentRow(  # reaches back past 60h on both candles and OI -> READY
+            InstrumentRow(  # reaches back past REQUIRED_WARMUP (volatility_24h's
+                # 15-day window) on both candles and OI -> READY
                 exchange="bybit",
                 symbol="OLDUSDT",
                 base_coin="OLD",
@@ -180,9 +181,9 @@ async def test_market_status_reports_readiness_counts_across_the_active_universe
                 first_seen_at=now,
                 last_seen_at=now,
                 history_target_start=now - timedelta(days=30),
-                history_synced_from=now - timedelta(hours=61),
+                history_synced_from=now - timedelta(days=16),
                 history_synced_through=now,
-                oi_synced_from=now - timedelta(hours=61),
+                oi_synced_from=now - timedelta(days=16),
             ),
         ]
     )

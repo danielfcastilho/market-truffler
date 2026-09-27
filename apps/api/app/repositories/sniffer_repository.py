@@ -15,15 +15,22 @@ from app.domain.sniffer import SnifferFrameResult, SnifferInstrumentResult
 from app.models.instrument import Instrument
 from app.models.sniffer import SnifferResult
 
+#: Postgres caps a statement at 65535 bind parameters — 5 columns/row, so
+#: this stays comfortably under that even as more features are added to
+#: `app.features.engine.FEATURES` (same reasoning as
+#: `app.scripts.backfill_derived_timeframes`'s `_CHUNK`).
+_ROWS_PER_STATEMENT = 5000
+
 
 class SnifferRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
     async def save_result(self, result: SnifferFrameResult) -> None:
-        """Batch-upsert every (instrument, metric) value in `result` in one
-        statement. Idempotent: re-analyzing the same frame overwrites the
-        same rows rather than duplicating them (M5 section 15) — the
+        """Batch-upsert every (instrument, metric) value in `result`, in
+        chunks bounded to stay under Postgres's per-statement bind
+        parameter limit. Idempotent: re-analyzing the same frame overwrites
+        the same rows rather than duplicating them (M5 section 15) — the
         composite primary key `(frame_time, instrument_id, metric)` is the
         conflict target.
         """
@@ -44,12 +51,14 @@ class SnifferRepository:
         dialect_name = self._session.bind.dialect.name if self._session.bind else "postgresql"
         insert_fn = pg_insert if dialect_name == "postgresql" else sqlite_insert
 
-        stmt = insert_fn(SnifferResult).values(rows)
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["frame_time", "instrument_id", "metric"],
-            set_={"value": stmt.excluded.value, "calculated_at": stmt.excluded.calculated_at},
-        )
-        await self._session.execute(stmt)
+        for start in range(0, len(rows), _ROWS_PER_STATEMENT):
+            chunk = rows[start : start + _ROWS_PER_STATEMENT]
+            stmt = insert_fn(SnifferResult).values(chunk)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["frame_time", "instrument_id", "metric"],
+                set_={"value": stmt.excluded.value, "calculated_at": stmt.excluded.calculated_at},
+            )
+            await self._session.execute(stmt)
         await self._session.commit()
 
     async def get_for_frame(self, frame_time: datetime) -> SnifferFrameResult | None:

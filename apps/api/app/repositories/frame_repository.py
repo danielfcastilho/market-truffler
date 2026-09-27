@@ -217,21 +217,21 @@ class FrameRepository:
     async def _fetch_members(self, frame_time: datetime) -> list[MarketFrameMember]:
         # Re-derive proper mapped Candle entities from each timeframe-scoped
         # subquery (see CandleRepository.fetch_latest_closed_per_instrument
-        # for why `aliased` rather than raw Row tuples), then join all five
+        # for why `aliased` rather than raw Row tuples), then join all six
         # to the member row plus the instrument, in one query — the
         # "give me frame T" read is always this one statement, never a
-        # per-instrument loop. 4h is an OUTER join (unlike the four gating
-        # timeframes): `open_time_4h` can be NULL (see
-        # `MarketFrameMember.h4`), and even when set, an INNER join would be
-        # just as correct — OUTER costs nothing extra and stays correct
-        # either way.
-        m1, m5, m15, h1, h4 = (
+        # per-instrument loop. 4h/24h are OUTER joins (unlike the four
+        # gating timeframes): `open_time_4h`/`open_time_24h` can be NULL
+        # (see `MarketFrameMember.h4`/`h24`), and even when set, an INNER
+        # join would be just as correct — OUTER costs nothing extra and
+        # stays correct either way.
+        m1, m5, m15, h1, h4, h24 = (
             aliased(Candle, select(Candle).where(Candle.timeframe == tf).subquery())
-            for tf in ("1m", "5m", "15m", "1h", "4h")
+            for tf in ("1m", "5m", "15m", "1h", "4h", "24h")
         )
 
         stmt = (
-            select(MarketFrameMemberRow, Instrument.symbol, m1, m5, m15, h1, h4)
+            select(MarketFrameMemberRow, Instrument.symbol, m1, m5, m15, h1, h4, h24)
             .join(Instrument, Instrument.id == MarketFrameMemberRow.instrument_id)
             .join(
                 m1,
@@ -258,12 +258,17 @@ class FrameRepository:
                 (h4.instrument_id == MarketFrameMemberRow.instrument_id)
                 & (h4.open_time == MarketFrameMemberRow.open_time_4h),
             )
+            .outerjoin(
+                h24,
+                (h24.instrument_id == MarketFrameMemberRow.instrument_id)
+                & (h24.open_time == MarketFrameMemberRow.open_time_24h),
+            )
             .where(MarketFrameMemberRow.frame_time == frame_time)
         )
         result = await self._session.execute(stmt)
 
         members: list[MarketFrameMember] = []
-        for member_row, symbol, c1, c5, c15, ch1, ch4 in result.all():
+        for member_row, symbol, c1, c5, c15, ch1, ch4, ch24 in result.all():
             members.append(
                 MarketFrameMember(
                     instrument_id=member_row.instrument_id,
@@ -273,6 +278,7 @@ class FrameRepository:
                     m15=_to_context(c15),
                     h1=_to_context(ch1),
                     h4=_to_context(ch4) if ch4 is not None else None,
+                    h24=_to_context(ch24) if ch24 is not None else None,
                 )
             )
         return members

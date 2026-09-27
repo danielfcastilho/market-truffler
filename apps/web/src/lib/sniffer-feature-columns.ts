@@ -54,6 +54,22 @@ function rsiClassName(value: string | null): string {
   return value == null ? "text-muted-foreground/70" : "text-foreground";
 }
 
+// Volatility has no direction (it's ATR% — always non-negative), so unlike
+// formatReturn this never shows a +/- sign — just a plain percentage.
+function formatVolatility(value: string | null): string {
+  if (value == null) return "N/A";
+  const percent = Number(value) * 100;
+  return `${percent.toFixed(2)}%`;
+}
+
+// No green/red or any other value-based styling, for the same reason as
+// RSI: this is a raw descriptive measurement, not a signal, and having no
+// sign means "high vs low" framing would be an invented judgment this
+// column doesn't make. Real vs. unavailable is the only distinction.
+function volatilityClassName(value: string | null): string {
+  return value == null ? "text-muted-foreground/70" : "text-foreground";
+}
+
 /** Centralized presentation metadata for every Feature column — the only
  * place header text, grouping, width, and formatting are declared. Order
  * here is also render order; columns must stay grouped consecutively for
@@ -176,6 +192,38 @@ export const FEATURE_COLUMNS: FeatureColumn[] = [
     minWidthPx: 84,
     format: formatReturn,
     valueClassName: returnClassName,
+  },
+  {
+    key: "volatility_15m",
+    group: "Volatility",
+    label: "15m",
+    minWidthPx: 84,
+    format: formatVolatility,
+    valueClassName: volatilityClassName,
+  },
+  {
+    key: "volatility_1h",
+    group: "Volatility",
+    label: "1h",
+    minWidthPx: 84,
+    format: formatVolatility,
+    valueClassName: volatilityClassName,
+  },
+  {
+    key: "volatility_4h",
+    group: "Volatility",
+    label: "4h",
+    minWidthPx: 84,
+    format: formatVolatility,
+    valueClassName: volatilityClassName,
+  },
+  {
+    key: "volatility_24h",
+    group: "Volatility",
+    label: "24h",
+    minWidthPx: 84,
+    format: formatVolatility,
+    valueClassName: volatilityClassName,
   },
 ];
 

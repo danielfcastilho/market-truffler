@@ -14,6 +14,7 @@ from app.features.return_1h import Return1h
 from app.features.return_5m import Return5m
 from app.features.return_feature import ReturnFeature
 from app.features.rsi import RsiFeature
+from app.features.volatility import VolatilityFeature
 from app.repositories.candle_repository import CandleRepository
 from app.repositories.open_interest_repository import OpenInterestRepository
 
@@ -32,16 +33,20 @@ FEATURES = (
     OpenInterestChangeFeature("1h", timedelta(minutes=60)),
     OpenInterestChangeFeature("4h", timedelta(minutes=240)),
     OpenInterestChangeFeature("24h", timedelta(minutes=1440)),
+    VolatilityFeature("15m", timedelta(minutes=15), lambda member: member.m15),
+    VolatilityFeature("1h", timedelta(minutes=60), lambda member: member.h1),
+    VolatilityFeature("4h", timedelta(minutes=240), lambda member: member.h4),
+    VolatilityFeature("24h", timedelta(minutes=1440), lambda member: member.h24),
 )
 
 #: The single centralized "how much reconciled history does Sniffer
 #: currently need" figure — the max `required_history` across every
-#: currently-configured feature (today: rsi_14_4h's 60h, still the
-#: deepest lookback even after adding return_24h/oi_change_24h at 24h
-#: each). Adding a feature with a longer lookback to `FEATURES` above
-#: automatically raises this, and with it both
-#: `app.services.open_interest_reconciler`'s bootstrap target and
-#: `app.services.symbol_readiness`'s READY threshold, with no other
+#: currently-configured feature. `volatility_24h`'s 15-candle/15-day
+#: window is now the deepest lookback (well past rsi_14_4h's 60h) —
+#: adding a feature with an even longer lookback to `FEATURES` above
+#: automatically raises this further, and with it both
+#: `app.services.open_interest_reconciler`'s bootstrap target/retention
+#: and `app.services.symbol_readiness`'s READY threshold, with no other
 #: change needed anywhere in the reconciliation system.
 REQUIRED_WARMUP: timedelta = max(feature.required_history for feature in FEATURES)
 

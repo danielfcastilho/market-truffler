@@ -146,6 +146,16 @@ export interface SnifferInstrument {
   oi_change_1h: string | null;
   oi_change_4h: string | null;
   oi_change_24h: string | null;
+  /** Volatility: ATR(14) divided by current_price (see
+   * apps/api/app/features/volatility.py) — the same raw-fraction
+   * convention as return_ and oi_change_ (0.05 == 5%), but always
+   * non-negative: volatility has no direction, so this is never shown
+   * with a +/- sign. Null when the 15-candle ATR window is unavailable.
+   * Deliberately no volatility_5m — not part of this feature set yet. */
+  volatility_15m: string | null;
+  volatility_1h: string | null;
+  volatility_4h: string | null;
+  volatility_24h: string | null;
 }
 
 export interface SnifferFrame {

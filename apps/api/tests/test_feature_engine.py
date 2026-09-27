@@ -22,6 +22,10 @@ ALL_FEATURE_NAMES = {
     "oi_change_1h",
     "oi_change_4h",
     "oi_change_24h",
+    "volatility_15m",
+    "volatility_1h",
+    "volatility_4h",
+    "volatility_24h",
 }
 
 FRAME_TIME = datetime(2026, 1, 1, 14, 0, tzinfo=UTC)
@@ -180,8 +184,9 @@ async def test_engine_with_no_members_produces_no_instrument_results(db_session)
 
 def test_required_warmup_is_the_max_across_every_configured_feature():
     """The centralized readiness threshold must track whichever feature
-    currently needs the deepest history — today, rsi_14_4h's 15 4h-candle
-    window (60h) — so adding a feature with a longer lookback to FEATURES
-    automatically raises it, with no other code needing to change."""
+    currently needs the deepest history — today, volatility_24h's 15
+    consecutive 24h-candle window (15 days), well past rsi_14_4h's 60h —
+    so adding a feature with a longer lookback to FEATURES automatically
+    raises it, with no other code needing to change."""
     assert REQUIRED_WARMUP == max(feature.required_history for feature in FEATURES)
-    assert REQUIRED_WARMUP == timedelta(hours=60)
+    assert REQUIRED_WARMUP == timedelta(days=15)

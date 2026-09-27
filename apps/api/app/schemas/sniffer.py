@@ -42,6 +42,16 @@ class SnifferInstrument(BaseModel):
     oi_change_1h: Decimal | None
     oi_change_4h: Decimal | None
     oi_change_24h: Decimal | None
+    # volatility_{timeframe} = ATR(14) / current_price (see
+    # app/features/volatility.py). Same raw-fraction convention as
+    # return_*/oi_change_* (0.05 == 5%), but always non-negative —
+    # volatility has no direction. None when the 15-candle ATR window
+    # isn't available (short history, a gap, or a missing anchor).
+    # Deliberately no volatility_5m — not part of this feature set yet.
+    volatility_15m: Decimal | None
+    volatility_1h: Decimal | None
+    volatility_4h: Decimal | None
+    volatility_24h: Decimal | None
 
 
 class SnifferFrameResponse(BaseModel):
