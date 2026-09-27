@@ -7,12 +7,14 @@ typed API, a navigable frontend — that discovers its Bybit market universe
 over REST, continuously watches it over Bybit's public WebSocket, durably
 remembers it (closed 1-minute candles persisted, backfilled up to a rolling
 history horizon, self-repaired after gaps or outages, locally aggregated
-into 5m/15m/1h), and every closed UTC minute synchronizes it into one
-Market Frame — a single, temporally-legal cross-sectional snapshot of the
-whole market. Sniffer now reacts to each finalized frame and computes two
-factual measurements, `return_5m` and `return_1h`, per instrument, persisting them for the
-`/api/sniffer/latest` API and the Sniffer/Vitals pages. No ranking, no
-scoring, no Truffles, no trading logic yet. See
+into 5m/15m/1h/4h), continuously polls Open Interest from Bybit's public
+REST API, and every closed UTC minute synchronizes MARKET into one Market
+Frame — a single, temporally-legal cross-sectional snapshot of the whole
+market. Sniffer now reacts to each finalized frame and computes 14
+factual measurements per instrument (Returns at 5m/15m/1h/4h/24h,
+RSI(14) at 5m/15m/1h/4h, and Open Interest change at 5m/15m/1h/4h/24h),
+persisting them for the `/api/sniffer/latest` API and the Sniffer/Vitals
+pages. No ranking, no scoring, no Truffles, no trading logic yet. See
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for where this is headed.
 
 ## Repository structure
@@ -52,13 +54,13 @@ continuously-running MARKET history reconciler that durably persists every
 closed 1-minute candle (native PostgreSQL partitioning, monthly partitions,
 a rolling retention policy — currently **~30 days**, configured by one
 setting, `market_history_retention_days` — applied uniformly across
-1m/5m/15m/1h), backfills that same horizon of history per instrument in
+1m/5m/15m/1h/4h), backfills that same horizon of history per instrument in
 the background, detects and repairs gaps after a WebSocket hiccup or an
 extended outage,
-and locally derives 5m/15m/1h candles from complete sets of stored 1m
+and locally derives 5m/15m/1h/4h candles from complete sets of stored 1m
 candles, plus a continuously-running MARKET frame synchronizer that, every
 closed UTC minute, snapshots the active universe and resolves each
-instrument's latest legally-closed 1m/5m/15m/1h context into one unified
+instrument's latest legally-closed 1m/5m/15m/1h(/4h) context into one unified
 Market Frame — truthfully marked COMPLETE or PARTIAL, never faked — no API
 key required for any of it. All three background capabilities start with
 the application (not with any page view or API call) and keep running
@@ -66,18 +68,26 @@ independently of it; a fresh install becomes usable immediately and both
 its historical dataset and its frame history converge/accumulate in the
 background.
 
-On top of that, a fourth background capability — **Sniffer**
+A fourth background capability, **`OpenInterestReconciler`**
+(`apps/api/app/services/open_interest_reconciler.py`), bootstraps and
+polls Open Interest from Bybit's public REST `/v5/market/open-interest`
+endpoint (always at its finest 5-minute granularity — no WebSocket path
+exists for OI, since that REST granularity is already as fresh as this
+app would ever observe), persisting to its own `open_interest_observations`
+table with the same idempotent-upsert conventions candles use.
+
+On top of that, a fifth background capability — **Sniffer**
 (`apps/api/app/services/sniffer.py`) — reacts to each finalized Market
-Frame (a hook from `FrameSynchronizer`, not polling) and computes two
-factual measurements per instrument: `return_5m` (exact rolling 5-minute
-return) and `return_1h` (exact rolling 60-minute return). Both use the frame
-member's canonical 1m close and an exact historical 1m anchor at its open
-time minus the lookback, never the frame's hourly candle and reporting
-`None`/unavailable rather than substituting or approximating whenever the
-exact historical candle doesn't exist. Results persist to a compact,
-idempotent `sniffer_results` table and are exposed read-only via
-`/api/sniffer/status` and `/api/sniffer/latest`. A Sniffer failure can never
-break MARKET's own background capabilities.
+Frame (a hook from `FrameSynchronizer`, not polling) and computes 14
+factual measurements per instrument: Returns (`return_5m`/`15m`/`1h`/
+`4h`/`24h`, exact rolling returns), RSI(14) (`rsi_14_5m`/`15m`/`1h`/`4h`,
+Cutler's convention), and Open Interest change (`oi_change_5m`/`15m`/`1h`/
+`4h`/`24h`). Every one of these reports `None`/unavailable rather than
+substituting or approximating whenever its exact historical comparison
+point doesn't exist. Results persist to a compact, idempotent
+`sniffer_results` table and are exposed read-only via `/api/sniffer/status`
+and `/api/sniffer/latest`. A Sniffer failure can never break MARKET's own
+background capabilities.
 
 > **A note on the retention horizon.** The architecture built in the MARKET
 > milestone supports an arbitrary rolling retention window — the original
@@ -93,8 +103,8 @@ break MARKET's own background capabilities.
 What's **not** real: higher-timeframe candles fetched from the exchange
 directly (they're always derived locally from 1m), historical frame
 backfill/reconstruction (frames are only ever produced live, going
-forward), any metric besides `return_5m` and `return_1h`, ranking, scoring, Truffles, or
-trading logic. Warhog and OINK CORP are still reachable in the UI only as a
+forward), `rsi_14_24h` (deliberately not part of this feature set yet),
+ranking, scoring, Truffles, or trading logic. Warhog and OINK CORP are still reachable in the UI only as a
 deliberate "in progress" page. Vitals (system health)'s SYSTEM section is
 real, every row in MARKET is real ("Bybit connectivity"/"Symbols tracked"
 from REST, "Market data"/"Last market update"/"Data freshness" from the

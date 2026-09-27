@@ -5,6 +5,24 @@ from app.domain.frame import FrameCandleContext, FrameStatus, MarketFrame, Marke
 from app.features.engine import FEATURES, REQUIRED_WARMUP, FeatureEngine
 from app.models.instrument import Instrument
 from app.repositories.candle_repository import CandleRepository
+from app.repositories.open_interest_repository import OpenInterestRepository
+
+ALL_FEATURE_NAMES = {
+    "return_5m",
+    "return_15m",
+    "return_1h",
+    "return_4h",
+    "return_24h",
+    "rsi_14_5m",
+    "rsi_14_15m",
+    "rsi_14_1h",
+    "rsi_14_4h",
+    "oi_change_5m",
+    "oi_change_15m",
+    "oi_change_1h",
+    "oi_change_4h",
+    "oi_change_24h",
+}
 
 FRAME_TIME = datetime(2026, 1, 1, 14, 0, tzinfo=UTC)
 CURRENT_OPEN = FRAME_TIME - timedelta(minutes=1)
@@ -73,7 +91,8 @@ async def test_engine_assembles_named_feature_results_per_instrument(db_session)
         ],
     )
 
-    result = await FeatureEngine().run(frame, candle_repo, analyzed_at=ANALYZED_AT)
+    oi_repo = OpenInterestRepository(db_session)
+    result = await FeatureEngine().run(frame, candle_repo, oi_repo, analyzed_at=ANALYZED_AT)
 
     assert result.frame_time == FRAME_TIME
     assert result.analyzed_at == ANALYZED_AT
@@ -81,14 +100,7 @@ async def test_engine_assembles_named_feature_results_per_instrument(db_session)
     instrument = result.instruments[0]
     assert instrument.instrument_id == btc
     assert instrument.symbol == "BTCUSDT"
-    assert set(instrument.features) == {
-        "return_5m",
-        "return_1h",
-        "rsi_14_5m",
-        "rsi_14_15m",
-        "rsi_14_1h",
-        "rsi_14_4h",
-    }
+    assert set(instrument.features) == ALL_FEATURE_NAMES
     assert instrument.features["return_1h"] is None
     assert instrument.features["return_5m"] == Decimal("0.01")
     # No 15-candle history was seeded for any RSI timeframe — all unavailable.
@@ -96,6 +108,10 @@ async def test_engine_assembles_named_feature_results_per_instrument(db_session)
     assert instrument.features["rsi_14_15m"] is None
     assert instrument.features["rsi_14_1h"] is None
     assert instrument.features["rsi_14_4h"] is None
+    # No Open Interest observations were seeded at all — every oi_change_*
+    # is genuinely unavailable, never fabricated.
+    assert instrument.features["oi_change_5m"] is None
+    assert instrument.features["oi_change_24h"] is None
 
 
 async def test_engine_only_analyzes_actual_frame_members(db_session):
@@ -137,7 +153,8 @@ async def test_engine_only_analyzes_actual_frame_members(db_session):
         ],
     )
 
-    result = await FeatureEngine().run(frame, candle_repo, analyzed_at=ANALYZED_AT)
+    oi_repo = OpenInterestRepository(db_session)
+    result = await FeatureEngine().run(frame, candle_repo, oi_repo, analyzed_at=ANALYZED_AT)
 
     assert {i.instrument_id for i in result.instruments} == {member_id}
 
@@ -152,7 +169,12 @@ async def test_engine_with_no_members_produces_no_instrument_results(db_session)
         finalized_at=FRAME_TIME,
         members=[],
     )
-    result = await FeatureEngine().run(frame, CandleRepository(db_session), analyzed_at=ANALYZED_AT)
+    result = await FeatureEngine().run(
+        frame,
+        CandleRepository(db_session),
+        OpenInterestRepository(db_session),
+        analyzed_at=ANALYZED_AT,
+    )
     assert result.instruments == []
 
 

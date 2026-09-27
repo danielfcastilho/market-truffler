@@ -74,18 +74,27 @@ describe("groupColumnsByFamily", () => {
 });
 
 describe("FEATURE_COLUMNS", () => {
-  it("keeps today's six canonical Feature keys, grouped as Returns/RSI", () => {
+  it("keeps today's canonical Feature keys, grouped as Returns/RSI/OI Δ", () => {
     expect(FEATURE_COLUMNS.map((c) => c.key)).toEqual([
       "return_5m",
+      "return_15m",
       "return_1h",
+      "return_4h",
+      "return_24h",
       "rsi_14_5m",
       "rsi_14_15m",
       "rsi_14_1h",
       "rsi_14_4h",
+      "oi_change_5m",
+      "oi_change_15m",
+      "oi_change_1h",
+      "oi_change_4h",
+      "oi_change_24h",
     ]);
     expect(groupColumns(FEATURE_COLUMNS)).toEqual([
-      { name: "Returns", span: 2 },
+      { name: "Returns", span: 5 },
       { name: "RSI", span: 4 },
+      { name: "OI Δ", span: 5 },
     ]);
   });
 

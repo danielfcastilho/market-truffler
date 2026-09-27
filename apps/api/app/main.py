@@ -9,6 +9,7 @@ from app.core import __version__
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db.session import get_session_factory
+from app.features.engine import REQUIRED_WARMUP
 from app.integrations.bybit.client import BybitClient
 from app.routers import auth, market, sniffer, system
 from app.services.frame_synchronizer import FrameSynchronizer
@@ -16,6 +17,7 @@ from app.services.history_reconciler import HistoryReconciler
 from app.services.live_candle_sink import PersistingCandleSink
 from app.services.market_collector import MarketCollector
 from app.services.market_universe import MarketUniverseService
+from app.services.open_interest_reconciler import OpenInterestReconciler
 from app.services.sniffer import Sniffer
 
 settings = get_settings()
@@ -54,6 +56,18 @@ async def lifespan(app: FastAPI):
     )
     app.state.history_reconciler = history_reconciler
 
+    # One REST endpoint (`/v5/market/open-interest`) covers both backfill
+    # and "live" updates for OI — see the reconciler's own docstring for
+    # why no separate WebSocket path exists. `REQUIRED_WARMUP` is the same
+    # centralized figure candle bootstrap effectively targets (currently
+    # driven by rsi_14_4h's 60h), so OI backfill needs no separate target
+    # of its own — a future feature with a longer lookback raises both
+    # automatically.
+    open_interest_reconciler = OpenInterestReconciler(
+        session_factory, bybit_client, required_warmup=REQUIRED_WARMUP
+    )
+    app.state.open_interest_reconciler = open_interest_reconciler
+
     # Sniffer has no lifecycle of its own — it's invoked reactively via the
     # hook below, once per finalized frame, never polling and never
     # triggered by a request. A Sniffer failure is isolated inside
@@ -76,11 +90,13 @@ async def lifespan(app: FastAPI):
     # two doesn't matter beyond both being up before its first minute tick.
     await history_reconciler.start()
     await market_collector.start()
+    await open_interest_reconciler.start()
     await frame_synchronizer.start()
 
     yield
 
     await frame_synchronizer.stop()
+    await open_interest_reconciler.stop()
     await market_collector.stop()
     await history_reconciler.stop()
     logger.info("shutdown")

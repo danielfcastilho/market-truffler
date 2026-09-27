@@ -11,21 +11,37 @@ const FRAME = {
       instrument_id: 1,
       symbol: "BTCUSDT",
       return_5m: "0.0042",
+      return_15m: null,
       return_1h: "0.0184",
+      return_4h: null,
+      return_24h: null,
       rsi_14_5m: "63.42",
       rsi_14_15m: null,
       rsi_14_1h: "50",
       rsi_14_4h: "10",
+      oi_change_5m: "0.0512",
+      oi_change_15m: null,
+      oi_change_1h: null,
+      oi_change_4h: null,
+      oi_change_24h: null,
     },
     {
       instrument_id: 2,
       symbol: "ETHUSDT",
       return_5m: null,
+      return_15m: null,
       return_1h: null,
+      return_4h: null,
+      return_24h: null,
       rsi_14_5m: null,
       rsi_14_15m: null,
       rsi_14_1h: null,
       rsi_14_4h: null,
+      oi_change_5m: null,
+      oi_change_15m: null,
+      oi_change_1h: null,
+      oi_change_4h: null,
+      oi_change_24h: null,
     },
   ],
 };
@@ -38,17 +54,19 @@ it("shows the symbol heading and its real existing Sniffs", () => {
   expect(screen.getByText("63.42")).toBeInTheDocument();
   expect(screen.getByText("50.00")).toBeInTheDocument();
   expect(screen.getByText("10.00")).toBeInTheDocument();
+  expect(screen.getByText("+5.12%")).toBeInTheDocument(); // oi_change_5m
 });
 
-it("groups Sniffs into Returns and RSI sections", () => {
+it("groups Sniffs into Returns, RSI, and OI Δ sections", () => {
   render(<SnifferSymbolDetail symbol="BTCUSDT" frame={FRAME} />);
   expect(screen.getByText("Returns")).toBeInTheDocument();
   expect(screen.getByText("RSI")).toBeInTheDocument();
+  expect(screen.getByText("OI Δ")).toBeInTheDocument();
 });
 
 it("shows N/A for unavailable Sniffs, never 0", () => {
   render(<SnifferSymbolDetail symbol="ETHUSDT" frame={FRAME} />);
-  expect(screen.getAllByText("N/A").length).toBeGreaterThanOrEqual(6); // 6 Sniffs, all null
+  expect(screen.getAllByText("N/A").length).toBeGreaterThanOrEqual(14); // 14 Sniffs, all null
   expect(screen.queryByText("0.00")).not.toBeInTheDocument();
   expect(screen.queryByText("0.00%")).not.toBeInTheDocument();
 });

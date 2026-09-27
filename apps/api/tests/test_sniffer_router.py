@@ -183,6 +183,38 @@ async def test_latest_represents_unavailable_as_null_never_zero_or_a_string(
     assert Decimal(eth["return_1h"]) == Decimal("0.03")
 
 
+async def test_latest_includes_every_newer_metric_as_null_for_an_older_shaped_analysis(
+    client, test_user, db_session
+):
+    """`_seed_analyzed_frame` only persisted return_5m/return_1h (an
+    older-shaped analysis) — every newer metric key (return_15m/4h/24h,
+    oi_change_*) must still appear in the response, as null, never
+    omitted or fabricated."""
+    await _seed_analyzed_frame(db_session)
+    await _login(client, test_user)
+
+    response = await client.get("/api/sniffer/latest")
+
+    body = response.json()
+    eth = next(i for i in body["instruments"] if i["symbol"] == "ETHUSDT")
+    for key in (
+        "return_15m",
+        "return_4h",
+        "return_24h",
+        "rsi_14_5m",
+        "rsi_14_15m",
+        "rsi_14_1h",
+        "rsi_14_4h",
+        "oi_change_5m",
+        "oi_change_15m",
+        "oi_change_1h",
+        "oi_change_4h",
+        "oi_change_24h",
+    ):
+        assert key in eth
+        assert eth[key] is None
+
+
 async def test_latest_never_writes_to_the_database(client, test_user, db_session):
     await _seed_analyzed_frame(db_session)
     await _login(client, test_user)

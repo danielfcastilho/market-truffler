@@ -25,6 +25,7 @@ from app.domain.frame import MarketFrame
 from app.features.base import Feature
 from app.models.candle import Candle
 from app.repositories.candle_repository import CandleRepository
+from app.repositories.open_interest_repository import OpenInterestRepository
 
 _LOOKBACK = timedelta(minutes=5)
 
@@ -34,7 +35,10 @@ class Return5m(Feature):
     required_history = _LOOKBACK
 
     async def calculate(
-        self, frame: MarketFrame, candle_repo: CandleRepository
+        self,
+        frame: MarketFrame,
+        candle_repo: CandleRepository,
+        oi_repo: OpenInterestRepository | None = None,
     ) -> dict[int, Decimal | None]:
         if not frame.members:
             return {}

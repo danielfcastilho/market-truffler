@@ -119,19 +119,33 @@ export interface SnifferInstrument {
   instrument_id: number;
   symbol: string;
   /** Decimal fraction (e.g. 0.01 == +1%) as a string, or null when Sniffer
-   * genuinely had no exact 5-minutes-ago candle to compare against —
-   * never a substituted or zeroed value. */
+   * genuinely had no exact historical candle to compare against — never a
+   * substituted or zeroed value. Exact rolling return using canonical 1m
+   * closes, one offset per labeled timeframe. */
   return_5m: string | null;
-  /** Exact rolling 60-minute return using canonical 1m closes. */
+  return_15m: string | null;
   return_1h: string | null;
+  return_4h: string | null;
+  return_24h: string | null;
   /** Cutler's RSI(14) (see apps/api/app/features/rsi.py) over canonical
    * 5m/15m/1h/4h candles, anchored to this frame's already-selected
    * candle for that timeframe. A plain number (e.g. "63.42"), never a
-   * percentage. Null when 15 consecutive closes weren't available. */
+   * percentage. Null when 15 consecutive closes weren't available.
+   * Deliberately no rsi_14_24h — not part of this feature set yet. */
   rsi_14_5m: string | null;
   rsi_14_15m: string | null;
   rsi_14_1h: string | null;
   rsi_14_4h: string | null;
+  /** Open Interest change: (current OI / OI `timeframe` ago) - 1, as the
+   * same signed decimal-fraction convention as return_* (e.g. 0.05 ==
+   * +5%) — never pre-multiplied by 100. Null when either OI observation
+   * is unavailable (insufficient OI backfill, or a gap in Bybit's own
+   * 5-minute OI series). */
+  oi_change_5m: string | null;
+  oi_change_15m: string | null;
+  oi_change_1h: string | null;
+  oi_change_4h: string | null;
+  oi_change_24h: string | null;
 }
 
 export interface SnifferFrame {

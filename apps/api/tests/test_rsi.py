@@ -333,6 +333,14 @@ async def test_full_feature_engine_query_count_does_not_scale_with_instrument_co
 
     from app.features.engine import FEATURES
 
+    # Scoped to the original candle-only features this test was written
+    # against — return_15m/4h/24h and oi_change_* have their own batching
+    # coverage (see test_return_feature.py / test_open_interest_change.py)
+    # and would need OI fixtures this test doesn't set up.
+    candle_features = [
+        f for f in FEATURES if f.name in {"return_5m", "return_1h"} or f.name.startswith("rsi_14_")
+    ]
+
     anchor_1m = FRAME_TIME - timedelta(minutes=1)
     anchors = {
         "5m": FRAME_TIME - timedelta(minutes=5),
@@ -366,11 +374,11 @@ async def test_full_feature_engine_query_count_does_not_scale_with_instrument_co
     db_session.execute = spy
 
     per_feature = {
-        feature.name: await feature.calculate(frame, candle_repo) for feature in FEATURES
+        feature.name: await feature.calculate(frame, candle_repo) for feature in candle_features
     }
 
     assert all(len(values) == 20 for values in per_feature.values())
     assert all(v == Decimal("80") for v in per_feature["rsi_14_5m"].values())
     # 6 features, each with one shared anchor across all 20 instruments ->
     # 6 queries total, not 6 * 20 = 120.
-    assert spy.await_count == len(FEATURES)
+    assert spy.await_count == len(candle_features)

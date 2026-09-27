@@ -13,9 +13,10 @@ still-N/A Sniffs dressed up as a full analysis.
 
 `required_warmup` is never hardcoded here — callers pass
 `app.features.engine.REQUIRED_WARMUP` (itself derived from every
-currently-configured feature's own `required_history`), so a future
-feature with a longer lookback automatically raises the READY bar
-everywhere this is used, with no change needed in this module.
+currently-configured feature's own `required_history`, across both
+candle-based and Open-Interest-based features), so a future feature with
+a longer lookback automatically raises the READY bar everywhere this is
+used, with no change needed in this module.
 """
 
 from datetime import datetime, timedelta
@@ -35,26 +36,60 @@ class SymbolReadiness(StrEnum):
     READY = "ready"
 
 
+# Ordered least-ready to most-ready, so combining two independent
+# watermarks (candle, OI) is just "the lower-ranked of the two states".
+_RANK: dict[SymbolReadiness, int] = {
+    SymbolReadiness.DISCOVERED: 0,
+    SymbolReadiness.BACKFILLING: 1,
+    SymbolReadiness.READY: 2,
+}
+
+
+def _watermark_readiness(
+    synced_from: datetime | None,
+    first_seen_at: datetime | None,
+    now: datetime,
+    required_warmup: timedelta,
+) -> SymbolReadiness:
+    """The same three-state classification, generalized over any single
+    backward-bootstrap watermark — used for both `history_synced_from`
+    (candles) and `oi_synced_from` (Open Interest) below."""
+    if synced_from is None or first_seen_at is None:
+        return SymbolReadiness.DISCOVERED
+    if synced_from <= now - required_warmup:
+        return SymbolReadiness.READY
+    if synced_from < first_seen_at:
+        return SymbolReadiness.BACKFILLING
+    return SymbolReadiness.DISCOVERED
+
+
 def compute_readiness(
     instrument: Instrument, now: datetime, required_warmup: timedelta
 ) -> SymbolReadiness:
     """A pure classification from `instrument`'s own persisted bootstrap
-    watermark (`history_synced_from`) — never triggers any backfill work
-    itself, and never re-verifies individual candles for gaps (RSI/return
-    features still independently return `None` for any real remaining
-    gap, exactly as before this existed). This only decides whether an
+    watermarks — never triggers any backfill work itself, and never
+    re-verifies individual candles/observations for gaps (every feature
+    still independently returns `None` for any real remaining gap,
+    exactly as before this existed). This only decides whether an
     instrument has plausibly enough calendar history to be worth
     including at all — the same precision level
     `historical_coverage.compute_historical_coverage` already uses for
     its own watermark-based approximation.
+
+    A symbol is READY only once BOTH its candle history
+    (`history_synced_from`) and its Open Interest history
+    (`oi_synced_from`) independently reach back `required_warmup` — an
+    instrument with deep candle history but fresh-discovery OI (or vice
+    versa) is only ever as ready as its least-ready data source, since a
+    feature built on the lagging one would still be `None`.
     """
-    if instrument.history_synced_from is None or instrument.first_seen_at is None:
-        return SymbolReadiness.DISCOVERED
-    if instrument.history_synced_from <= now - required_warmup:
-        return SymbolReadiness.READY
-    if instrument.history_synced_from < instrument.first_seen_at:
-        return SymbolReadiness.BACKFILLING
-    return SymbolReadiness.DISCOVERED
+    candle_state = _watermark_readiness(
+        instrument.history_synced_from, instrument.first_seen_at, now, required_warmup
+    )
+    oi_state = _watermark_readiness(
+        instrument.oi_synced_from, instrument.first_seen_at, now, required_warmup
+    )
+    return min(candle_state, oi_state, key=lambda state: _RANK[state])
 
 
 def summarize_readiness(

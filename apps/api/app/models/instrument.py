@@ -29,6 +29,19 @@ class Instrument(Base):
     These record reconciliation work, not the oldest/newest physical row.
     Retention does not rewrite them; coverage intersects them with the current
     window. Expired intervals can no longer be assumed physically present.
+
+    `oi_synced_from` is the equivalent backward-bootstrap watermark for
+    Open Interest (`open_interest_observations`), owned by
+    `app.services.open_interest_reconciler.OpenInterestReconciler` — kept
+    as its own column rather than reusing `history_synced_from` because OI
+    and candles are fetched from different Bybit endpoints on independent
+    schedules, and a symbol can legitimately have deep candle history
+    while OI backfill is still catching up (or vice versa). There is no
+    `oi_synced_through`: forward catch-up resumes from
+    `MAX(open_interest_observations.observed_at)` for the instrument
+    directly rather than a redundant persisted frontier — OI's bounded,
+    short (`REQUIRED_WARMUP`-scale, not the ~30-day candle retention)
+    window makes that cheap to compute on demand.
     """
 
     __tablename__ = "instruments"
@@ -49,3 +62,4 @@ class Instrument(Base):
     history_target_start: Mapped[datetime | None] = mapped_column(UTCDateTime())
     history_synced_from: Mapped[datetime | None] = mapped_column(UTCDateTime())
     history_synced_through: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    oi_synced_from: Mapped[datetime | None] = mapped_column(UTCDateTime())

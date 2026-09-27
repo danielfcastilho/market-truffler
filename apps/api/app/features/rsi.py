@@ -41,6 +41,7 @@ from decimal import Decimal
 from app.domain.frame import FrameCandleContext, MarketFrame, MarketFrameMember
 from app.features.base import Feature
 from app.repositories.candle_repository import CandleRepository
+from app.repositories.open_interest_repository import OpenInterestRepository
 
 _PERIOD = 14
 REQUIRED_CLOSES = _PERIOD + 1  # 15 consecutive closes -> 14 changes
@@ -103,7 +104,10 @@ class RsiFeature(Feature):
         self.required_history = duration * REQUIRED_CLOSES
 
     async def calculate(
-        self, frame: MarketFrame, candle_repo: CandleRepository
+        self,
+        frame: MarketFrame,
+        candle_repo: CandleRepository,
+        oi_repo: OpenInterestRepository | None = None,
     ) -> dict[int, Decimal | None]:
         if not frame.members:
             return {}

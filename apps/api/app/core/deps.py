@@ -13,6 +13,7 @@ from app.services.frame_synchronizer import FrameSynchronizer
 from app.services.history_reconciler import HistoryReconciler
 from app.services.market_collector import MarketCollector
 from app.services.market_universe import MarketUniverseService
+from app.services.open_interest_reconciler import OpenInterestReconciler
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 DbSessionDep = Annotated[AsyncSession, Depends(get_db)]
@@ -92,3 +93,15 @@ def get_frame_synchronizer(request: Request) -> FrameSynchronizer:
 
 
 FrameSynchronizerDep = Annotated[FrameSynchronizer, Depends(get_frame_synchronizer)]
+
+
+def get_open_interest_reconciler(request: Request) -> OpenInterestReconciler:
+    """The continuously-running Open Interest reconciler, owned by the
+    app's lifespan. Same rule as the other MARKET singletons: read-only,
+    never starts/stops/drives it."""
+    return request.app.state.open_interest_reconciler
+
+
+OpenInterestReconcilerDep = Annotated[
+    OpenInterestReconciler, Depends(get_open_interest_reconciler)
+]

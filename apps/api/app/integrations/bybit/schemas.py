@@ -83,3 +83,23 @@ def parse_kline_history_row(row: list[str]) -> BybitKlineData:
         confirm=True,  # historical rows are, by definition, already closed
         timestamp=start_ms,
     )
+
+
+class BybitOpenInterestEntry(BaseModel):
+    """One bucket from `/v5/market/open-interest` — already an object
+    (unlike kline's positional array rows), so no separate row-parser is
+    needed: Pydantic validates this shape directly."""
+
+    openInterest: str
+    timestamp: str
+
+
+class OpenInterestHistoryResult(BaseModel):
+    """`/v5/market/open-interest`'s result envelope. `list` is sorted
+    newest-first, one entry per `intervalTime` bucket (MARKET always
+    requests `5min` — see `BybitClient.get_open_interest`)."""
+
+    category: str
+    symbol: str
+    list: list[BybitOpenInterestEntry]
+    nextPageCursor: str = ""

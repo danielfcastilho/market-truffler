@@ -296,36 +296,47 @@ triggers bootstrap, recovery, or any Bybit call itself):
 
 ```
 app.services.symbol_readiness.compute_readiness(instrument, now, required_warmup)
-   DISCOVERED   history_synced_from is still at (or hasn't moved back
-                from) its starting value — no backward bootstrap
-                progress made yet.
-        │  bootstrap walks history_synced_from backward
+   DISCOVERED   the watermark is still at (or hasn't moved back from)
+                its starting value — no backward bootstrap progress
+                made yet.
+        │  bootstrap walks the watermark backward
         ▼
-   BACKFILLING  some backward progress made, but history_synced_from
-                hasn't yet reached back `required_warmup` before `now`.
+   BACKFILLING  some backward progress made, but the watermark hasn't
+                yet reached back `required_warmup` before `now`.
         │  bootstrap keeps walking backward
         ▼
-   READY        history_synced_from <= now - required_warmup — enough
-                calendar span of reconciled 1m history exists for every
-                currently-required feature's timeframe to be derivable.
+   READY        watermark <= now - required_warmup — enough calendar
+                span of reconciled history exists for every currently-
+                required feature's timeframe to be derivable.
 ```
 
+A symbol is classified independently against **two** watermarks —
+`history_synced_from` (candles, walked by `HistoryReconciler`) and
+`oi_synced_from` (Open Interest, walked by `OpenInterestReconciler` —
+see "MARKET watches Open Interest" below) — and the overall result is
+the *less-ready* of the two: an instrument with deep candle history but
+fresh-discovery OI (or vice versa) is only as ready as its laggard, since
+a feature built on the lagging source would still be `None`.
+
 Like `historical_coverage`, this is an approximation at the same
-precision level: it trusts the watermark rather than re-verifying every
-individual candle is gap-free — RSI/return features still independently
-return `None` for any real remaining gap, exactly as they always have.
-It only decides whether an instrument has plausibly enough history to be
-worth including at all.
+precision level: it trusts the watermarks rather than re-verifying every
+individual candle/observation is gap-free — RSI/return/OI-change
+features still independently return `None` for any real remaining gap,
+exactly as they always have. It only decides whether an instrument has
+plausibly enough history to be worth including at all.
 
 **`required_warmup` is never hardcoded.** It's `app.features.engine.
 REQUIRED_WARMUP` — the max `required_history` across every currently-
-configured `Feature` (today, `rsi_14_4h`'s 15-candle/60h window is the
-longest). Each `Feature` declares its own `required_history: timedelta`
-(`Return5m`/`Return1h` — their lookback constant; `RsiFeature` — 15 ×
-its timeframe's duration); adding a feature with a longer lookback to
-`FEATURES` automatically raises `REQUIRED_WARMUP`, and with it the READY
-bar everywhere `symbol_readiness` is used, with no other change needed
-anywhere in the reconciliation system.
+configured `Feature`, both candle-based and Open-Interest-based (today,
+`rsi_14_4h`'s 15-candle/60h window is still the longest, even after
+`return_24h`/`oi_change_24h` at 24h each). Each `Feature` declares its
+own `required_history: timedelta` (`Return5m`/`Return1h`/`ReturnFeature`
+— their lookback constant; `RsiFeature` — 15 × its timeframe's duration;
+`OpenInterestChangeFeature` — its lookback constant); adding a feature
+with a longer lookback to `FEATURES` automatically raises
+`REQUIRED_WARMUP`, and with it both `OpenInterestReconciler`'s bootstrap
+target and the READY bar everywhere `symbol_readiness` is used, with no
+other change needed anywhere in the reconciliation system.
 
 **Where this is used today:** Vitals' MARKET section ("Symbols ready",
 `X / symbols_tracked`) via `summarize_readiness` — a pure in-memory
@@ -337,6 +348,73 @@ not a change to Sniffer's own behavior today: Sniffer still computes
 Sniffs for every frame member regardless of readiness, and still
 truthfully returns `None` for whichever ones lack sufficient history,
 exactly as before this existed.
+
+### MARKET watches Open Interest
+
+A fourth long-lived background capability, `app/services/
+open_interest_reconciler.py` (`OpenInterestReconciler`), started
+alongside `MarketCollector`/`HistoryReconciler` from the FastAPI lifespan
+— nothing here is triggered by a request. Structurally the same
+bootstrap-then-catch-up shape `HistoryReconciler` uses for candles (one
+bounded REST page per instrument per round, round-robin over the active
+universe with bounded concurrency), simplified because OI only needs a
+short rolling window (`REQUIRED_WARMUP`-scale — currently 60h — not the
+~30-day candle retention) and has no WebSocket source of its own:
+
+```
+app.integrations.bybit.client.BybitClient.get_open_interest
+   GET /v5/market/open-interest, always at intervalTime=5min (the finest
+   granularity Bybit offers) — MARKET's one canonical OI series, the OI
+   equivalent of 1m candles. Bybit's public WebSocket does carry a live
+   openInterest field on its `tickers` topic, but since the REST history
+   endpoint already buckets at a fixed 5 minutes, polling it every 5
+   minutes is exactly as fresh as that native granularity allows — a
+   second, WS-based live path would add real complexity (another
+   connection type, reconnect/backoff policy, sink) for freshness this
+   app would never actually observe. One REST endpoint, one poll loop,
+   covers both backfill and "live" updates.
+        │
+        ▼
+app.services.open_interest_reconciler.OpenInterestReconciler
+   Polls every `poll_interval_seconds` (default 300s = 5 minutes, matching
+   Bybit's own bucket granularity). Each round, per active instrument:
+   `_bootstrap_step` walks `Instrument.oi_synced_from` backward toward
+   `now - REQUIRED_WARMUP` (one bounded page per round, same "accept an
+   empty page as the natural floor" convention `HistoryReconciler.
+   _bootstrap_step` uses for a brand-new listing); `_catchup_step` fetches
+   forward from `MAX(observed_at)` for that instrument (via
+   `OpenInterestRepository.fetch_latest_observed_at_per_instrument` — no
+   separate persisted "through" watermark; OI's short window makes
+   resuming from the table itself cheap) to `now`. A bad symbol's
+   exception is caught and logged per-instrument, never stopping the
+   round for the rest of the universe. Each round also prunes
+   observations older than `retention` (default 2 days) via a plain
+   `DELETE ... WHERE observed_at < cutoff`
+   (`OpenInterestRepository.delete_before`) — not the monthly-partition
+   machinery `partition_manager` owns, since at one row per instrument
+   per 5 minutes this table stays orders of magnitude smaller than the
+   partitioned candle/frame/Sniffer tables that scheme exists for.
+        │
+        ▼
+app.repositories.open_interest_repository.OpenInterestRepository
+   Same idempotent-upsert, set-oriented-batched-query conventions as
+   CandleRepository: `upsert_many` (composite PK `(instrument_id,
+   observed_at)` — a re-fetched observation corrects, never duplicates),
+   `fetch_exact_observed_at`/`fetch_latest_at_or_before_per_instrument`
+   (the OI equivalents of `fetch_exact_open_time`/
+   `fetch_latest_closed_per_instrument`, used by
+   `OpenInterestChangeFeature` — see "Open Interest change" above).
+```
+
+`instruments.oi_synced_from` is its own column, deliberately not reusing
+`history_synced_from` — OI and candles come from different Bybit
+endpoints on independent schedules, and a symbol can legitimately have
+deep candle history while OI backfill still lags (or vice versa); see
+"Symbol readiness" above for how the two combine. There is no
+`open_interest_observations` equivalent of `history_target_start`/
+`history_synced_through`: OI's bounded, short window doesn't need the
+retention-horizon-clamping or forward-frontier bookkeeping candles do at
+~30-day scale.
 
 ### MARKET synchronizes: Market Frames
 
@@ -431,16 +509,23 @@ Vitals reads two new values — "Latest market frame" and "Frame
 completeness" — purely from `FrameRepository.get_latest_finalized()`;
 opening Vitals never creates, advances, or otherwise drives a frame.
 
-### Sniffer measures: `return_5m`/`return_1h` and `rsi_14_{5m,15m,1h,4h}`
+### Sniffer measures: Returns, RSI, and Open Interest change
 
 Sniffer's capability is deliberately narrow: consume one finalized Market
 Frame, compute factual metrics per instrument member, and persist them.
-Nothing here ranks, scores, or interprets — it only measures. Today's six
-Sniffs: `return_5m`, `return_1h`, `rsi_14_5m`, `rsi_14_15m`, `rsi_14_1h`,
-`rsi_14_4h`. ("Sniff" is the product term for what the backend still calls
-a Feature — `app/features/`, `FeatureEngine`, the `Feature` base class
-below — those internal names are unchanged; only the UI-facing label is
-renamed.)
+Nothing here ranks, scores, or interprets — it only measures. Today's 14
+Sniffs:
+
+- **Returns** — `return_5m`, `return_15m`, `return_1h`, `return_4h`,
+  `return_24h`.
+- **RSI(14)** — `rsi_14_5m`, `rsi_14_15m`, `rsi_14_1h`, `rsi_14_4h`
+  (deliberately no `rsi_14_24h` yet).
+- **Open Interest change** — `oi_change_5m`, `oi_change_15m`,
+  `oi_change_1h`, `oi_change_4h`, `oi_change_24h`.
+
+("Sniff" is the product term for what the backend still calls a Feature —
+`app/features/`, `FeatureEngine`, the `Feature` base class below — those
+internal names are unchanged; only the UI-facing label is renamed.)
 
 ```
 app/services/frame_synchronizer.py (FrameSynchronizer._finalize_frame)
@@ -462,32 +547,44 @@ app/services/sniffer.py (Sniffer.on_frame_finalized -> analyze_frame)
         ▼
 app/features/engine.py (FeatureEngine.run)
    Orchestration only, no formulas. Iterates the fixed FEATURES tuple —
-   Return5m, Return1h, and one RsiFeature instance per timeframe (5m, 15m,
-   1h, 4h) — and asks each Feature to calculate itself cross-sectionally
-   over every member of the frame at once, assembling a SnifferFrameResult
-   keyed by instrument.
+   Return5m, Return1h (the original two, kept as their own dedicated,
+   already-tested classes), ReturnFeature("15m"/"4h"/"24h") (a later,
+   generalized "one class, many timeframe instances" class — the same
+   pattern RsiFeature already established), one RsiFeature instance per
+   timeframe (5m, 15m, 1h, 4h), and one OpenInterestChangeFeature instance
+   per timeframe (5m, 15m, 1h, 4h, 24h) — and asks each Feature to
+   calculate itself cross-sectionally over every member of the frame at
+   once, assembling a SnifferFrameResult keyed by instrument. Takes both
+   a CandleRepository and an OpenInterestRepository; only
+   OpenInterestChangeFeature uses the latter (a candle-only feature's
+   `calculate` accepts it only for Liskov-compatible typing and ignores
+   it — see app/features/base.py).
         │
         ▼
-app/features/return_5m.py and return_1h.py (both implement Feature)
-   return_5m = (current_close / close_5_minutes_ago) - 1
-   return_1h = (current_close / close_60_minutes_ago) - 1
-   Both use Decimal. "current_close" is the frame member's own selected m1
+app/features/return_5m.py, return_1h.py, and return_feature.py (all implement Feature)
+   return_{timeframe} = (current_close / close_{timeframe}_ago) - 1
+   Uses Decimal. "current_close" is the frame member's own selected m1
    candle (never a fresh market_candles query — no look-ahead is even
-   possible by construction). The historical anchor is member.m1.open_time minus
-   exactly 5 or 60 minutes, resolved via one batched exact-open_time lookup
-   (CandleRepository.fetch_exact_open_time) per distinct anchor timestamp
-   across the whole frame for each feature — one query when members share
-   the same anchor, never an individual query loop. Missing
-   that exact candle (or a non-positive historical close) yields None —
-   "unavailable" — never a substituted, zeroed, or nearest-candle value.
+   possible by construction). The historical anchor is
+   member.m1.open_time minus the labeled lookback, resolved via one
+   batched exact-open_time lookup (CandleRepository.fetch_exact_open_time)
+   per distinct anchor timestamp across the whole frame for each feature —
+   one query when members share the same anchor, never an individual
+   query loop. Missing that exact candle (or a non-positive historical
+   close) yields None — "unavailable" — never a substituted, zeroed, or
+   nearest-candle value.
         │
         ▼
 app/features/rsi.py (RsiFeature, one instance per timeframe)
    rsi_14_{5m,15m,1h,4h} — see "RSI features" below.
+        │
+        ▼
+app/features/open_interest_change.py (OpenInterestChangeFeature, one instance per timeframe)
+   oi_change_{5m,15m,1h,4h,24h} — see "Open Interest change" below.
 ```
 
 The hourly return uses canonical 1m candles, not the frame's closed hourly
-OHLC reference. All six measurements are factual — decimal fractions or a
+OHLC reference. All measurements are factual — decimal fractions or a
 plain 0-100 index, never desirability or trade signals. The API and
 Sniffer's Sniffs view expose all of them; older stored analyses without a
 given metric expose it as null/N/A. There is no historical re-analysis.
@@ -549,6 +646,43 @@ querying (the common case — every member sharing the same frame-relative
 anchor — collapses to one query per timeframe, never one per instrument),
 mirroring `return_5m`/`return_1h`'s existing batching pattern exactly.
 
+**Open Interest change (`oi_change_5m`/`15m`/`1h`/`4h`/`24h`).**
+
+```
+oi_change_{timeframe} = (current_oi / previous_oi) - 1
+```
+
+Stored as the same raw decimal fraction convention as `return_*` (`0.05`
+== +5%), never pre-multiplied by 100 — so every existing "signed
+percentage" presentation convention (frontend formatting, sign coloring)
+applies unchanged; only the underlying source (Open Interest observations
+instead of candle closes) differs. See "MARKET watches Open Interest"
+below for where those observations come from.
+
+"Current OI" is the latest Open Interest observation at or before
+`frame.frame_time` (`OpenInterestRepository.
+fetch_latest_at_or_before_per_instrument`) — the OI equivalent of a
+frame's already-selected candle anchor, so this inherits the frame's
+no-look-ahead guarantee exactly like every other feature. "Previous OI"
+is the observation at exactly `current.observed_at - lookback` — a
+precise time offset from that anchor (never "now - lookback"), mirroring
+`ReturnFeature`'s own anchor-then-exact-offset pattern. Missing either
+observation (a gap, insufficient OI backfill, or the instrument simply
+not tracked that far back) yields `None` — never approximated or
+interpolated. `OpenInterestChangeFeature.calculate` requires a real
+`oi_repo` and raises (rather than silently returning all-`None`) if one
+isn't given — `FeatureEngine.run` always supplies one; only a direct
+unit test of a candle-only feature would ever omit it.
+
+Bybit's own `/v5/market/open-interest` data is bucketed at a fixed
+5-minute granularity (the finest it offers) — every OI Sniff timeframe
+(5m/15m/1h/4h/24h) is an exact multiple of 5 minutes, so one canonical
+5-minute-bucket series serves all of them via exact-timestamp lookup,
+the same one-canonical-series-derives-every-timeframe shape
+`market_candles`' 1m→5m/15m/1h/4h derivation uses, just without needing
+any local aggregation step (Bybit already provides the finest granularity
+this app needs, unlike candles' 1m).
+
 **Result model and persistence.** `SnifferFrameResult`/
 `SnifferInstrumentResult` (`app/domain/sniffer.py`) are the typed in-memory
 result — `features: dict[str, Decimal | None]`, explicit about
@@ -597,9 +731,12 @@ organized around one pipeline that both the UI and this document use
 consistently:
 
 - **Sniffs** = Feature. Factual, per-instrument measurements Sniffer has
-  actually computed — facts, never judgments. Today: `return_5m`,
-  `return_1h`, `rsi_14_5m`, `rsi_14_15m`, `rsi_14_1h`, `rsi_14_4h` (see
-  "Sniffer measures" above). Real now, and the Sniffs matrix
+  actually computed — facts, never judgments. Today: Returns (`return_5m`,
+  `return_15m`, `return_1h`, `return_4h`, `return_24h`), RSI(14)
+  (`rsi_14_5m`, `rsi_14_15m`, `rsi_14_1h`, `rsi_14_4h`), and Open Interest
+  change (`oi_change_5m`, `oi_change_15m`, `oi_change_1h`, `oi_change_4h`,
+  `oi_change_24h`) — see "Sniffer measures" above. Real now, and the
+  Sniffs matrix
   (`SnifferSniffs`/`SnifferTable`) is a secondary inspection/research
   surface — it answers "what does Sniffer currently know about each
   coin?", nothing more. "Sniff" is purely the UI/product term; the
@@ -977,24 +1114,30 @@ never silently drift from what Sniffer actually executes.
   `/api/market/status`, two minimal read-only Market Frame inspection
   endpoints (`/api/market/frames/latest`, `/api/market/frames/{frame_time}`),
   and three read-only Sniffer endpoints (`/api/sniffer/status`,
-  `/api/sniffer/latest`, `/api/sniffer/frames/{frame_time}`). Four
+  `/api/sniffer/latest`, `/api/sniffer/frames/{frame_time}`). Five
   long-lived background capabilities are started from the FastAPI
   `lifespan`, not from any request: `MarketCollector`
   (`app/services/market_collector.py`, live WebSocket watching),
   `HistoryReconciler` (`app/services/history_reconciler.py`, durable
-  history/bootstrap/gap repair), `FrameSynchronizer`
+  history/bootstrap/gap repair), `OpenInterestReconciler`
+  (`app/services/open_interest_reconciler.py`, OI bootstrap + poll —
+  see "MARKET watches Open Interest" above), `FrameSynchronizer`
   (`app/services/frame_synchronizer.py`, per-minute cross-sectional
   synchronization), and `Sniffer` (`app/services/sniffer.py`, reactive
-  per-frame feature analysis) — all four run for the life of the process.
-- **`postgres`**: `users`, `instruments` (the instrument dimension),
-  `market_candles` (a native `RANGE`-partitioned table on `open_time`,
-  monthly partitions, holding all five timeframes: 1m/5m/15m/1h/4h),
-  `market_frames` (one row per synchronized minute), `market_frame_members`
-  (`RANGE`-partitioned on `frame_time`, same monthly scheme), and
-  `sniffer_results` (`RANGE`-partitioned on `frame_time`, same monthly
-  scheme, one row per `(frame_time, instrument_id, metric)`). No ranking or
-  trade-related schema exists — those get designed when their requirements
-  are known, not speculatively now.
+  per-frame feature analysis) — all five run for the life of the process.
+- **`postgres`**: `users`, `instruments` (the instrument dimension, now
+  also carrying `oi_synced_from`), `market_candles` (a native
+  `RANGE`-partitioned table on `open_time`, monthly partitions, holding
+  all five timeframes: 1m/5m/15m/1h/4h), `open_interest_observations`
+  (composite PK `(instrument_id, observed_at)`, deliberately *not*
+  partitioned — see `OpenInterestObservation`'s model docstring for why
+  its much smaller data volume doesn't need it), `market_frames` (one row
+  per synchronized minute), `market_frame_members` (`RANGE`-partitioned on
+  `frame_time`, same monthly scheme), and `sniffer_results`
+  (`RANGE`-partitioned on `frame_time`, same monthly scheme, one row per
+  `(frame_time, instrument_id, metric)`). No ranking or trade-related
+  schema exists — those get designed when their requirements are known,
+  not speculatively now.
 - **`research/oink_corp`, `packages/shared`, `infra`**: boundaries reserved
   for future work (see each directory's own README). Deliberately empty.
 - **Vitals** (`apps/web/src/app/(protected)/vitals/page.tsx`): reads

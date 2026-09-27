@@ -70,9 +70,33 @@ export const FEATURE_COLUMNS: FeatureColumn[] = [
     valueClassName: returnClassName,
   },
   {
+    key: "return_15m",
+    group: "Returns",
+    label: "15m",
+    minWidthPx: 84,
+    format: formatReturn,
+    valueClassName: returnClassName,
+  },
+  {
     key: "return_1h",
     group: "Returns",
     label: "1h",
+    minWidthPx: 84,
+    format: formatReturn,
+    valueClassName: returnClassName,
+  },
+  {
+    key: "return_4h",
+    group: "Returns",
+    label: "4h",
+    minWidthPx: 84,
+    format: formatReturn,
+    valueClassName: returnClassName,
+  },
+  {
+    key: "return_24h",
+    group: "Returns",
+    label: "24h",
     minWidthPx: 84,
     format: formatReturn,
     valueClassName: returnClassName,
@@ -108,6 +132,50 @@ export const FEATURE_COLUMNS: FeatureColumn[] = [
     minWidthPx: 76,
     format: formatRsi,
     valueClassName: rsiClassName,
+  },
+  {
+    // Open Interest change reuses Returns' own formatter/coloring: it's
+    // the same signed decimal-fraction convention (see SnifferInstrument
+    // in server-api.ts), just sourced from OI observations instead of
+    // candle closes — no separate "OI" formatting vocabulary needed.
+    key: "oi_change_5m",
+    group: "OI Δ",
+    label: "5m",
+    minWidthPx: 84,
+    format: formatReturn,
+    valueClassName: returnClassName,
+  },
+  {
+    key: "oi_change_15m",
+    group: "OI Δ",
+    label: "15m",
+    minWidthPx: 84,
+    format: formatReturn,
+    valueClassName: returnClassName,
+  },
+  {
+    key: "oi_change_1h",
+    group: "OI Δ",
+    label: "1h",
+    minWidthPx: 84,
+    format: formatReturn,
+    valueClassName: returnClassName,
+  },
+  {
+    key: "oi_change_4h",
+    group: "OI Δ",
+    label: "4h",
+    minWidthPx: 84,
+    format: formatReturn,
+    valueClassName: returnClassName,
+  },
+  {
+    key: "oi_change_24h",
+    group: "OI Δ",
+    label: "24h",
+    minWidthPx: 84,
+    format: formatReturn,
+    valueClassName: returnClassName,
   },
 ];
 

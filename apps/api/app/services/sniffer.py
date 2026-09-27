@@ -24,6 +24,7 @@ from app.domain.frame import FrameStatus
 from app.features.engine import FeatureEngine
 from app.repositories.candle_repository import CandleRepository
 from app.repositories.frame_repository import FrameRepository
+from app.repositories.open_interest_repository import OpenInterestRepository
 from app.repositories.sniffer_repository import SnifferRepository
 
 logger = logging.getLogger(__name__)
@@ -55,7 +56,10 @@ class Sniffer:
                 return
 
             candle_repo = CandleRepository(session)
-            result = await self._engine.run(frame, candle_repo, analyzed_at=datetime.now(UTC))
+            oi_repo = OpenInterestRepository(session)
+            result = await self._engine.run(
+                frame, candle_repo, oi_repo, analyzed_at=datetime.now(UTC)
+            )
             await SnifferRepository(session).save_result(result)
 
         logger.info(

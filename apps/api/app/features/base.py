@@ -15,6 +15,7 @@ from decimal import Decimal
 
 from app.domain.frame import MarketFrame
 from app.repositories.candle_repository import CandleRepository
+from app.repositories.open_interest_repository import OpenInterestRepository
 
 
 class Feature(ABC):
@@ -42,7 +43,10 @@ class Feature(ABC):
 
     @abstractmethod
     async def calculate(
-        self, frame: MarketFrame, candle_repo: CandleRepository
+        self,
+        frame: MarketFrame,
+        candle_repo: CandleRepository,
+        oi_repo: OpenInterestRepository | None = None,
     ) -> dict[int, Decimal | None]:
         """Return `{instrument_id: value}` for every member of `frame`.
 
@@ -50,5 +54,11 @@ class Feature(ABC):
         candle doesn't exist at the exact needed timestamp) still gets an
         entry, mapped to `None` — never silently dropped, never
         substituted with an approximate value.
+
+        `oi_repo` is `None` only in direct/unit-test invocations of a
+        candle-only feature that never touches it; `FeatureEngine.run`
+        always passes a real one. An Open-Interest-based feature (see
+        `open_interest_change.py`) requires it and fails loudly if it's
+        missing, rather than silently returning all-`None`.
         """
         raise NotImplementedError

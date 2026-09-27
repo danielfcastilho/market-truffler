@@ -5,12 +5,24 @@ from app.services.symbol_readiness import SymbolReadiness, compute_readiness, su
 
 REQUIRED_WARMUP = timedelta(hours=60)
 
+# Distinguishes "caller didn't pass oi_synced_from" (default to mirroring
+# synced_from) from "caller explicitly passed None" (a real unset OI
+# watermark) — a plain `None` default can't tell those apart.
+_UNSET = object()
+
 
 def _instrument(
     *,
     first_seen_at: datetime,
     synced_from: datetime | None,
+    oi_synced_from: datetime | None | object = _UNSET,
 ) -> Instrument:
+    """`oi_synced_from` defaults to the same value as `synced_from` so
+    tests about candle-watermark transitions aren't incidentally held
+    back by an untouched OI watermark — see the dedicated
+    `test_*_combines_candle_and_oi_readiness` tests below for the
+    interaction between the two."""
+    resolved_oi_synced_from = synced_from if oi_synced_from is _UNSET else oi_synced_from
     return Instrument(
         exchange="bybit",
         symbol="BTCUSDT",
@@ -22,6 +34,7 @@ def _instrument(
         history_target_start=first_seen_at - timedelta(days=30),
         history_synced_from=synced_from,
         history_synced_through=first_seen_at,
+        oi_synced_from=resolved_oi_synced_from,
     )
 
 
@@ -69,10 +82,18 @@ def test_readiness_never_triggers_backfill_work_itself():
     mutation. Calling it repeatedly must be side-effect-free."""
     now = datetime.now(UTC)
     instrument = _instrument(first_seen_at=now, synced_from=now - timedelta(hours=1))
-    before = (instrument.history_synced_from, instrument.history_synced_through)
+    before = (
+        instrument.history_synced_from,
+        instrument.history_synced_through,
+        instrument.oi_synced_from,
+    )
     compute_readiness(instrument, now, REQUIRED_WARMUP)
     compute_readiness(instrument, now, REQUIRED_WARMUP)
-    assert (instrument.history_synced_from, instrument.history_synced_through) == before
+    assert (
+        instrument.history_synced_from,
+        instrument.history_synced_through,
+        instrument.oi_synced_from,
+    ) == before
 
 
 def test_summarize_readiness_counts_every_state_and_zero_fills_missing_ones():
@@ -97,3 +118,46 @@ def test_summarize_readiness_of_an_empty_universe_is_all_zeros_not_missing_keys(
         SymbolReadiness.BACKFILLING: 0,
         SymbolReadiness.READY: 0,
     }
+
+
+# -- candle/OI interaction: a symbol is only as ready as its laggard --------------
+
+
+def test_deep_candle_history_does_not_make_a_symbol_ready_while_oi_still_lags():
+    now = datetime.now(UTC)
+    instrument = _instrument(
+        first_seen_at=now,
+        synced_from=now - timedelta(hours=61),  # candles: fully warmed up
+        oi_synced_from=now - timedelta(hours=10),  # OI: still backfilling
+    )
+    assert compute_readiness(instrument, now, REQUIRED_WARMUP) == SymbolReadiness.BACKFILLING
+
+
+def test_deep_oi_history_does_not_make_a_symbol_ready_while_candles_still_lag():
+    now = datetime.now(UTC)
+    instrument = _instrument(
+        first_seen_at=now,
+        synced_from=now - timedelta(hours=10),  # candles: still backfilling
+        oi_synced_from=now - timedelta(hours=61),  # OI: fully warmed up
+    )
+    assert compute_readiness(instrument, now, REQUIRED_WARMUP) == SymbolReadiness.BACKFILLING
+
+
+def test_ready_only_once_both_candle_and_oi_watermarks_clear_the_warmup():
+    now = datetime.now(UTC)
+    instrument = _instrument(
+        first_seen_at=now,
+        synced_from=now - timedelta(hours=61),
+        oi_synced_from=now - timedelta(hours=61),
+    )
+    assert compute_readiness(instrument, now, REQUIRED_WARMUP) == SymbolReadiness.READY
+
+
+def test_oi_bootstrap_not_started_yet_holds_a_symbol_at_discovered_even_with_deep_candles():
+    now = datetime.now(UTC)
+    instrument = _instrument(
+        first_seen_at=now,
+        synced_from=now - timedelta(hours=61),
+        oi_synced_from=None,
+    )
+    assert compute_readiness(instrument, now, REQUIRED_WARMUP) == SymbolReadiness.DISCOVERED

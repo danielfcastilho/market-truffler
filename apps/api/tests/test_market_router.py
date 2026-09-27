@@ -169,8 +169,9 @@ async def test_market_status_reports_readiness_counts_across_the_active_universe
                 history_target_start=now - timedelta(days=30),
                 history_synced_from=now - timedelta(hours=10),
                 history_synced_through=now,
+                oi_synced_from=now - timedelta(hours=10),
             ),
-            InstrumentRow(  # reaches back past 60h -> READY
+            InstrumentRow(  # reaches back past 60h on both candles and OI -> READY
                 exchange="bybit",
                 symbol="OLDUSDT",
                 base_coin="OLD",
@@ -181,6 +182,7 @@ async def test_market_status_reports_readiness_counts_across_the_active_universe
                 history_target_start=now - timedelta(days=30),
                 history_synced_from=now - timedelta(hours=61),
                 history_synced_through=now,
+                oi_synced_from=now - timedelta(hours=61),
             ),
         ]
     )

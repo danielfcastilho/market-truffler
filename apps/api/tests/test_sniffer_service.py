@@ -172,14 +172,22 @@ async def test_analyze_frame_is_idempotent_on_retry(session_factory):
 
     async with session_factory() as session:
         rows = (await session.execute(select(SnifferResult))).scalars().all()
-    assert len(rows) == 6  # one row per metric, not duplicated by retry
+    assert len(rows) == 14  # one row per metric, not duplicated by retry
     assert {row.metric for row in rows} == {
         "return_5m",
+        "return_15m",
         "return_1h",
+        "return_4h",
+        "return_24h",
         "rsi_14_5m",
         "rsi_14_15m",
         "rsi_14_1h",
         "rsi_14_4h",
+        "oi_change_5m",
+        "oi_change_15m",
+        "oi_change_1h",
+        "oi_change_4h",
+        "oi_change_24h",
     }
 
 
