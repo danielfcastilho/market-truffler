@@ -283,6 +283,61 @@ Catch-up also clamps long-outage work to the rolling horizon. Partition
 provisioning runs on successful periodic universe refreshes as well as startup.
 See `docs/HISTORY_RETENTION.md` for operational details.
 
+### Symbol readiness: DISCOVERED -> BACKFILLING -> READY
+
+Bootstrap/catch-up (above) and "how ready is this instrument's data,
+specifically" are two different questions — the former is the mechanism,
+the latter is a classification a future ranking/Score consumer should
+gate on, so it only ever surfaces a symbol with real data behind it
+rather than one whose Sniffs are still mostly `None` for lack of history.
+`app/services/symbol_readiness.py` answers it, in the same pure,
+read-only, watermark-based style as `historical_coverage.py` (never
+triggers bootstrap, recovery, or any Bybit call itself):
+
+```
+app.services.symbol_readiness.compute_readiness(instrument, now, required_warmup)
+   DISCOVERED   history_synced_from is still at (or hasn't moved back
+                from) its starting value — no backward bootstrap
+                progress made yet.
+        │  bootstrap walks history_synced_from backward
+        ▼
+   BACKFILLING  some backward progress made, but history_synced_from
+                hasn't yet reached back `required_warmup` before `now`.
+        │  bootstrap keeps walking backward
+        ▼
+   READY        history_synced_from <= now - required_warmup — enough
+                calendar span of reconciled 1m history exists for every
+                currently-required feature's timeframe to be derivable.
+```
+
+Like `historical_coverage`, this is an approximation at the same
+precision level: it trusts the watermark rather than re-verifying every
+individual candle is gap-free — RSI/return features still independently
+return `None` for any real remaining gap, exactly as they always have.
+It only decides whether an instrument has plausibly enough history to be
+worth including at all.
+
+**`required_warmup` is never hardcoded.** It's `app.features.engine.
+REQUIRED_WARMUP` — the max `required_history` across every currently-
+configured `Feature` (today, `rsi_14_4h`'s 15-candle/60h window is the
+longest). Each `Feature` declares its own `required_history: timedelta`
+(`Return5m`/`Return1h` — their lookback constant; `RsiFeature` — 15 ×
+its timeframe's duration); adding a feature with a longer lookback to
+`FEATURES` automatically raises `REQUIRED_WARMUP`, and with it the READY
+bar everywhere `symbol_readiness` is used, with no other change needed
+anywhere in the reconciliation system.
+
+**Where this is used today:** Vitals' MARKET section ("Symbols ready",
+`X / symbols_tracked`) via `summarize_readiness` — a pure in-memory
+count over the same `active_instruments` list `historical_coverage`
+already reads, no extra query. No ranking/Score consumer exists yet to
+gate on `READY` directly (see "Sniffs → Scents → Score → Rank →
+Qualification → Truffles" below) — this is the hook a future one uses,
+not a change to Sniffer's own behavior today: Sniffer still computes
+Sniffs for every frame member regardless of readiness, and still
+truthfully returns `None` for whichever ones lack sufficient history,
+exactly as before this existed.
+
 ### MARKET synchronizes: Market Frames
 
 A candle answers "what happened?" A **Market Frame** answers "what was
@@ -949,11 +1004,17 @@ never silently drift from what Sniffer actually executes.
   presentation, the same pattern as `lib/route-guard.ts`. The SYSTEM
   section reflects real signals (API liveness, readiness, database
   connectivity, uptime, environment, backend version); every row in MARKET
-  is real too — "Bybit connectivity"/"Symbols tracked" from a REST call,
-  "Market data"/"Last market update"/"Data freshness" from the live
-  collector, "Historical coverage" from the history reconciler's persisted
-  progress, and "Latest market frame"/"Frame completeness" from the frame
-  synchronizer's most recently finalized Market Frame. In 🐽 SNIFFER,
+  is real too — "Bybit connectivity" from the history reconciler's own
+  most recent periodic universe-refresh outcome, "Symbols tracked" from
+  the persisted active-instrument count, "Symbols ready" from
+  `app.services.symbol_readiness` over that same list, "Market data"/
+  "Last market update"/"Data freshness" from the live collector,
+  "Historical coverage" from the history reconciler's persisted progress,
+  and "Latest market frame"/"Frame completeness" from the frame
+  synchronizer's most recently finalized Market Frame — none of these
+  issue a fresh Bybit REST call or hydrate per-member candle data on
+  Vitals' behalf (see "Fix Vitals page slowness" in git history for why
+  that distinction matters). In 🐽 SNIFFER,
   "Status"/"Last scan"/"Coins analyzed" are now real too, reflecting
   Sniffer's own most recent analysis; "Latest ranking" and
   "🍄 Truffles found" stay hardcoded to "N/A", and all of 🐗 WARHOG and

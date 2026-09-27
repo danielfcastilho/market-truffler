@@ -97,6 +97,10 @@ class RsiFeature(Feature):
         self._timeframe = timeframe
         self._duration = duration
         self._anchor = anchor
+        # REQUIRED_CLOSES (15) candle-durations back from the anchor —
+        # covers the exact 14-interval window plus one duration of margin
+        # for how far the anchor itself can legally trail frame_time.
+        self.required_history = duration * REQUIRED_CLOSES
 
     async def calculate(
         self, frame: MarketFrame, candle_repo: CandleRepository

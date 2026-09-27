@@ -143,6 +143,63 @@ async def test_market_status_reports_ok_with_symbol_count(client, test_user, db_
     assert body["symbols_tracked"] == 2
 
 
+async def test_market_status_reports_readiness_counts_across_the_active_universe(
+    client, test_user, db_session
+):
+    now = datetime.now(UTC)
+    db_session.add_all(
+        [
+            InstrumentRow(  # no watermark yet -> DISCOVERED
+                exchange="bybit",
+                symbol="NEWUSDT",
+                base_coin="NEW",
+                quote_coin="USDT",
+                is_active=True,
+                first_seen_at=now,
+                last_seen_at=now,
+            ),
+            InstrumentRow(  # some backward progress, short of 60h -> BACKFILLING
+                exchange="bybit",
+                symbol="MIDUSDT",
+                base_coin="MID",
+                quote_coin="USDT",
+                is_active=True,
+                first_seen_at=now,
+                last_seen_at=now,
+                history_target_start=now - timedelta(days=30),
+                history_synced_from=now - timedelta(hours=10),
+                history_synced_through=now,
+            ),
+            InstrumentRow(  # reaches back past 60h -> READY
+                exchange="bybit",
+                symbol="OLDUSDT",
+                base_coin="OLD",
+                quote_coin="USDT",
+                is_active=True,
+                first_seen_at=now,
+                last_seen_at=now,
+                history_target_start=now - timedelta(days=30),
+                history_synced_from=now - timedelta(hours=61),
+                history_synced_through=now,
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    await _login(client, test_user)
+    _override()
+    try:
+        response = await client.get("/api/market/status")
+    finally:
+        _clear_overrides()
+
+    body = response.json()
+    assert body["symbols_tracked"] == 3
+    assert body["symbols_discovered"] == 1
+    assert body["symbols_backfilling"] == 1
+    assert body["symbols_ready"] == 1
+
+
 async def test_market_status_reports_down_when_last_universe_refresh_failed(client, test_user):
     await _login(client, test_user)
     _override(

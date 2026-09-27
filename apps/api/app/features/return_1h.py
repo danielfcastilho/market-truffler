@@ -31,6 +31,7 @@ _LOOKBACK = timedelta(minutes=60)
 
 class Return1h(Feature):
     name = "return_1h"
+    required_history = _LOOKBACK
 
     async def calculate(
         self, frame: MarketFrame, candle_repo: CandleRepository

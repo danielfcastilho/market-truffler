@@ -26,6 +26,9 @@ const healthyMarket: MarketStatus = {
   historical_coverage: 0.681,
   latest_market_frame: "2026-09-19T16:37:00.000Z",
   frame_completeness: 0.9987,
+  symbols_discovered: 2,
+  symbols_backfilling: 10,
+  symbols_ready: 202,
 };
 
 const healthySniffer: SnifferStatus = {
@@ -49,6 +52,9 @@ const noMarketDataYet: MarketStatus = {
   historical_coverage: 0.124,
   latest_market_frame: null,
   frame_completeness: null,
+  symbols_discovered: 2,
+  symbols_backfilling: 10,
+  symbols_ready: 202,
 };
 
 describe("overallStatus", () => {
@@ -110,6 +116,9 @@ describe("overallStatus", () => {
         historical_coverage: null,
         latest_market_frame: null,
         frame_completeness: null,
+        symbols_discovered: 0,
+        symbols_backfilling: 0,
+        symbols_ready: 0,
       },
       sniffer: healthySniffer,
     };
@@ -230,6 +239,11 @@ describe("buildVitalsSections", () => {
       value: "214",
       status: "ok",
     });
+    expect(market?.rows.find((r) => r.label === "Symbols ready")).toEqual({
+      label: "Symbols ready",
+      value: "202 / 214",
+      status: "ok",
+    });
     expect(market?.rows.find((r) => r.label === "Data freshness")).toEqual({
       label: "Data freshness",
       value: "12s ago",
@@ -266,6 +280,9 @@ describe("buildVitalsSections", () => {
         historical_coverage: null,
         latest_market_frame: null,
         frame_completeness: null,
+        symbols_discovered: 0,
+        symbols_backfilling: 0,
+        symbols_ready: 0,
       },
       sniffer: healthySniffer,
     });
@@ -278,6 +295,14 @@ describe("buildVitalsSections", () => {
     });
     expect(market?.rows.find((r) => r.label === "Symbols tracked")).toEqual({
       label: "Symbols tracked",
+      value: "N/A",
+      status: "unavailable",
+    });
+    // Readiness counts are meaningless without a known "out of N" —
+    // stays N/A even though symbols_ready/backfilling/discovered
+    // themselves are technically real zeros in this fixture.
+    expect(market?.rows.find((r) => r.label === "Symbols ready")).toEqual({
+      label: "Symbols ready",
       value: "N/A",
       status: "unavailable",
     });

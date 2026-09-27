@@ -21,3 +21,11 @@ class MarketStatus(BaseModel):
     # That frame's available_instruments / expected_instruments, in [0, 1].
     # None alongside latest_market_frame=None.
     frame_completeness: float | None
+    # Per-symbol historical-data readiness (DISCOVERED -> BACKFILLING ->
+    # READY) across the active universe right now — see
+    # app.services.symbol_readiness for exact semantics. Counts always sum
+    # to symbols_tracked; never None (an empty universe is legitimately
+    # 0/0/0, not "unknown").
+    symbols_discovered: int
+    symbols_backfilling: int
+    symbols_ready: int

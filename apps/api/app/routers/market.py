@@ -7,11 +7,13 @@ from fastapi import APIRouter, HTTPException, status
 from app.core.config import get_settings
 from app.core.deps import CurrentUserDep, DbSessionDep, HistoryReconcilerDep, MarketCollectorDep
 from app.domain.frame import MarketFrame as MarketFrameDomain
+from app.features.engine import REQUIRED_WARMUP
 from app.repositories.frame_repository import FrameRepository
 from app.repositories.instrument_repository import InstrumentRepository
 from app.schemas.frame import FrameCandleContext, FrameMember, MarketFrameResponse
 from app.schemas.market import MarketStatus
 from app.services.historical_coverage import compute_historical_coverage
+from app.services.symbol_readiness import SymbolReadiness, summarize_readiness
 
 router = APIRouter(tags=["market"])
 logger = logging.getLogger(__name__)
@@ -84,10 +86,17 @@ async def market_status(
     "market_data"/"last_market_update"/"data_freshness_seconds" are a
     read-only snapshot of the live MARKET collector, and
     "historical_coverage" a read-only snapshot of the background history
-    reconciler's persisted progress. All of this runs continuously from
-    application startup; this endpoint only observes it — it never starts,
-    stops, or otherwise drives bootstrap, recovery, WebSocket connections,
-    universe discovery, or frame construction.
+    reconciler's persisted progress. "symbols_discovered"/
+    "symbols_backfilling"/"symbols_ready" classify every active instrument
+    by `app.services.symbol_readiness` (DISCOVERED -> BACKFILLING ->
+    READY, purely from each instrument's own persisted watermark against
+    `app.features.engine.REQUIRED_WARMUP`) — a future ranking consumer
+    should only use READY symbols rather than surfacing an instrument
+    whose Sniffs are still mostly N/A for lack of history. All of this
+    runs continuously from application startup; this endpoint only
+    observes it — it never starts, stops, or otherwise drives bootstrap,
+    recovery, WebSocket connections, universe discovery, or frame
+    construction.
     """
     reconciler_status = reconciler.status
     bybit_connectivity: Literal["ok", "down"] = (
@@ -107,9 +116,14 @@ async def market_status(
     # A real (possibly empty) repository read, not a live probe — 0 is a
     # truthful count here, never conflated with "unavailable"/N/A.
     symbols_tracked: int | None = len(active_instruments)
+    now = datetime.now(UTC)
     historical_coverage = compute_historical_coverage(
-        active_instruments, datetime.now(UTC), get_settings().market_history_retention_days
+        active_instruments, now, get_settings().market_history_retention_days
     )
+    # Same already-fetched `active_instruments` list, no extra query —
+    # REQUIRED_WARMUP is centralized in app.features.engine so a future
+    # feature with a longer lookback raises this bar automatically.
+    readiness_counts = summarize_readiness(active_instruments, now, REQUIRED_WARMUP)
 
     # Metadata only (frame_time/completeness) — never the fully-hydrated
     # per-member OHLCV join `get_latest_finalized` does, which this row
@@ -128,6 +142,9 @@ async def market_status(
         historical_coverage=historical_coverage,
         latest_market_frame=latest_market_frame,
         frame_completeness=frame_completeness,
+        symbols_discovered=readiness_counts[SymbolReadiness.DISCOVERED],
+        symbols_backfilling=readiness_counts[SymbolReadiness.BACKFILLING],
+        symbols_ready=readiness_counts[SymbolReadiness.READY],
     )
 
 

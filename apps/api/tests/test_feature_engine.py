@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from app.domain.frame import FrameCandleContext, FrameStatus, MarketFrame, MarketFrameMember
-from app.features.engine import FeatureEngine
+from app.features.engine import FEATURES, REQUIRED_WARMUP, FeatureEngine
 from app.models.instrument import Instrument
 from app.repositories.candle_repository import CandleRepository
 
@@ -154,3 +154,12 @@ async def test_engine_with_no_members_produces_no_instrument_results(db_session)
     )
     result = await FeatureEngine().run(frame, CandleRepository(db_session), analyzed_at=ANALYZED_AT)
     assert result.instruments == []
+
+
+def test_required_warmup_is_the_max_across_every_configured_feature():
+    """The centralized readiness threshold must track whichever feature
+    currently needs the deepest history — today, rsi_14_4h's 15 4h-candle
+    window (60h) — so adding a feature with a longer lookback to FEATURES
+    automatically raises it, with no other code needing to change."""
+    assert REQUIRED_WARMUP == max(feature.required_history for feature in FEATURES)
+    assert REQUIRED_WARMUP == timedelta(hours=60)

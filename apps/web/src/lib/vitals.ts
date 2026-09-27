@@ -126,6 +126,22 @@ export function buildVitalsSections({
           status: market?.symbols_tracked != null ? "ok" : "unavailable",
         },
         {
+          // How many tracked symbols currently have enough reconciled
+          // history for every Sniff Sniffer computes today (DISCOVERED ->
+          // BACKFILLING -> READY — see the backend's
+          // app.services.symbol_readiness). Not a health signal (a low
+          // number right after startup is expected, not "down") — status
+          // just reflects whether the counts are known at all. Tied to
+          // symbols_tracked's own nullability (the REST-probe-derived
+          // "out of N" denominator), not just market's presence.
+          label: "Symbols ready",
+          value:
+            market?.symbols_tracked != null
+              ? `${market.symbols_ready} / ${market.symbols_tracked}`
+              : NOT_AVAILABLE,
+          status: market?.symbols_tracked != null ? "ok" : "unavailable",
+        },
+        {
           label: "Data freshness",
           value:
             market?.data_freshness_seconds != null

@@ -23,6 +23,14 @@ FEATURES = (
     RsiFeature("4h", timedelta(minutes=240), lambda member: member.h4),
 )
 
+#: The single centralized "how much reconciled history does Sniffer
+#: currently need" figure — the max `required_history` across every
+#: currently-configured feature (today: rsi_14_4h's 60h). Adding a feature
+#: with a longer lookback to `FEATURES` above automatically raises this,
+#: and with it `app.services.symbol_readiness`'s READY threshold, with no
+#: other change needed anywhere in the reconciliation system.
+REQUIRED_WARMUP: timedelta = max(feature.required_history for feature in FEATURES)
+
 
 class FeatureEngine:
     async def run(

@@ -10,6 +10,7 @@ means writing one more file like `return_5m.py` and listing it in
 """
 
 from abc import ABC, abstractmethod
+from datetime import timedelta
 from decimal import Decimal
 
 from app.domain.frame import MarketFrame
@@ -30,6 +31,14 @@ class Feature(ABC):
     """
 
     name: str
+
+    #: How far back before `frame_time` this feature needs real, already-
+    #: reconciled 1m history to ever produce a non-`None` value — the
+    #: single source of truth `app.features.engine.REQUIRED_WARMUP` (and,
+    #: through it, `app.services.symbol_readiness`) derives from, so a
+    #: feature with a longer lookback automatically raises the readiness
+    #: bar everywhere without any other code changing (see that module).
+    required_history: timedelta
 
     @abstractmethod
     async def calculate(
