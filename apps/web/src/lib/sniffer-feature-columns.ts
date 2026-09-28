@@ -70,12 +70,37 @@ function volatilityClassName(value: string | null): string {
   return value == null ? "text-muted-foreground/70" : "text-foreground";
 }
 
+// A plain multiple (e.g. "2.4x"), never a percentage — RVOL is already a
+// ratio to the instrument's own normal volume, not a fraction to be
+// multiplied by 100. Unsigned, like Volatility: no green/red styling,
+// since "high vs low" participation is a descriptive fact, not a signal.
+function formatRelativeVolume(value: string | null): string {
+  if (value == null) return "N/A";
+  return `${Number(value).toFixed(1)}x`;
+}
+
+function relativeVolumeClassName(value: string | null): string {
+  return value == null ? "text-muted-foreground/70" : "text-foreground";
+}
+
+// Funding rates are tiny relative to Returns/OI Δ (typically hundredths
+// of a percent), so this keeps 4 decimal places rather than Return's 2 —
+// otherwise most real readings would round to "0.00%" and lose all
+// signal. Signed and colored exactly like Returns/OI Δ: funding pressure
+// has a real, meaningful direction (positive == longs pay shorts).
+function formatFundingRate(value: string | null): string {
+  if (value == null) return "N/A";
+  const percent = Number(value) * 100;
+  const sign = percent > 0 ? "+" : "";
+  return `${sign}${percent.toFixed(4)}%`;
+}
+
 /** Centralized presentation metadata for every Feature column — the only
  * place header text, grouping, width, and formatting are declared. Order
  * here is also render order; columns must stay grouped consecutively for
  * `groupColumns` to produce one spanning header per family (Returns, RSI,
- * and — with zero changes elsewhere — future families like Volatility or
- * Volume). */
+ * OI Δ, Volatility, Relative Volume, Funding Rate, and — with zero
+ * changes elsewhere — whatever family comes next). */
 export const FEATURE_COLUMNS: FeatureColumn[] = [
   {
     key: "return_5m",
@@ -224,6 +249,46 @@ export const FEATURE_COLUMNS: FeatureColumn[] = [
     minWidthPx: 84,
     format: formatVolatility,
     valueClassName: volatilityClassName,
+  },
+  {
+    key: "relative_volume_15m",
+    group: "Relative Volume",
+    label: "15m",
+    minWidthPx: 76,
+    format: formatRelativeVolume,
+    valueClassName: relativeVolumeClassName,
+  },
+  {
+    key: "relative_volume_1h",
+    group: "Relative Volume",
+    label: "1h",
+    minWidthPx: 76,
+    format: formatRelativeVolume,
+    valueClassName: relativeVolumeClassName,
+  },
+  {
+    key: "relative_volume_4h",
+    group: "Relative Volume",
+    label: "4h",
+    minWidthPx: 76,
+    format: formatRelativeVolume,
+    valueClassName: relativeVolumeClassName,
+  },
+  {
+    key: "funding_rate_current",
+    group: "Funding Rate",
+    label: "Current",
+    minWidthPx: 96,
+    format: formatFundingRate,
+    valueClassName: returnClassName,
+  },
+  {
+    key: "funding_rate_24h_avg",
+    group: "Funding Rate",
+    label: "24h Avg",
+    minWidthPx: 96,
+    format: formatFundingRate,
+    valueClassName: returnClassName,
   },
 ];
 

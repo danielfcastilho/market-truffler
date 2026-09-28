@@ -5,9 +5,9 @@ from app.services.symbol_readiness import SymbolReadiness, compute_readiness, su
 
 REQUIRED_WARMUP = timedelta(hours=60)
 
-# Distinguishes "caller didn't pass oi_synced_from" (default to mirroring
-# synced_from) from "caller explicitly passed None" (a real unset OI
-# watermark) — a plain `None` default can't tell those apart.
+# Distinguishes "caller didn't pass oi_synced_from/funding_synced_from"
+# (default to mirroring synced_from) from "caller explicitly passed None"
+# (a real unset watermark) — a plain `None` default can't tell those apart.
 _UNSET = object()
 
 
@@ -16,13 +16,16 @@ def _instrument(
     first_seen_at: datetime,
     synced_from: datetime | None,
     oi_synced_from: datetime | None | object = _UNSET,
+    funding_synced_from: datetime | None | object = _UNSET,
 ) -> Instrument:
-    """`oi_synced_from` defaults to the same value as `synced_from` so
-    tests about candle-watermark transitions aren't incidentally held
-    back by an untouched OI watermark — see the dedicated
-    `test_*_combines_candle_and_oi_readiness` tests below for the
-    interaction between the two."""
+    """`oi_synced_from`/`funding_synced_from` each default to the same
+    value as `synced_from` so tests about candle-watermark transitions
+    aren't incidentally held back by an untouched OI or funding watermark
+    — see the dedicated interaction tests below for how the three combine."""
     resolved_oi_synced_from = synced_from if oi_synced_from is _UNSET else oi_synced_from
+    resolved_funding_synced_from = (
+        synced_from if funding_synced_from is _UNSET else funding_synced_from
+    )
     return Instrument(
         exchange="bybit",
         symbol="BTCUSDT",
@@ -35,6 +38,7 @@ def _instrument(
         history_synced_from=synced_from,
         history_synced_through=first_seen_at,
         oi_synced_from=resolved_oi_synced_from,
+        funding_synced_from=resolved_funding_synced_from,
     )
 
 
@@ -120,7 +124,7 @@ def test_summarize_readiness_of_an_empty_universe_is_all_zeros_not_missing_keys(
     }
 
 
-# -- candle/OI interaction: a symbol is only as ready as its laggard --------------
+# -- candle/OI/funding interaction: a symbol is only as ready as its laggard -----
 
 
 def test_deep_candle_history_does_not_make_a_symbol_ready_while_oi_still_lags():
@@ -143,12 +147,35 @@ def test_deep_oi_history_does_not_make_a_symbol_ready_while_candles_still_lag():
     assert compute_readiness(instrument, now, REQUIRED_WARMUP) == SymbolReadiness.BACKFILLING
 
 
-def test_ready_only_once_both_candle_and_oi_watermarks_clear_the_warmup():
+def test_deep_candle_and_oi_history_does_not_make_a_symbol_ready_while_funding_still_lags():
+    now = datetime.now(UTC)
+    instrument = _instrument(
+        first_seen_at=now,
+        synced_from=now - timedelta(hours=61),  # candles: fully warmed up
+        oi_synced_from=now - timedelta(hours=61),  # OI: fully warmed up
+        funding_synced_from=now - timedelta(hours=10),  # funding: still backfilling
+    )
+    assert compute_readiness(instrument, now, REQUIRED_WARMUP) == SymbolReadiness.BACKFILLING
+
+
+def test_deep_funding_history_does_not_make_a_symbol_ready_while_candles_still_lag():
+    now = datetime.now(UTC)
+    instrument = _instrument(
+        first_seen_at=now,
+        synced_from=now - timedelta(hours=10),  # candles: still backfilling
+        oi_synced_from=now - timedelta(hours=10),  # OI: still backfilling
+        funding_synced_from=now - timedelta(hours=61),  # funding: fully warmed up
+    )
+    assert compute_readiness(instrument, now, REQUIRED_WARMUP) == SymbolReadiness.BACKFILLING
+
+
+def test_ready_only_once_candle_oi_and_funding_watermarks_all_clear_the_warmup():
     now = datetime.now(UTC)
     instrument = _instrument(
         first_seen_at=now,
         synced_from=now - timedelta(hours=61),
         oi_synced_from=now - timedelta(hours=61),
+        funding_synced_from=now - timedelta(hours=61),
     )
     assert compute_readiness(instrument, now, REQUIRED_WARMUP) == SymbolReadiness.READY
 
@@ -159,5 +186,16 @@ def test_oi_bootstrap_not_started_yet_holds_a_symbol_at_discovered_even_with_dee
         first_seen_at=now,
         synced_from=now - timedelta(hours=61),
         oi_synced_from=None,
+    )
+    assert compute_readiness(instrument, now, REQUIRED_WARMUP) == SymbolReadiness.DISCOVERED
+
+
+def test_funding_bootstrap_not_started_yet_holds_a_symbol_at_discovered_even_with_deep_candles():
+    now = datetime.now(UTC)
+    instrument = _instrument(
+        first_seen_at=now,
+        synced_from=now - timedelta(hours=61),
+        oi_synced_from=now - timedelta(hours=61),
+        funding_synced_from=None,
     )
     assert compute_readiness(instrument, now, REQUIRED_WARMUP) == SymbolReadiness.DISCOVERED

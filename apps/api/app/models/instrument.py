@@ -42,6 +42,13 @@ class Instrument(Base):
     directly rather than a redundant persisted frontier — OI's bounded,
     short (`REQUIRED_WARMUP`-scale, not the ~30-day candle retention)
     window makes that cheap to compute on demand.
+
+    `funding_synced_from` is the same watermark shape again, this time for
+    `funding_rate_observations`, owned by
+    `app.services.funding_rate_reconciler.FundingRateReconciler` — its own
+    column for exactly the same reason `oi_synced_from` is: an independent
+    Bybit endpoint, an independent schedule, and a symbol's funding
+    backfill can legitimately lag or lead its candle/OI backfill.
     """
 
     __tablename__ = "instruments"
@@ -63,3 +70,4 @@ class Instrument(Base):
     history_synced_from: Mapped[datetime | None] = mapped_column(UTCDateTime())
     history_synced_through: Mapped[datetime | None] = mapped_column(UTCDateTime())
     oi_synced_from: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    funding_synced_from: Mapped[datetime | None] = mapped_column(UTCDateTime())

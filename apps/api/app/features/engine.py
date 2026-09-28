@@ -9,13 +9,16 @@ from datetime import datetime, timedelta
 
 from app.domain.frame import MarketFrame
 from app.domain.sniffer import SnifferFrameResult, SnifferInstrumentResult
+from app.features.funding_rate import FundingRate24hAvgFeature, FundingRateCurrentFeature
 from app.features.open_interest_change import OpenInterestChangeFeature
+from app.features.relative_volume import RelativeVolumeFeature
 from app.features.return_1h import Return1h
 from app.features.return_5m import Return5m
 from app.features.return_feature import ReturnFeature
 from app.features.rsi import RsiFeature
 from app.features.volatility import VolatilityFeature
 from app.repositories.candle_repository import CandleRepository
+from app.repositories.funding_rate_repository import FundingRateRepository
 from app.repositories.open_interest_repository import OpenInterestRepository
 
 FEATURES = (
@@ -37,15 +40,21 @@ FEATURES = (
     VolatilityFeature("1h", timedelta(minutes=60), lambda member: member.h1),
     VolatilityFeature("4h", timedelta(minutes=240), lambda member: member.h4),
     VolatilityFeature("24h", timedelta(minutes=1440), lambda member: member.h24),
+    RelativeVolumeFeature("15m", timedelta(minutes=15), lambda member: member.m15),
+    RelativeVolumeFeature("1h", timedelta(minutes=60), lambda member: member.h1),
+    RelativeVolumeFeature("4h", timedelta(minutes=240), lambda member: member.h4),
+    FundingRateCurrentFeature(),
+    FundingRate24hAvgFeature(),
 )
 
 #: The single centralized "how much reconciled history does Sniffer
 #: currently need" figure — the max `required_history` across every
 #: currently-configured feature. `volatility_24h`'s 15-candle/15-day
-#: window is now the deepest lookback (well past rsi_14_4h's 60h) —
-#: adding a feature with an even longer lookback to `FEATURES` above
-#: automatically raises this further, and with it both
-#: `app.services.open_interest_reconciler`'s bootstrap target/retention
+#: window is still the deepest lookback (well past rsi_14_4h's 60h,
+#: relative_volume_4h's 60h, and funding_rate_24h_avg's 24h) — adding a
+#: feature with an even longer lookback to `FEATURES` above automatically
+#: raises this further, and with it `app.services.open_interest_reconciler`
+#: and `app.services.funding_rate_reconciler`'s bootstrap target/retention
 #: and `app.services.symbol_readiness`'s READY threshold, with no other
 #: change needed anywhere in the reconciliation system.
 REQUIRED_WARMUP: timedelta = max(feature.required_history for feature in FEATURES)
@@ -57,12 +66,13 @@ class FeatureEngine:
         frame: MarketFrame,
         candle_repo: CandleRepository,
         oi_repo: OpenInterestRepository,
+        funding_repo: FundingRateRepository,
         *,
         analyzed_at: datetime,
     ) -> SnifferFrameResult:
         # {feature_name: {instrument_id: value | None}}
         per_feature = {
-            feature.name: await feature.calculate(frame, candle_repo, oi_repo)
+            feature.name: await feature.calculate(frame, candle_repo, oi_repo, funding_repo)
             for feature in FEATURES
         }
 

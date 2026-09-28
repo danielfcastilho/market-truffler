@@ -41,6 +41,7 @@ from app.features.base import Feature
 from app.features.candle_window import fetch_verified_windows
 from app.models.candle import Candle
 from app.repositories.candle_repository import CandleRepository
+from app.repositories.funding_rate_repository import FundingRateRepository
 from app.repositories.open_interest_repository import OpenInterestRepository
 
 
@@ -87,6 +88,7 @@ class VolatilityFeature(Feature):
         frame: MarketFrame,
         candle_repo: CandleRepository,
         oi_repo: OpenInterestRepository | None = None,
+        funding_repo: FundingRateRepository | None = None,
     ) -> dict[int, Decimal | None]:
         if not frame.members:
             return {}

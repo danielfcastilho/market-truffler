@@ -39,6 +39,11 @@ def _to_response(result: SnifferFrameResult) -> SnifferFrameResponse:
                 volatility_1h=i.features.get("volatility_1h"),
                 volatility_4h=i.features.get("volatility_4h"),
                 volatility_24h=i.features.get("volatility_24h"),
+                relative_volume_15m=i.features.get("relative_volume_15m"),
+                relative_volume_1h=i.features.get("relative_volume_1h"),
+                relative_volume_4h=i.features.get("relative_volume_4h"),
+                funding_rate_current=i.features.get("funding_rate_current"),
+                funding_rate_24h_avg=i.features.get("funding_rate_24h_avg"),
             )
             for i in sorted(result.instruments, key=lambda i: i.symbol)
         ],

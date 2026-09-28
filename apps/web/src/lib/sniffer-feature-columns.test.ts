@@ -74,7 +74,7 @@ describe("groupColumnsByFamily", () => {
 });
 
 describe("FEATURE_COLUMNS", () => {
-  it("keeps today's canonical Feature keys, grouped as Returns/RSI/OI Δ/Volatility", () => {
+  it("keeps today's canonical Feature keys, grouped as Returns/RSI/OI Δ/Volatility/Relative Volume/Funding Rate", () => {
     expect(FEATURE_COLUMNS.map((c) => c.key)).toEqual([
       "return_5m",
       "return_15m",
@@ -94,12 +94,19 @@ describe("FEATURE_COLUMNS", () => {
       "volatility_1h",
       "volatility_4h",
       "volatility_24h",
+      "relative_volume_15m",
+      "relative_volume_1h",
+      "relative_volume_4h",
+      "funding_rate_current",
+      "funding_rate_24h_avg",
     ]);
     expect(groupColumns(FEATURE_COLUMNS)).toEqual([
       { name: "Returns", span: 5 },
       { name: "RSI", span: 4 },
       { name: "OI Δ", span: 5 },
       { name: "Volatility", span: 4 },
+      { name: "Relative Volume", span: 3 },
+      { name: "Funding Rate", span: 2 },
     ]);
   });
 

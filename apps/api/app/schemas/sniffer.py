@@ -52,6 +52,24 @@ class SnifferInstrument(BaseModel):
     volatility_1h: Decimal | None
     volatility_4h: Decimal | None
     volatility_24h: Decimal | None
+    # relative_volume_{timeframe} = current_volume / baseline_volume (see
+    # app/features/relative_volume.py) — a plain ratio, never a
+    # percentage (1.0 == normal, 2.0 == double normal). None when the
+    # 15-candle window isn't available, or the trailing baseline is zero.
+    # Deliberately no relative_volume_24h — not part of this feature set
+    # yet.
+    relative_volume_15m: Decimal | None
+    relative_volume_1h: Decimal | None
+    relative_volume_4h: Decimal | None
+    # funding_rate_current / funding_rate_24h_avg (see
+    # app/features/funding_rate.py) — the same raw-fraction convention as
+    # return_*/oi_change_* (0.0001 == +0.01%), signed like return_* (never
+    # unsigned like volatility_*): funding pressure has a real direction,
+    # and a zero or negative reading is a legitimate value, never treated
+    # as unavailable. None only when no funding observation exists yet in
+    # the relevant window (insufficient backfill).
+    funding_rate_current: Decimal | None
+    funding_rate_24h_avg: Decimal | None
 
 
 class SnifferFrameResponse(BaseModel):

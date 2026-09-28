@@ -156,6 +156,26 @@ export interface SnifferInstrument {
   volatility_1h: string | null;
   volatility_4h: string | null;
   volatility_24h: string | null;
+  /** Relative Volume: current-window volume divided by the mean of the
+   * 14 preceding equivalent windows (see
+   * apps/api/app/features/relative_volume.py) — a plain ratio, never a
+   * percentage (1.0 == normal, 2.0 == double normal). Null when the
+   * 15-candle window is unavailable, or the trailing baseline is zero.
+   * Deliberately no relative_volume_24h — not part of this feature set
+   * yet. */
+  relative_volume_15m: string | null;
+  relative_volume_1h: string | null;
+  relative_volume_4h: string | null;
+  /** Funding Rate: the latest settled perpetual funding observation
+   * (funding_rate_current) and the plain mean of every observation in
+   * the trailing 24h (funding_rate_24h_avg) — see
+   * apps/api/app/features/funding_rate.py. Same raw-fraction convention
+   * as return_ and oi_change_ (0.0001 == +0.01%), signed: a zero or
+   * negative reading is a legitimate value, never treated as
+   * unavailable. Null only when no funding observation exists yet in
+   * the relevant window. */
+  funding_rate_current: string | null;
+  funding_rate_24h_avg: string | null;
 }
 
 export interface SnifferFrame {

@@ -103,3 +103,27 @@ class OpenInterestHistoryResult(BaseModel):
     symbol: str
     list: list[BybitOpenInterestEntry]
     nextPageCursor: str = ""
+
+
+class BybitFundingRateEntry(BaseModel):
+    """One settled funding event from `/v5/market/funding/history` —
+    already an object, like `BybitOpenInterestEntry`. `fundingRate` is
+    Bybit's own raw fraction (e.g. `"0.0001"` for +0.01%), already in the
+    convention this app stores every rate/return-like feature in, so it
+    is cast straight to `Decimal` with no rescaling."""
+
+    symbol: str
+    fundingRate: str
+    fundingRateTimestamp: str
+
+
+class FundingRateHistoryResult(BaseModel):
+    """`/v5/market/funding/history`'s result envelope. `list` is sorted
+    newest-first, one entry per actual funding settlement — unlike Open
+    Interest, there is no fixed `intervalTime` to request: each
+    instrument's contract settles at its own real interval (commonly
+    1h/2h/4h/8h), and Bybit reports the true settlement timestamps
+    directly rather than a bucketed series."""
+
+    category: str
+    list: list[BybitFundingRateEntry]

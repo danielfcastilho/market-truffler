@@ -28,6 +28,11 @@ const FRAME = {
       volatility_1h: "0.023",
       volatility_4h: null,
       volatility_24h: null,
+      relative_volume_15m: null,
+      relative_volume_1h: "2.4",
+      relative_volume_4h: null,
+      funding_rate_current: "0.0001",
+      funding_rate_24h_avg: null,
     },
     {
       instrument_id: 2,
@@ -50,6 +55,11 @@ const FRAME = {
       volatility_1h: null,
       volatility_4h: null,
       volatility_24h: null,
+      relative_volume_15m: null,
+      relative_volume_1h: null,
+      relative_volume_4h: null,
+      funding_rate_current: null,
+      funding_rate_24h_avg: null,
     },
   ],
 };
@@ -64,19 +74,23 @@ it("shows the symbol heading and its real existing Sniffs", () => {
   expect(screen.getByText("10.00")).toBeInTheDocument();
   expect(screen.getByText("+5.12%")).toBeInTheDocument(); // oi_change_5m
   expect(screen.getByText("2.30%")).toBeInTheDocument(); // volatility_1h, unsigned
+  expect(screen.getByText("2.4x")).toBeInTheDocument(); // relative_volume_1h
+  expect(screen.getByText("+0.0100%")).toBeInTheDocument(); // funding_rate_current
 });
 
-it("groups Sniffs into Returns, RSI, OI Δ, and Volatility sections", () => {
+it("groups Sniffs into Returns, RSI, OI Δ, Volatility, Relative Volume, and Funding Rate sections", () => {
   render(<SnifferSymbolDetail symbol="BTCUSDT" frame={FRAME} />);
   expect(screen.getByText("Returns")).toBeInTheDocument();
   expect(screen.getByText("RSI")).toBeInTheDocument();
   expect(screen.getByText("OI Δ")).toBeInTheDocument();
   expect(screen.getByText("Volatility")).toBeInTheDocument();
+  expect(screen.getByText("Relative Volume")).toBeInTheDocument();
+  expect(screen.getByText("Funding Rate")).toBeInTheDocument();
 });
 
 it("shows N/A for unavailable Sniffs, never 0", () => {
   render(<SnifferSymbolDetail symbol="ETHUSDT" frame={FRAME} />);
-  expect(screen.getAllByText("N/A").length).toBeGreaterThanOrEqual(18); // 18 Sniffs, all null
+  expect(screen.getAllByText("N/A").length).toBeGreaterThanOrEqual(23); // 23 Sniffs, all null
   expect(screen.queryByText("0.00")).not.toBeInTheDocument();
   expect(screen.queryByText("0.00%")).not.toBeInTheDocument();
 });

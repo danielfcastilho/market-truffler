@@ -15,6 +15,7 @@ from decimal import Decimal
 
 from app.domain.frame import MarketFrame
 from app.repositories.candle_repository import CandleRepository
+from app.repositories.funding_rate_repository import FundingRateRepository
 from app.repositories.open_interest_repository import OpenInterestRepository
 
 
@@ -47,6 +48,7 @@ class Feature(ABC):
         frame: MarketFrame,
         candle_repo: CandleRepository,
         oi_repo: OpenInterestRepository | None = None,
+        funding_repo: FundingRateRepository | None = None,
     ) -> dict[int, Decimal | None]:
         """Return `{instrument_id: value}` for every member of `frame`.
 
@@ -55,10 +57,11 @@ class Feature(ABC):
         entry, mapped to `None` — never silently dropped, never
         substituted with an approximate value.
 
-        `oi_repo` is `None` only in direct/unit-test invocations of a
-        candle-only feature that never touches it; `FeatureEngine.run`
-        always passes a real one. An Open-Interest-based feature (see
-        `open_interest_change.py`) requires it and fails loudly if it's
+        `oi_repo`/`funding_repo` are `None` only in direct/unit-test
+        invocations of a feature that never touches them; `FeatureEngine.run`
+        always passes real ones. An Open-Interest-based feature (see
+        `open_interest_change.py`) or a Funding-Rate-based feature (see
+        `funding_rate.py`) requires its own repo and fails loudly if it's
         missing, rather than silently returning all-`None`.
         """
         raise NotImplementedError

@@ -310,13 +310,15 @@ app.services.symbol_readiness.compute_readiness(instrument, now, required_warmup
                 required feature's timeframe to be derivable.
 ```
 
-A symbol is classified independently against **two** watermarks —
-`history_synced_from` (candles, walked by `HistoryReconciler`) and
+A symbol is classified independently against **three** watermarks —
+`history_synced_from` (candles, walked by `HistoryReconciler`),
 `oi_synced_from` (Open Interest, walked by `OpenInterestReconciler` —
-see "MARKET watches Open Interest" below) — and the overall result is
-the *less-ready* of the two: an instrument with deep candle history but
-fresh-discovery OI (or vice versa) is only as ready as its laggard, since
-a feature built on the lagging source would still be `None`.
+see "MARKET watches Open Interest" below), and `funding_synced_from`
+(Funding Rate, walked by `FundingRateReconciler` — see "MARKET watches
+Funding Rate" below) — and the overall result is the *least-ready* of
+the three: an instrument with deep candle history but fresh-discovery OI
+or funding (or any other combination) is only as ready as its laggard,
+since a feature built on the lagging source would still be `None`.
 
 Like `historical_coverage`, this is an approximation at the same
 precision level: it trusts the watermarks rather than re-verifying every
@@ -327,16 +329,18 @@ plausibly enough history to be worth including at all.
 
 **`required_warmup` is never hardcoded.** It's `app.features.engine.
 REQUIRED_WARMUP` — the max `required_history` across every currently-
-configured `Feature`, spanning candle-based, Open-Interest-based, and
-ATR-based features alike (today, `volatility_24h`'s 15-candle/24h window
-— 15 days — is the longest, well past `rsi_14_4h`'s earlier 60h
-high-water mark). Each `Feature` declares its own
-`required_history: timedelta` (`Return5m`/`Return1h`/`ReturnFeature` —
-their lookback constant; `RsiFeature`/`VolatilityFeature` — 15 × their
+configured `Feature`, spanning candle-based, Open-Interest-based,
+Funding-Rate-based, and ATR-based features alike (today, `volatility_24h`'s
+15-candle/24h window — 15 days — is the longest, well past
+`rsi_14_4h`'s/`relative_volume_4h`'s shared 60h and `funding_rate_24h_avg`'s
+24h). Each `Feature` declares its own `required_history: timedelta`
+(`Return5m`/`Return1h`/`ReturnFeature` — their lookback constant;
+`RsiFeature`/`VolatilityFeature`/`RelativeVolumeFeature` — 15 × their
 timeframe's duration; `OpenInterestChangeFeature` — its lookback
-constant); adding a feature with a longer lookback to `FEATURES`
-automatically raises `REQUIRED_WARMUP`, and with it both
-`OpenInterestReconciler`'s bootstrap target/retention and the READY bar
+constant; `FundingRateCurrentFeature`/`FundingRate24hAvgFeature` — 24h);
+adding a feature with a longer lookback to `FEATURES` automatically
+raises `REQUIRED_WARMUP`, and with it both `OpenInterestReconciler`'s
+and `FundingRateReconciler`'s bootstrap target/retention and the READY bar
 everywhere `symbol_readiness` is used, with no
 other change needed anywhere in the reconciliation system.
 
@@ -412,11 +416,63 @@ app.repositories.open_interest_repository.OpenInterestRepository
 `history_synced_from` — OI and candles come from different Bybit
 endpoints on independent schedules, and a symbol can legitimately have
 deep candle history while OI backfill still lags (or vice versa); see
-"Symbol readiness" above for how the two combine. There is no
-`open_interest_observations` equivalent of `history_target_start`/
-`history_synced_through`: OI's bounded, short window doesn't need the
-retention-horizon-clamping or forward-frontier bookkeeping candles do at
-~30-day scale.
+"Symbol readiness" above for how the two (three, with funding) combine.
+There is no `open_interest_observations` equivalent of
+`history_target_start`/`history_synced_through`: OI's bounded, short
+window doesn't need the retention-horizon-clamping or forward-frontier
+bookkeeping candles do at ~30-day scale.
+
+### MARKET watches Funding Rate
+
+A fifth long-lived background capability, `app/services/
+funding_rate_reconciler.py` (`FundingRateReconciler`), started alongside
+`OpenInterestReconciler` from the FastAPI lifespan. Structurally
+byte-for-byte the same bootstrap-then-catch-up shape as
+`OpenInterestReconciler` (see above) — same reasoning, same short
+`REQUIRED_WARMUP`-scale window, no WebSocket source of its own — but
+against a different Bybit endpoint with a genuinely different data
+shape:
+
+```
+app.integrations.bybit.client.BybitClient.get_funding_rate_history
+   GET /v5/market/funding/history — unlike open-interest, this endpoint
+   has no fixed bucket granularity to request: each returned entry is an
+   actual settled funding event at whatever interval that instrument's
+   real contract uses (commonly 1h/2h/4h/8h, confirmed live against
+   production Bybit data to vary per instrument — never assumed or
+   hardcoded). MARKET just walks Bybit's own reported settlement
+   timestamps directly.
+        │
+        ▼
+app.services.funding_rate_reconciler.FundingRateReconciler
+   Polls every `poll_interval_seconds` (default 300s, same as OI — cheap
+   headroom, not a claim that funding settles that often). Each round,
+   per active instrument: `_bootstrap_step` walks
+   `Instrument.funding_synced_from` backward toward
+   `now - REQUIRED_WARMUP` (same empty-page-is-the-natural-floor
+   convention); `_catchup_step` fetches forward from
+   `MAX(funding_time)` for that instrument to `now`. A bad symbol's
+   exception is caught and logged per-instrument, never stopping the
+   round. Each round also prunes observations older than `retention`
+   (default `required_warmup + 1 day` — see "MARKET watches Open
+   Interest" above for why that default, not a fixed constant, is load-
+   bearing) via a plain `DELETE ... WHERE funding_time < cutoff`.
+        │
+        ▼
+app.repositories.funding_rate_repository.FundingRateRepository
+   Same idempotent-upsert, set-oriented-batched-query conventions as
+   OpenInterestRepository: `upsert_many` (composite PK `(instrument_id,
+   funding_time)` — a re-fetched observation corrects, never
+   duplicates), `fetch_latest_at_or_before_per_instrument` (used by
+   `funding_rate_current`), `fetch_since_per_instrument` (used by
+   `funding_rate_24h_avg` — every observation in a trailing window, per
+   instrument, however many a given instrument's real interval yields).
+```
+
+`instruments.funding_synced_from` is its own column, for the same reason
+`oi_synced_from` is: an independent Bybit endpoint, an independent
+schedule, and a symbol's funding backfill can legitimately lag or lead
+its candle/OI backfill.
 
 ### MARKET synchronizes: Market Frames
 
@@ -519,7 +575,7 @@ opening Vitals never creates, advances, or otherwise drives a frame.
 
 Sniffer's capability is deliberately narrow: consume one finalized Market
 Frame, compute factual metrics per instrument member, and persist them.
-Nothing here ranks, scores, or interprets — it only measures. Today's 18
+Nothing here ranks, scores, or interprets — it only measures. Today's 23
 Sniffs:
 
 - **Returns** — `return_5m`, `return_15m`, `return_1h`, `return_4h`,
@@ -531,6 +587,14 @@ Sniffs:
 - **Volatility (ATR%)** — `volatility_15m`, `volatility_1h`,
   `volatility_4h`, `volatility_24h` (deliberately no `volatility_5m` yet)
   — descriptive only, no scoring/desirability judgment.
+- **Relative Volume** — `relative_volume_15m`, `relative_volume_1h`,
+  `relative_volume_4h` (deliberately no `relative_volume_24h` yet) —
+  current-window volume over the mean of the 14 preceding equivalent
+  windows, as a plain ratio (1.0 == normal), descriptive only.
+- **Funding Rate** — `funding_rate_current`, `funding_rate_24h_avg` —
+  sourced from real settled perpetual funding events (see "MARKET
+  watches Funding Rate" above), signed like Returns/OI change (a zero or
+  negative reading is a legitimate value, never "unavailable").
 
 ("Sniff" is the product term for what the backend still calls a Feature —
 `app/features/`, `FeatureEngine`, the `Feature` base class below — those
@@ -561,14 +625,17 @@ app/features/engine.py (FeatureEngine.run)
    generalized "one class, many timeframe instances" class — the same
    pattern RsiFeature already established), one RsiFeature instance per
    timeframe (5m, 15m, 1h, 4h), one OpenInterestChangeFeature instance per
-   timeframe (5m, 15m, 1h, 4h, 24h), and one VolatilityFeature instance
-   per timeframe (15m, 1h, 4h, 24h) — and asks each Feature to calculate
-   itself cross-sectionally over every member of the frame at once,
-   assembling a SnifferFrameResult keyed by instrument. Takes both a
-   CandleRepository and an OpenInterestRepository; only
-   OpenInterestChangeFeature uses the latter (a candle-only feature's
-   `calculate` accepts it only for Liskov-compatible typing and ignores
-   it — see app/features/base.py).
+   timeframe (5m, 15m, 1h, 4h, 24h), one VolatilityFeature instance per
+   timeframe (15m, 1h, 4h, 24h), one RelativeVolumeFeature instance per
+   timeframe (15m, 1h, 4h), and FundingRateCurrentFeature/
+   FundingRate24hAvgFeature (no timeframe parameter — only one of each) —
+   and asks each Feature to calculate itself cross-sectionally over every
+   member of the frame at once, assembling a SnifferFrameResult keyed by
+   instrument. Takes a CandleRepository, an OpenInterestRepository, and a
+   FundingRateRepository; only OpenInterestChangeFeature and the two
+   Funding Rate features use the latter two (every other feature's
+   `calculate` accepts them only for Liskov-compatible typing and ignores
+   them — see app/features/base.py).
         │
         ▼
 app/features/return_5m.py, return_1h.py, and return_feature.py (all implement Feature)
@@ -595,6 +662,15 @@ app/features/open_interest_change.py (OpenInterestChangeFeature, one instance pe
         ▼
 app/features/volatility.py (VolatilityFeature, one instance per timeframe)
    volatility_{15m,1h,4h,24h} — see "Volatility features" below.
+        │
+        ▼
+app/features/relative_volume.py (RelativeVolumeFeature, one instance per timeframe)
+   relative_volume_{15m,1h,4h} — see "Relative Volume features" below.
+        │
+        ▼
+app/features/funding_rate.py (FundingRateCurrentFeature, FundingRate24hAvgFeature)
+   funding_rate_current, funding_rate_24h_avg — see "Funding Rate
+   features" below.
 ```
 
 The hourly return uses canonical 1m candles, not the frame's closed hourly
@@ -745,11 +821,71 @@ lookback any feature has needed so far, well past `rsi_14_4h`'s previous
 automatically (it's still just `max(f.required_history for f in
 FEATURES)`), and two things downstream automatically follow suit with no
 code change needed: `app.services.symbol_readiness`'s READY bar (a symbol
-now needs 15 days of *both* candle and OI history to read READY), and
-`OpenInterestReconciler`'s own default retention, which is derived from
-`required_warmup` (see "MARKET watches Open Interest" above) specifically
-so a growing `REQUIRED_WARMUP` can never make the reconciler prune
+now needs 15 days of *all three* — candle, OI, *and* funding — history to
+read READY), and `OpenInterestReconciler`'s/`FundingRateReconciler`'s own
+default retention, each derived from `required_warmup` (see "MARKET
+watches Open Interest"/"MARKET watches Funding Rate" above) specifically
+so a growing `REQUIRED_WARMUP` can never make either reconciler prune
 bootstrap progress it just walked back to.
+
+**Relative Volume features (`relative_volume_15m`/`1h`/`4h`).** Current-
+window volume relative to this instrument's own recent normal volume for
+an equivalent window — a plain ratio, never a percentage, and unsigned
+like Volatility (no green/red styling — "high vs low" participation is a
+descriptive fact, not a signal):
+
+```
+relative_volume_{timeframe} = current_volume / baseline_volume
+current_volume  = window[-1].volume                    (the anchor candle itself)
+baseline_volume = mean(c.volume for c in window[:-1])   (the 14 candles before it)
+```
+
+Deliberately reuses Volatility's exact same "15 consecutive closed
+candles ending at the frame's already-selected anchor" window (the same
+`app/features/candle_window.py` helper, the same batching, the same
+no-look-ahead/insufficient-history behavior) rather than a separate
+windowing implementation — only how the window is *read* differs: ATR
+treats all 15 as one continuous series, RVOL splits the newest one off as
+"current" and averages the other 14 as the baseline. A `baseline_volume`
+of exactly zero (a newly listed, untraded instrument) yields `None`
+rather than an infinite or fabricated ratio. Deliberately no
+`relative_volume_24h` yet.
+
+**Funding Rate features (`funding_rate_current`/`funding_rate_24h_avg`).**
+The first Sniffer feature family that needed its own real ingestion
+pipeline rather than reading data another capability already collects —
+built by mirroring `OpenInterestReconciler`'s architecture file-for-file
+(see "MARKET watches Funding Rate" above): `funding_rate_observations`
+(composite PK `(instrument_id, funding_time)`, idempotent upsert),
+`Instrument.funding_synced_from` (its own backward-bootstrap watermark,
+independent of `oi_synced_from`), `FundingRateReconciler` (bootstrap +
+catch-up + retention, started from the lifespan alongside
+`OpenInterestReconciler`).
+
+```
+funding_rate_current  = latest observation at-or-before frame.frame_time
+funding_rate_24h_avg  = mean(observations with frame_time - 24h <= funding_time <= frame_time)
+```
+
+Both read `funding_rate_observations` directly against `frame.frame_time`
+— never a frame member's own candle anchor, since funding isn't a
+candle-derived measurement — but stay fully no-look-ahead-safe: every
+query is bounded to "at or before"/"no later than" `frame.frame_time`,
+the same guarantee `OpenInterestChangeFeature` gets from
+`OpenInterestRepository`. Stored as the same raw-fraction convention as
+`return_*`/`oi_change_*` (`0.0001` == +0.01%), signed — unlike Volatility,
+funding pressure has a real direction — and a zero or negative reading is
+a completely ordinary, legitimate value, never treated as "unavailable"
+(unlike Open Interest, which requires a positive divisor).
+
+Each instrument's real Bybit funding interval (commonly 1h/2h/4h/8h,
+confirmed live against production data to genuinely vary per instrument)
+is never assumed or hardcoded: `funding_rate_24h_avg` simply averages
+however many real settlements actually fall in the trailing 24h window
+for that instrument — a 1h-interval instrument naturally contributes more
+points than an 8h-interval one over the same 24 hours, and that's
+correct, not something to normalize away. `None` only when the relevant
+window has no observations at all.
 
 **Result model and persistence.** `SnifferFrameResult`/
 `SnifferInstrumentResult` (`app/domain/sniffer.py`) are the typed in-memory
@@ -803,9 +939,11 @@ consistently:
   `return_15m`, `return_1h`, `return_4h`, `return_24h`), RSI(14)
   (`rsi_14_5m`, `rsi_14_15m`, `rsi_14_1h`, `rsi_14_4h`), Open Interest
   change (`oi_change_5m`, `oi_change_15m`, `oi_change_1h`, `oi_change_4h`,
-  `oi_change_24h`), and Volatility/ATR% (`volatility_15m`,
-  `volatility_1h`, `volatility_4h`, `volatility_24h`) — see "Sniffer
-  measures" above. Real now, and the Sniffs matrix
+  `oi_change_24h`), Volatility/ATR% (`volatility_15m`,
+  `volatility_1h`, `volatility_4h`, `volatility_24h`), Relative Volume
+  (`relative_volume_15m`, `relative_volume_1h`, `relative_volume_4h`),
+  and Funding Rate (`funding_rate_current`, `funding_rate_24h_avg`) — see
+  "Sniffer measures" above. Real now, and the Sniffs matrix
   (`SnifferSniffs`/`SnifferTable`) is a secondary inspection/research
   surface — it answers "what does Sniffer currently know about each
   coin?", nothing more. "Sniff" is purely the UI/product term; the
@@ -1183,30 +1321,34 @@ never silently drift from what Sniffer actually executes.
   `/api/market/status`, two minimal read-only Market Frame inspection
   endpoints (`/api/market/frames/latest`, `/api/market/frames/{frame_time}`),
   and three read-only Sniffer endpoints (`/api/sniffer/status`,
-  `/api/sniffer/latest`, `/api/sniffer/frames/{frame_time}`). Five
+  `/api/sniffer/latest`, `/api/sniffer/frames/{frame_time}`). Six
   long-lived background capabilities are started from the FastAPI
   `lifespan`, not from any request: `MarketCollector`
   (`app/services/market_collector.py`, live WebSocket watching),
   `HistoryReconciler` (`app/services/history_reconciler.py`, durable
   history/bootstrap/gap repair), `OpenInterestReconciler`
   (`app/services/open_interest_reconciler.py`, OI bootstrap + poll —
-  see "MARKET watches Open Interest" above), `FrameSynchronizer`
+  see "MARKET watches Open Interest" above), `FundingRateReconciler`
+  (`app/services/funding_rate_reconciler.py`, funding bootstrap + poll —
+  see "MARKET watches Funding Rate" above), `FrameSynchronizer`
   (`app/services/frame_synchronizer.py`, per-minute cross-sectional
   synchronization), and `Sniffer` (`app/services/sniffer.py`, reactive
-  per-frame feature analysis) — all five run for the life of the process.
+  per-frame feature analysis) — all six run for the life of the process.
 - **`postgres`**: `users`, `instruments` (the instrument dimension, now
-  also carrying `oi_synced_from`), `market_candles` (a native
-  `RANGE`-partitioned table on `open_time`, monthly partitions, holding
-  all six timeframes: 1m/5m/15m/1h/4h/24h), `open_interest_observations`
-  (composite PK `(instrument_id, observed_at)`, deliberately *not*
-  partitioned — see `OpenInterestObservation`'s model docstring for why
-  its much smaller data volume doesn't need it), `market_frames` (one row
-  per synchronized minute), `market_frame_members` (`RANGE`-partitioned on
-  `frame_time`, same monthly scheme), and `sniffer_results`
-  (`RANGE`-partitioned on `frame_time`, same monthly scheme, one row per
-  `(frame_time, instrument_id, metric)`). No ranking or trade-related
-  schema exists — those get designed when their requirements are known,
-  not speculatively now.
+  also carrying `oi_synced_from`/`funding_synced_from`), `market_candles`
+  (a native `RANGE`-partitioned table on `open_time`, monthly partitions,
+  holding all six timeframes: 1m/5m/15m/1h/4h/24h),
+  `open_interest_observations` (composite PK `(instrument_id,
+  observed_at)`, deliberately *not* partitioned — see
+  `OpenInterestObservation`'s model docstring for why its much smaller
+  data volume doesn't need it), `funding_rate_observations` (composite PK
+  `(instrument_id, funding_time)`, same not-partitioned reasoning),
+  `market_frames` (one row per synchronized minute), `market_frame_members`
+  (`RANGE`-partitioned on `frame_time`, same monthly scheme), and
+  `sniffer_results` (`RANGE`-partitioned on `frame_time`, same monthly
+  scheme, one row per `(frame_time, instrument_id, metric)`). No ranking
+  or trade-related schema exists — those get designed when their
+  requirements are known, not speculatively now.
 - **`research/oink_corp`, `packages/shared`, `infra`**: boundaries reserved
   for future work (see each directory's own README). Deliberately empty.
 - **Vitals** (`apps/web/src/app/(protected)/vitals/page.tsx`): reads

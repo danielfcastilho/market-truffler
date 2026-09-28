@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 INSTRUMENTS_INFO_PATH = "/v5/market/instruments-info"
 KLINE_PATH = "/v5/market/kline"
 OPEN_INTEREST_PATH = "/v5/market/open-interest"
+FUNDING_HISTORY_PATH = "/v5/market/funding/history"
 
 
 class BybitApiError(Exception):
@@ -94,6 +95,50 @@ class BybitClient:
                 base_url=self._base_url, timeout=self._timeout, transport=self._transport
             ) as client:
                 response = await client.get(KLINE_PATH, params=params)
+                response.raise_for_status()
+                payload = response.json()
+        except httpx.HTTPError as exc:
+            raise BybitApiError(f"Bybit request failed: {exc}") from exc
+
+        ret_code = payload.get("retCode")
+        if ret_code != 0:
+            raise BybitApiError(f"Bybit returned retCode={ret_code}: {payload.get('retMsg')}")
+
+        return payload["result"]
+
+    async def get_funding_rate_history(
+        self,
+        category: str,
+        symbol: str,
+        *,
+        start: int | None = None,
+        end: int | None = None,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        """Fetch one page of `/v5/market/funding/history` for `symbol`.
+
+        Unlike `get_open_interest`, this endpoint has no fixed bucket
+        granularity to request: each returned entry is an actual settled
+        funding event at whatever interval that instrument's contract
+        really uses (commonly 1h/2h/4h/8h, and not necessarily constant
+        over an instrument's lifetime) — Bybit reports the real settlement
+        timestamps directly, so MARKET never has to assume or hardcode an
+        interval per symbol. Returns at most `limit` rows (max 200 per
+        Bybit's own cap), newest first — paging further back is the
+        caller's concern via `start`/`end`, the same shape as
+        `get_open_interest`.
+        """
+        params: dict[str, Any] = {"category": category, "symbol": symbol, "limit": limit}
+        if start is not None:
+            params["startTime"] = start
+        if end is not None:
+            params["endTime"] = end
+
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url, timeout=self._timeout, transport=self._transport
+            ) as client:
+                response = await client.get(FUNDING_HISTORY_PATH, params=params)
                 response.raise_for_status()
                 payload = response.json()
         except httpx.HTTPError as exc:

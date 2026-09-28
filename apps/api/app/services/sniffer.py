@@ -24,6 +24,7 @@ from app.domain.frame import FrameStatus
 from app.features.engine import FeatureEngine
 from app.repositories.candle_repository import CandleRepository
 from app.repositories.frame_repository import FrameRepository
+from app.repositories.funding_rate_repository import FundingRateRepository
 from app.repositories.open_interest_repository import OpenInterestRepository
 from app.repositories.sniffer_repository import SnifferRepository
 
@@ -57,8 +58,9 @@ class Sniffer:
 
             candle_repo = CandleRepository(session)
             oi_repo = OpenInterestRepository(session)
+            funding_repo = FundingRateRepository(session)
             result = await self._engine.run(
-                frame, candle_repo, oi_repo, analyzed_at=datetime.now(UTC)
+                frame, candle_repo, oi_repo, funding_repo, analyzed_at=datetime.now(UTC)
             )
             await SnifferRepository(session).save_result(result)
 

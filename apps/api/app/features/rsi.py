@@ -41,6 +41,7 @@ from decimal import Decimal
 from app.domain.frame import FrameCandleContext, MarketFrame, MarketFrameMember
 from app.features.base import Feature
 from app.repositories.candle_repository import CandleRepository
+from app.repositories.funding_rate_repository import FundingRateRepository
 from app.repositories.open_interest_repository import OpenInterestRepository
 
 _PERIOD = 14
@@ -108,6 +109,7 @@ class RsiFeature(Feature):
         frame: MarketFrame,
         candle_repo: CandleRepository,
         oi_repo: OpenInterestRepository | None = None,
+        funding_repo: FundingRateRepository | None = None,
     ) -> dict[int, Decimal | None]:
         if not frame.members:
             return {}

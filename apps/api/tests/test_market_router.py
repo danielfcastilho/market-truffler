@@ -170,9 +170,10 @@ async def test_market_status_reports_readiness_counts_across_the_active_universe
                 history_synced_from=now - timedelta(hours=10),
                 history_synced_through=now,
                 oi_synced_from=now - timedelta(hours=10),
+                funding_synced_from=now - timedelta(hours=10),
             ),
             InstrumentRow(  # reaches back past REQUIRED_WARMUP (volatility_24h's
-                # 15-day window) on both candles and OI -> READY
+                # 15-day window) on candles, OI, and funding -> READY
                 exchange="bybit",
                 symbol="OLDUSDT",
                 base_coin="OLD",
@@ -184,6 +185,7 @@ async def test_market_status_reports_readiness_counts_across_the_active_universe
                 history_synced_from=now - timedelta(days=16),
                 history_synced_through=now,
                 oi_synced_from=now - timedelta(days=16),
+                funding_synced_from=now - timedelta(days=16),
             ),
         ]
     )

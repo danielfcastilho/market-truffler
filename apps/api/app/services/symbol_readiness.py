@@ -13,10 +13,10 @@ still-N/A Sniffs dressed up as a full analysis.
 
 `required_warmup` is never hardcoded here — callers pass
 `app.features.engine.REQUIRED_WARMUP` (itself derived from every
-currently-configured feature's own `required_history`, across both
-candle-based and Open-Interest-based features), so a future feature with
-a longer lookback automatically raises the READY bar everywhere this is
-used, with no change needed in this module.
+currently-configured feature's own `required_history`, across candle-,
+Open-Interest-, and Funding-Rate-based features alike), so a future
+feature with a longer lookback automatically raises the READY bar
+everywhere this is used, with no change needed in this module.
 """
 
 from datetime import datetime, timedelta
@@ -76,12 +76,13 @@ def compute_readiness(
     `historical_coverage.compute_historical_coverage` already uses for
     its own watermark-based approximation.
 
-    A symbol is READY only once BOTH its candle history
-    (`history_synced_from`) and its Open Interest history
-    (`oi_synced_from`) independently reach back `required_warmup` — an
-    instrument with deep candle history but fresh-discovery OI (or vice
-    versa) is only ever as ready as its least-ready data source, since a
-    feature built on the lagging one would still be `None`.
+    A symbol is READY only once its candle history
+    (`history_synced_from`), Open Interest history (`oi_synced_from`),
+    AND Funding Rate history (`funding_synced_from`) all independently
+    reach back `required_warmup` — an instrument with deep candle history
+    but fresh-discovery OI or funding (or any other combination) is only
+    ever as ready as its least-ready data source, since a feature built
+    on the lagging one would still be `None`.
     """
     candle_state = _watermark_readiness(
         instrument.history_synced_from, instrument.first_seen_at, now, required_warmup
@@ -89,7 +90,10 @@ def compute_readiness(
     oi_state = _watermark_readiness(
         instrument.oi_synced_from, instrument.first_seen_at, now, required_warmup
     )
-    return min(candle_state, oi_state, key=lambda state: _RANK[state])
+    funding_state = _watermark_readiness(
+        instrument.funding_synced_from, instrument.first_seen_at, now, required_warmup
+    )
+    return min(candle_state, oi_state, funding_state, key=lambda state: _RANK[state])
 
 
 def summarize_readiness(

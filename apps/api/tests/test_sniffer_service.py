@@ -172,7 +172,7 @@ async def test_analyze_frame_is_idempotent_on_retry(session_factory):
 
     async with session_factory() as session:
         rows = (await session.execute(select(SnifferResult))).scalars().all()
-    assert len(rows) == 18  # one row per metric, not duplicated by retry
+    assert len(rows) == 23  # one row per metric, not duplicated by retry
     assert {row.metric for row in rows} == {
         "return_5m",
         "return_15m",
@@ -192,6 +192,11 @@ async def test_analyze_frame_is_idempotent_on_retry(session_factory):
         "volatility_1h",
         "volatility_4h",
         "volatility_24h",
+        "relative_volume_15m",
+        "relative_volume_1h",
+        "relative_volume_4h",
+        "funding_rate_current",
+        "funding_rate_24h_avg",
     }
 
 

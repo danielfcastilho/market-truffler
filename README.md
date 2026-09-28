@@ -10,12 +10,13 @@ history horizon, self-repaired after gaps or outages, locally aggregated
 into 5m/15m/1h/4h/24h), continuously polls Open Interest from Bybit's
 public REST API, and every closed UTC minute synchronizes MARKET into one
 Market Frame — a single, temporally-legal cross-sectional snapshot of the
-whole market. Sniffer now reacts to each finalized frame and computes 18
+whole market. Sniffer now reacts to each finalized frame and computes 23
 factual measurements per instrument (Returns at 5m/15m/1h/4h/24h, RSI(14)
-at 5m/15m/1h/4h, Open Interest change at 5m/15m/1h/4h/24h, and
-Volatility/ATR% at 15m/1h/4h/24h), persisting them for the
-`/api/sniffer/latest` API and the Sniffer/Vitals pages. No ranking, no
-scoring, no Truffles, no trading logic yet. See
+at 5m/15m/1h/4h, Open Interest change at 5m/15m/1h/4h/24h,
+Volatility/ATR% at 15m/1h/4h/24h, Relative Volume at 15m/1h/4h, and
+Funding Rate current/24h-avg from real settled Bybit funding events),
+persisting them for the `/api/sniffer/latest` API and the Sniffer/Vitals
+pages. No ranking, no scoring, no Truffles, no trading logic yet. See
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for where this is headed.
 
 ## Repository structure
@@ -77,20 +78,33 @@ exists for OI, since that REST granularity is already as fresh as this
 app would ever observe), persisting to its own `open_interest_observations`
 table with the same idempotent-upsert conventions candles use.
 
-On top of that, a fifth background capability — **Sniffer**
+A fifth background capability, **`FundingRateReconciler`**
+(`apps/api/app/services/funding_rate_reconciler.py`), mirrors that same
+bootstrap/catch-up architecture against Bybit's public REST
+`/v5/market/funding/history` endpoint, persisting real settled perpetual
+funding events to its own `funding_rate_observations` table. Unlike Open
+Interest, this endpoint has no fixed bucket granularity — each
+instrument settles at its own real interval (commonly 1h/2h/4h/8h,
+confirmed live against production Bybit data to genuinely vary per
+instrument), which MARKET never assumes or hardcodes.
+
+On top of that, a sixth background capability — **Sniffer**
 (`apps/api/app/services/sniffer.py`) — reacts to each finalized Market
-Frame (a hook from `FrameSynchronizer`, not polling) and computes 18
+Frame (a hook from `FrameSynchronizer`, not polling) and computes 23
 factual measurements per instrument: Returns (`return_5m`/`15m`/`1h`/
 `4h`/`24h`, exact rolling returns), RSI(14) (`rsi_14_5m`/`15m`/`1h`/`4h`,
 Cutler's convention), Open Interest change (`oi_change_5m`/`15m`/`1h`/
-`4h`/`24h`), and Volatility/ATR% (`volatility_15m`/`1h`/`4h`/`24h`, a
-plain unweighted-mean ATR(14) normalized by current price, unsigned).
-Every one of these reports `None`/unavailable rather than substituting or
-approximating whenever its exact historical comparison point doesn't
-exist. Results persist to a compact, idempotent `sniffer_results` table
-and are exposed read-only via `/api/sniffer/status` and
-`/api/sniffer/latest`. A Sniffer failure can never break MARKET's own
-background capabilities.
+`4h`/`24h`), Volatility/ATR% (`volatility_15m`/`1h`/`4h`/`24h`, a plain
+unweighted-mean ATR(14) normalized by current price, unsigned), Relative
+Volume (`relative_volume_15m`/`1h`/`4h`, current-window volume over the
+mean of the 14 preceding equivalent windows, a plain ratio), and Funding
+Rate (`funding_rate_current`/`funding_rate_24h_avg`, signed, sourced from
+real settled funding events). Every one of these reports
+`None`/unavailable rather than substituting or approximating whenever its
+exact historical comparison point doesn't exist. Results persist to a
+compact, idempotent `sniffer_results` table and are exposed read-only via
+`/api/sniffer/status` and `/api/sniffer/latest`. A Sniffer failure can
+never break MARKET's own background capabilities.
 
 > **A note on the retention horizon.** The architecture built in the MARKET
 > milestone supports an arbitrary rolling retention window — the original
@@ -106,8 +120,9 @@ background capabilities.
 What's **not** real: higher-timeframe candles fetched from the exchange
 directly (they're always derived locally from 1m), historical frame
 backfill/reconstruction (frames are only ever produced live, going
-forward), `rsi_14_24h`/`volatility_5m` (deliberately not part of this
-feature set yet), ranking, scoring, Truffles, or trading logic. Warhog and OINK CORP are still reachable in the UI only as a
+forward), `rsi_14_24h`/`volatility_5m`/`relative_volume_24h` (deliberately
+not part of this feature set yet), ranking, scoring, Truffles, or trading
+logic. Warhog and OINK CORP are still reachable in the UI only as a
 deliberate "in progress" page. Vitals (system health)'s SYSTEM section is
 real, every row in MARKET is real ("Bybit connectivity"/"Symbols tracked"
 from REST, "Market data"/"Last market update"/"Data freshness" from the

@@ -13,6 +13,7 @@ from app.features.engine import REQUIRED_WARMUP
 from app.integrations.bybit.client import BybitClient
 from app.routers import auth, market, sniffer, system
 from app.services.frame_synchronizer import FrameSynchronizer
+from app.services.funding_rate_reconciler import FundingRateReconciler
 from app.services.history_reconciler import HistoryReconciler
 from app.services.live_candle_sink import PersistingCandleSink
 from app.services.market_collector import MarketCollector
@@ -68,6 +69,14 @@ async def lifespan(app: FastAPI):
     )
     app.state.open_interest_reconciler = open_interest_reconciler
 
+    # Same one-REST-endpoint shape as OI (see FundingRateReconciler's own
+    # docstring): funding_rate_24h_avg's 24h window is well within
+    # REQUIRED_WARMUP, so it needs no separate backfill target either.
+    funding_rate_reconciler = FundingRateReconciler(
+        session_factory, bybit_client, required_warmup=REQUIRED_WARMUP
+    )
+    app.state.funding_rate_reconciler = funding_rate_reconciler
+
     # Sniffer has no lifecycle of its own — it's invoked reactively via the
     # hook below, once per finalized frame, never polling and never
     # triggered by a request. A Sniffer failure is isolated inside
@@ -91,11 +100,13 @@ async def lifespan(app: FastAPI):
     await history_reconciler.start()
     await market_collector.start()
     await open_interest_reconciler.start()
+    await funding_rate_reconciler.start()
     await frame_synchronizer.start()
 
     yield
 
     await frame_synchronizer.stop()
+    await funding_rate_reconciler.stop()
     await open_interest_reconciler.stop()
     await market_collector.stop()
     await history_reconciler.stop()

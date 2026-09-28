@@ -141,3 +141,78 @@ async def test_get_open_interest_raises_on_nonzero_ret_code():
     client = _client(handler)
     with pytest.raises(BybitApiError):
         await client.get_open_interest("linear", "BTCUSDT")
+
+
+async def test_get_funding_rate_history_returns_result_on_success():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v5/market/funding/history"
+        assert request.url.params["category"] == "linear"
+        assert request.url.params["symbol"] == "BTCUSDT"
+        # No intervalTime param — unlike open-interest, this endpoint has
+        # no fixed bucket granularity to request (see the client method's
+        # own docstring for why).
+        assert "intervalTime" not in request.url.params
+        return httpx.Response(
+            200,
+            json={
+                "retCode": 0,
+                "retMsg": "OK",
+                "result": {
+                    "category": "linear",
+                    "list": [
+                        {
+                            "symbol": "BTCUSDT",
+                            "fundingRate": "0.0001",
+                            "fundingRateTimestamp": "1790526000000",
+                        }
+                    ],
+                },
+            },
+        )
+
+    client = _client(handler)
+    result = await client.get_funding_rate_history("linear", "BTCUSDT")
+    assert result["list"] == [
+        {"symbol": "BTCUSDT", "fundingRate": "0.0001", "fundingRateTimestamp": "1790526000000"}
+    ]
+
+
+async def test_get_funding_rate_history_forwards_time_range_and_limit():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["startTime"] == "1000"
+        assert request.url.params["endTime"] == "2000"
+        assert request.url.params["limit"] == "50"
+        return httpx.Response(
+            200,
+            json={"retCode": 0, "retMsg": "OK", "result": {"category": "linear", "list": []}},
+        )
+
+    client = _client(handler)
+    await client.get_funding_rate_history("linear", "BTCUSDT", start=1000, end=2000, limit=50)
+
+
+async def test_get_funding_rate_history_raises_on_http_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"detail": "boom"})
+
+    client = _client(handler)
+    with pytest.raises(BybitApiError):
+        await client.get_funding_rate_history("linear", "BTCUSDT")
+
+
+async def test_get_funding_rate_history_raises_on_network_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    client = _client(handler)
+    with pytest.raises(BybitApiError):
+        await client.get_funding_rate_history("linear", "BTCUSDT")
+
+
+async def test_get_funding_rate_history_raises_on_nonzero_ret_code():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"retCode": 10001, "retMsg": "bad symbol", "result": {}})
+
+    client = _client(handler)
+    with pytest.raises(BybitApiError):
+        await client.get_funding_rate_history("linear", "BTCUSDT")

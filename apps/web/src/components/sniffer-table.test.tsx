@@ -23,6 +23,11 @@ const BASE: Omit<SnifferInstrument, "instrument_id" | "symbol"> = {
   volatility_1h: null,
   volatility_4h: null,
   volatility_24h: null,
+  relative_volume_15m: null,
+  relative_volume_1h: null,
+  relative_volume_4h: null,
+  funding_rate_current: null,
+  funding_rate_24h_avg: null,
 };
 
 // Two header rows now exist (group row + leaf row), so data rows start at
@@ -80,10 +85,10 @@ it("shows factual returns and RSI sniffs with alphabetical default ordering and 
   const rows = dataRows();
   expect(rowSymbols()).toEqual(["BTCUSDT", "ETHUSDT", "SOLUSDT"]);
   // BTCUSDT: only return_1h and rsi_14_15m are set; every other one of the
-  // 18 Sniff columns is null -> 16 N/A cells.
+  // 23 Sniff columns is null -> 21 N/A cells.
   expect(within(rows[0]).getByText("+3.00%")).toBeInTheDocument();
   expect(within(rows[0]).getByText("80.00")).toBeInTheDocument();
-  expect(within(rows[0]).getAllByText("N/A")).toHaveLength(16);
+  expect(within(rows[0]).getAllByText("N/A")).toHaveLength(21);
   // ETHUSDT
   expect(within(rows[1]).getByText("+1.00%")).toBeInTheDocument();
   expect(within(rows[1]).getByText("-3.00%")).toBeInTheDocument();
@@ -130,11 +135,19 @@ it("groups Sniff headers by family without colliding on duplicate leaf labels", 
   expect(screen.getByRole("columnheader", { name: "RSI" })).toHaveAttribute("colSpan", "4");
   expect(screen.getByRole("columnheader", { name: "OI Δ" })).toHaveAttribute("colSpan", "5");
   expect(screen.getByRole("columnheader", { name: "Volatility" })).toHaveAttribute("colSpan", "4");
+  expect(screen.getByRole("columnheader", { name: "Relative Volume" })).toHaveAttribute(
+    "colSpan",
+    "3",
+  );
+  expect(screen.getByRole("columnheader", { name: "Funding Rate" })).toHaveAttribute(
+    "colSpan",
+    "2",
+  );
 
   // Three distinct "5m" leaf headers exist (return_5m, rsi_14_5m,
   // oi_change_5m) — each is identified unambiguously by its canonical
   // key, never by its visible (and duplicated) label. "1h" additionally
-  // has a fourth (volatility_1h).
+  // has a fourth (volatility_1h) and a fifth (relative_volume_1h).
   expect(screen.getByTitle("return_5m")).toBeInTheDocument();
   expect(screen.getByTitle("rsi_14_5m")).toBeInTheDocument();
   expect(screen.getByTitle("oi_change_5m")).toBeInTheDocument();
@@ -142,8 +155,9 @@ it("groups Sniff headers by family without colliding on duplicate leaf labels", 
   expect(screen.getByTitle("rsi_14_1h")).toBeInTheDocument();
   expect(screen.getByTitle("oi_change_1h")).toBeInTheDocument();
   expect(screen.getByTitle("volatility_1h")).toBeInTheDocument();
+  expect(screen.getByTitle("relative_volume_1h")).toBeInTheDocument();
   expect(screen.getAllByText("5m")).toHaveLength(3);
-  expect(screen.getAllByText("1h")).toHaveLength(4);
+  expect(screen.getAllByText("1h")).toHaveLength(5);
 });
 
 it("gives every Sniff column a sensible minimum width", () => {
