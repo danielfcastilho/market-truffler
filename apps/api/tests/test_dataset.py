@@ -13,8 +13,11 @@ from app.repositories.frame_repository import FrameRepository
 from app.research import dataset as dataset_module
 from app.research.dataset import (
     DATASET_SCHEMA_VERSION,
+    DatasetIntegrityError,
     IncompatibleDatasetError,
     aligned_candidate_times,
+    code_fingerprint,
+    file_sha256,
     generate_dataset,
     read_dataset,
 )
@@ -242,41 +245,85 @@ async def test_a_missing_aligned_frame_is_skipped_and_counted_not_substituted(
     assert manifest["row_count"] == 1  # only FIRST_FRAME's one instrument
 
 
-async def test_refuses_to_overwrite_an_existing_output_dir_without_force(session_factory, tmp_path):
+async def test_never_overwrites_an_existing_dataset(session_factory, tmp_path):
+    """A dataset is a permanent record: a second generation into the same
+    directory always fails and leaves the original byte-for-byte intact."""
     btc = await _add_instrument(session_factory, "BTCUSDT")
     await _seed_5m_range(session_factory, btc, FIRST_FRAME - timedelta(minutes=75), 90, 100)
     await _finalize_frame(session_factory, btc, FIRST_FRAME)
 
     output_dir = tmp_path / "research_v1"
-    await generate_dataset(
-        session_factory,
+    kwargs = dict(
         start=FIRST_FRAME,
         end=FIRST_FRAME + timedelta(minutes=15),
         interval_minutes=15,
         horizons=HORIZONS,
         output_dir=output_dir,
     )
+    first = await generate_dataset(session_factory, **kwargs)
 
     with pytest.raises(FileExistsError):
-        await generate_dataset(
-            session_factory,
-            start=FIRST_FRAME,
-            end=FIRST_FRAME + timedelta(minutes=15),
-            interval_minutes=15,
-            horizons=HORIZONS,
-            output_dir=output_dir,
-        )
+        await generate_dataset(session_factory, **kwargs)
 
-    # force=True overwrites cleanly.
+    assert file_sha256(output_dir / "data.parquet") == first["data_sha256"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["research_v1"]  # no stray tmp dir
+
+
+async def test_manifest_records_hash_provenance_and_actual_coverage(session_factory, tmp_path):
+    btc = await _add_instrument(session_factory, "BTCUSDT")
+    await _seed_5m_range(session_factory, btc, FIRST_FRAME - timedelta(minutes=75), 90, 100)
+    await _finalize_frame(session_factory, btc, FIRST_FRAME)
+
+    output_dir = tmp_path / "v"
+    manifest = await generate_dataset(
+        session_factory,
+        start=FIRST_FRAME - timedelta(hours=1),
+        end=FIRST_FRAME + timedelta(minutes=15),
+        interval_minutes=15,
+        horizons=HORIZONS,
+        output_dir=output_dir,
+    )
+
+    assert manifest["data_sha256"] == file_sha256(output_dir / "data.parquet")
+    assert manifest["code_fingerprint"] == code_fingerprint()
+    assert manifest["first_frame_time"] == FIRST_FRAME.isoformat()
+    assert manifest["last_frame_time"] == FIRST_FRAME.isoformat()
+    assert manifest["distinct_utc_days"] == 1
+    assert manifest["sample_interval_minutes"] == 15
+    assert "regenerable" in manifest["source_retention_note"]
+
+
+async def test_a_frame_whose_members_were_pruned_is_counted_not_processed(
+    session_factory, tmp_path
+):
+    """Retention drops `market_frame_members` partitions while frame
+    headers stay — replaying such a frame hydrates zero members. That must
+    be reported as missing (pruned), never as a processed empty frame."""
+    from sqlalchemy import delete
+
+    from app.models.frame import MarketFrameMember
+
+    btc = await _add_instrument(session_factory, "BTCUSDT")
+    await _seed_5m_range(session_factory, btc, FIRST_FRAME - timedelta(minutes=75), 90, 100)
+    await _finalize_frame(session_factory, btc, FIRST_FRAME)
+    await _finalize_frame(session_factory, btc, SECOND_FRAME)
+    async with session_factory() as session:
+        await session.execute(
+            delete(MarketFrameMember).where(MarketFrameMember.frame_time == SECOND_FRAME)
+        )
+        await session.commit()
+
     manifest = await generate_dataset(
         session_factory,
         start=FIRST_FRAME,
-        end=FIRST_FRAME + timedelta(minutes=15),
+        end=SECOND_FRAME + timedelta(minutes=15),
         interval_minutes=15,
         horizons=HORIZONS,
-        output_dir=output_dir,
-        force=True,
+        output_dir=tmp_path / "v",
     )
+
+    assert manifest["frame_times_processed"] == 1
+    assert manifest["frame_times_missing_pruned"] == 1
     assert manifest["row_count"] == 1
 
 
@@ -389,6 +436,7 @@ async def test_a_pre_5m_dataset_without_a_version_is_refused(session_factory, tm
     manifest = json.loads((output_dir / "manifest.json").read_text())
     for key in ("dataset_schema_version", "base_timeframe", "label_definition"):
         del manifest[key]
+    (output_dir / "manifest.json").chmod(0o644)
     (output_dir / "manifest.json").write_text(json.dumps(manifest))
 
     with pytest.raises(IncompatibleDatasetError, match="regenerate"):
@@ -401,7 +449,13 @@ async def test_a_manifest_and_parquet_from_different_versions_are_refused(
     output_dir = tmp_path / "mixed"
     await _generate_one(session_factory, output_dir)
     table = pq.read_table(output_dir / "data.parquet")
+    (output_dir / "data.parquet").chmod(0o644)
     pq.write_table(table.replace_schema_metadata({}), output_dir / "data.parquet")
+    # Re-pin the hash so this exercises the version check, not integrity.
+    manifest = json.loads((output_dir / "manifest.json").read_text())
+    manifest["data_sha256"] = file_sha256(output_dir / "data.parquet")
+    (output_dir / "manifest.json").chmod(0o644)
+    (output_dir / "manifest.json").write_text(json.dumps(manifest))
 
     with pytest.raises(IncompatibleDatasetError, match="parquet"):
         read_dataset(output_dir)
@@ -443,3 +497,15 @@ def test_cli_rejects_values_that_are_not_multiples_of_5m(extra, capsys):
     with pytest.raises(SystemExit):
         _parse(*extra)
     assert "5" in capsys.readouterr().err
+
+
+async def test_a_modified_data_file_fails_integrity_verification(session_factory, tmp_path):
+    output_dir = tmp_path / "v2"
+    await _generate_one(session_factory, output_dir)
+    data = output_dir / "data.parquet"
+    data.chmod(0o644)  # read-only is only a secondary safeguard
+    with data.open("ab") as handle:
+        handle.write(b"\0")
+
+    with pytest.raises(DatasetIntegrityError, match="sha256"):
+        read_dataset(output_dir)

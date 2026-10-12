@@ -18,6 +18,7 @@ node_modules/
 # OS
 .DS_Store
 
-# OINK CORP generated research datasets (Parquet + manifest) — regenerable
-# output, never committed. See app/scripts/generate_research_dataset.py.
+# OINK CORP research datasets and experiment run records — large, never
+# committed, and NOT regenerable once source data expires: back them up
+# independently (see docs/ARCHITECTURE.md).
 research/oink_corp/data/

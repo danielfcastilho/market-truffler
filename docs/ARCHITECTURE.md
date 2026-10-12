@@ -1116,32 +1116,170 @@ explicitly future-milestone work.
 are refused — regenerate them rather than mixing them with v2 data. Bump
 the version whenever a feature or label definition changes meaning.
 
-Generate a dataset: `docker compose exec api python -m app.scripts.
-generate_research_dataset --start 2026-09-01T00:00:00Z --end
-2026-09-27T00:00:00Z --sample-interval-minutes 15 --horizons 15m,1h,4h,24h
---output research_v1` — writes to `Settings.research_data_dir`, bind-mounted
-to `research/oink_corp/data/` on the host (gitignored; regenerable, never
-committed). No resumability/checkpointing by design: generation is a pure,
-cheap, fully regenerable read pipeline bounded by a short retention window,
-so "re-run the whole command" is simpler and more honest than partial-state
-recovery machinery.
+**Three data layers, three lifetimes.** Research datasets are **not
+indefinitely regenerable**:
+
+| Layer | Lifetime | Rebuildable later? |
+|---|---|---|
+| Raw market data (`market_candles`, `open_interest_observations`, `funding_rate_observations`) | candles: ~30 days, dropped by monthly partition; Open Interest / Funding: rolling 16 days (`REQUIRED_WARMUP + 1 day`) | only within Bybit's own history limits |
+| Persisted Sniffer frames (`market_frames`, `market_frame_members`, `sniffer_results`) | headers forever; members/results ~30-61 days (monthly partitions) | **no** — frames exist only for times the app was running, never backfilled |
+| Materialized research datasets (`research/oink_corp/data/<name>/`) | permanent research records | **no**, once the two layers above expire |
+
+A frame whose header survives but whose members were pruned replays as
+zero members; generation counts it as `frame_times_missing_pruned`, never
+as a processed empty frame.
+
+**Preservation.** `generate_dataset` never overwrites (an existing output
+directory is an error — replacing a dataset is a deliberate manual
+deletion), writes atomically (temp directory + rename), and records
+`data_sha256` (sha256 of `data.parquet`), `code_fingerprint` (sha256 of the
+`app/domain`, `features`, `models`, `repositories`, `research` sources —
+works without `.git` and captures uncommitted edits), `git_commit` when
+available, the actual `first_frame_time`/`last_frame_time`/
+`distinct_utc_days`, and `sample_interval_minutes` (the research sampling
+cadence — separate from the canonical 5m candle timeframe). `read_dataset`
+verifies the hash **before** parsing and raises `DatasetIntegrityError` on
+any mismatch. Files are additionally made read-only — a secondary
+safeguard only; integrity rests on the hash and on independent backups.
+
+Generate: `docker compose exec api python -m app.scripts.
+generate_research_dataset --start … --end … --sample-interval-minutes 15
+--horizons 15m,1h,4h --output <name>`; verify: `… --verify <name>`. Output
+goes to `Settings.research_data_dir`, bind-mounted to
+`research/oink_corp/data/` on the host (gitignored). Generation costs ~30s
+per frame (the same `get_frame` + `FeatureEngine` path live Sniffer uses).
+No resumability by design: a failed run leaves nothing behind and is
+simply re-run, while its sources still exist.
+
+**Operational runbook.**
+
+1. Keep the stack running continuously: frames exist only while it runs
+   (most of September 2026 was lost to host downtime, not to a defect).
+2. Generate an immutable dataset shard **weekly**, at 15-minute sampling,
+   covering the previous week, ending at least 4h before generation so
+   every label is realized. Shards must not overlap in time. Experiments
+   can combine shards that share one sampling cadence.
+3. After each generation, `--verify` it, copy the dataset directory to an
+   independent location (another disk or a synced folder) with `cp -a`,
+   and run `sha256sum data.parquet` on the copy against the manifest's
+   `data_sha256`. A single copy on one laptop is not a backup.
 
 This is research only, an offline batch tool — not the future live
 ranking runtime, which must never depend on it. The boundary is enforced:
 `tests/test_architecture_boundaries.py` fails if anything outside
 `app/research` (and its CLI) imports research code, so labels can't reach
-live Sniffs. Not implemented: heuristics, hypotheses, experiments,
-evaluation, models, Score, Rank, Qualification, Truffles, backtesting,
-Martingale simulation, a research UI, or research API endpoints. Sniffs stay in their native factual units throughout (fractions,
-0-100, ratios) — no 0-1 transform exists yet.
+live Sniffs. Sniffs stay in their native factual units throughout
+(fractions, 0-100, ratios) — no 0-1 transform exists.
+
+### OINK CORP: experiments and the Evaluator
+
+Implemented: one manually written hypothesis is evaluated against
+materialized research datasets, deterministically, by an Evaluator the
+hypothesis cannot influence. No LLM, no automation, no holdout access, no
+promotion.
+
+```
+research/oink_corp/experiments/<experiment_id>.json      (committed spec)
+        │
+        ▼
+app.research.experiment   validate the spec; load the pinned datasets
+                          (hash-verified Parquet only — no database, no
+                          replay, no feature recomputation); select rows
+                          from point-in-time features; directional outcomes
+        │  Observations (rows, selected, eligible, outcome)
+        ▼
+app.research.evaluation   Evaluator protocol v1: day split, purge,
+                          same-timestamp baseline, metrics, uncertainty,
+                          verdict — every rule a versioned constant
+        │
+        ▼
+app.research.runs         immutable run directory:
+                          <data>/runs/<experiment_id>/<run_id>/{spec,result}.json
+```
+
+`python -m app.scripts.run_experiment --spec <path> --segment
+development|validation [--data-dir research/oink_corp/data]` — runs in
+the api container (specs are mounted read-only at
+`/app/research_experiments`) or on a host checkout.
+`tests/test_architecture_boundaries.py` checks these modules import no
+database, repository, service, feature, replay or label code.
+
+**Identities.** A *heuristic* is human intuition (free text plus a slug
+that groups hypotheses derived from it — no library). A *hypothesis* is a
+measurable claim: direction plus conditions, identified by
+`hypothesis_hash`, so one hypothesis is recognizable across experiments,
+datasets and horizons. An *experiment* evaluates a hypothesis on specific
+datasets (each pinned by `data_sha256`) for one outcome label; its
+`experiment_id` is immutable — rerunning an id with a different
+`spec_hash` is refused. A *run* is one execution.
+
+**Spec.** Fixed fields only (unknown fields are rejected; no code,
+ever): direction `long|short`; 1-5 conditions, all required, each
+`{feature, transform: raw|cs_percentile, op: < <= > >=, value}`; label
+`forward_[relative_]return_<H>`. `cs_percentile` is the fraction of rows
+*with that feature available* at the same `frame_time` whose value is
+<= the row's (ties share one percentile); fewer than 50 such rows means
+nothing is selected there. Label availability never influences selection.
+Datasets combined in one experiment must share a sampling cadence and
+horizon and must not overlap in time.
+
+**Evaluator protocol v1** (`app/research/evaluation.py`; any change bumps
+`EVALUATOR_VERSION`):
+
+- *Baseline.* For each timestamp with at least one selected row that has
+  an outcome, `spread_t = mean(selected) - mean(eligible universe)` — the
+  selected rows are part of the universe. The headline is the mean of
+  `spread_t`, each timestamp weighted equally (cross-sectional dependence
+  is handled by aggregating to one value per timestamp, never by
+  counting rows).
+- *Split.* Whole UTC days, from dataset availability only: a day
+  qualifies with >= 12 timestamps of >= 50 rows. With N >= 6 qualifying
+  days, the latest `max(3, N // 3)` are validation (N = 6 gives 3/3);
+  otherwise there is no validation segment. Development rows whose label
+  window ends after the first validation day begins (`t + H > boundary`)
+  are purged.
+- *Uncertainty.* A 90% day-block bootstrap (2,000 resamples, seeded from
+  the spec hash) only when the segment has >= 10 qualifying days;
+  otherwise suppressed, with the reason.
+- *Verdicts.* `insufficient_data` unless the segment has >= 10 days, >=
+  200 timestamps with selections and >= 30 distinct selected symbols;
+  then `positive_evidence` (interval above 0, >= 60% of days positive,
+  top symbol <= 20% of selections), `negative_evidence` (interval below
+  0, >= 60% of days negative), else `inconclusive`. These thresholds are
+  provisional engineering safeguards, not calibrated statistics, and no
+  verdict is evidence of a profitable strategy.
+- *Reports* include selected-at-decision / with-outcome / missing-outcome
+  counts, the eligible universe, timestamps (with and without
+  selections), days, symbols and concentration, selected vs. baseline
+  means and medians, daily spreads, the purge, and standing disclosures
+  (overlapping horizons, cross-sectional dependence, survivorship,
+  limited regimes, no costs or execution, validation reuse).
+
+**Validation reuse, not holdout.** Every validation run records its days;
+later validation runs report how many earlier runs and other hypotheses
+already used overlapping days (`validation_reuse.independent` is false
+after any). Reuse is disclosed, not enforced. There is deliberately no
+holdout access: a per-spec holdout can be re-inspected by editing a
+hypothesis. The future path is a globally protected holdout calendar,
+budgets across experiments and overlapping datasets, and prospective
+validation — a frozen spec evaluated only on data that arrived after its
+first recorded run (run records already store what that needs).
+
+**Records.** A run directory is written into a hidden temp directory and
+atomically renamed; never overwritten; failed runs are recorded with their
+error. History is a directory scan (no separate ledger). Each record holds
+the spec and its hashes, dataset names/hashes/versions/cadence, evaluator
+version, code fingerprint, git commit, seed, segment and its days,
+execution time, report, verdict and status.
 
 ### OINK CORP: future design
 
 **Everything in this section is design intent, not implemented code.** The
-only OINK CORP code that exists is the research foundation above (replay,
-forward-return labels, versioned datasets). No heuristic, hypothesis,
-experiment, evaluator, model, Champion, Challenger, Score, Rank or Truffle
-exists. None should be scaffolded ahead of a real need — no placeholder
+OINK CORP code that exists is described above: replay, forward-return
+labels, versioned datasets, and manually written experiments judged by
+the Evaluator. Heuristics and hypotheses exist only as spec metadata — no
+heuristic library, hypothesis generation, model, Champion, Challenger,
+Score, Rank or Truffle exists. None should be scaffolded ahead of a real need — no placeholder
 directories, tables, endpoints or pages.
 
 #### Heuristics are first-class research inputs
@@ -1206,12 +1344,13 @@ Research must prefer validity over attractive backtests:
   (datasets already carry version, code commit and definitions);
 - model simplicity where possible.
 
-Future research separates a **Researcher** (proposes hypotheses and
-experiments) from an **Evaluator** (independently judges results). The
-Researcher cannot redefine evaluation standards to improve its apparent
-performance. Repeated experimentation against the same validation data
-overfits even without ML, so the eventual system needs protected holdout
-data and evaluation budgets. None of this is implemented.
+Research separates a **Researcher** (proposes hypotheses and experiments)
+from an **Evaluator** (independently judges results). The Researcher cannot
+redefine evaluation standards to improve its apparent performance —
+already true for manual experiments (see "experiments and the Evaluator"
+above). Repeated experimentation against the same validation data
+overfits even without ML: validation reuse is disclosed today; protected
+holdout periods and enforced evaluation budgets are future work.
 
 #### Trading objectives are path-dependent
 

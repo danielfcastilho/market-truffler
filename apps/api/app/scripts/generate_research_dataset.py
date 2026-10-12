@@ -2,20 +2,15 @@
 dataset (Parquet + manifest.json) — the first real OINK CORP capability
 (see `docs/ARCHITECTURE.md`'s OINK CORP section and `app.research.*`).
 
-This is a pure, regenerable batch job: it never mutates production data
-(read-only against `market_frames`/`market_candles`/`open_interest_
-observations`/`funding_rate_observations`), and never writes to
-`sniffer_results`. Safe to re-run — the same `[start, end)`/interval/
-horizons always produce the same dataset (module docstrings in
-`app.research.replay`/`app.research.forward_returns` explain the exact
-temporal semantics this reuses).
+A read-only batch job: it never mutates production data (read-only
+against `market_frames`/`market_candles`/`open_interest_observations`/
+`funding_rate_observations`) and never writes to `sniffer_results`. Its
+output is only reproducible while those sources still exist — frames
+exist only for app uptime and everything is pruned by retention — so a
+dataset is a permanent record, not a cache (see `docs/ARCHITECTURE.md`).
 
-No resumability/checkpointing by design: generation is cheap enough
-(bounded by production's own ~16-30 day retention anyway) that "just re-run
-the whole command" is simpler and more honest than partial-state recovery
-machinery — matching this project's existing "safe to re-run" scripts
-rather than inventing a new resumability contract for a bounded, regenerable
-artifact.
+No resumability by design: an interrupted run leaves nothing behind and is
+simply re-run while its sources still exist.
 
 Usage (inside the api container):
 
@@ -27,6 +22,12 @@ Usage (inside the api container):
 `--sample-interval-minutes` and every `--horizons` entry must be a
 multiple of 5 minutes (the 5m base timeframe); anything else is rejected
 up front, never rounded.
+
+Never overwrites an existing dataset (a permanent research record whose
+sources may have expired). Verify one later — sha256 + version checks —
+with:
+
+    python -m app.scripts.generate_research_dataset --verify research_v1
 
 Writes to `<Settings.research_data_dir>/<output>/` inside the container —
 durable only because `docker-compose.yml` bind-mounts that path to
@@ -43,7 +44,7 @@ from pathlib import Path
 
 from app.core.config import get_settings
 from app.db.session import get_session_factory
-from app.research.dataset import generate_dataset, validate_sample_interval
+from app.research.dataset import generate_dataset, read_dataset, validate_sample_interval
 from app.research.forward_returns import validate_horizons
 
 logging.basicConfig(level=logging.INFO)
@@ -94,16 +95,18 @@ def _parse_timestamp(raw: str) -> datetime:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
-        "--start", required=True, type=_parse_timestamp, help="ISO 8601, e.g. 2026-09-01T00:00:00Z"
+        "--start", type=_parse_timestamp, help="ISO 8601, e.g. 2026-09-01T00:00:00Z"
     )
-    parser.add_argument("--end", required=True, type=_parse_timestamp, help="ISO 8601, exclusive")
+    parser.add_argument("--end", type=_parse_timestamp, help="ISO 8601, exclusive")
     parser.add_argument("--sample-interval-minutes", type=_parse_sample_interval, default=15)
     parser.add_argument(
         "--horizons", type=_parse_horizons, default=_parse_horizons(_DEFAULT_HORIZONS)
     )
-    parser.add_argument("--output", required=True, help="dataset directory name, e.g. research_v1")
+    parser.add_argument("--output", help="dataset directory name, e.g. research_v1")
     parser.add_argument(
-        "--force", action="store_true", help="overwrite --output if it already exists"
+        "--verify",
+        metavar="NAME",
+        help="verify an existing dataset's sha256 and versions instead of generating one",
     )
     return parser
 
@@ -134,7 +137,6 @@ async def _run(args: argparse.Namespace) -> None:
         interval_minutes=args.sample_interval_minutes,
         horizons=args.horizons,
         output_dir=output_dir,
-        force=args.force,
         on_progress=_on_progress,
     )
 
@@ -149,8 +151,27 @@ async def _run(args: argparse.Namespace) -> None:
     )
 
 
+def _verify(name: str) -> None:
+    dataset_dir = Path(get_settings().research_data_dir) / name
+    manifest, table = read_dataset(dataset_dir)
+    print(
+        f"OK {dataset_dir}: sha256 {manifest['data_sha256']}, {table.num_rows} rows, "
+        f"{manifest['first_frame_time']} .. {manifest['last_frame_time']}"
+    )
+
+
 def main() -> None:
-    args = _build_parser().parse_args()
+    parser = _build_parser()
+    args = parser.parse_args()
+    if args.verify:
+        try:
+            _verify(args.verify)
+        except (OSError, ValueError) as exc:
+            print(f"FAILED: {exc}", file=sys.stderr)
+            sys.exit(1)
+        return
+    if args.start is None or args.end is None or args.output is None:
+        parser.error("--start, --end and --output are required unless --verify is given")
     if args.end <= args.start:
         print("--end must be after --start", file=sys.stderr)
         sys.exit(1)

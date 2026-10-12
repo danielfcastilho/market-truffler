@@ -45,6 +45,9 @@ services:
       # has no volumes because nothing else it does needs to survive a
       # rebuild; this one artifact deliberately must.
       - ./research/oink_corp/data:/app/research_data
+      # OINK CORP experiment specs (committed, read-only): run with
+      # `python -m app.scripts.run_experiment --spec /app/research_experiments/<id>.json`.
+      - ./research/oink_corp/experiments:/app/research_experiments:ro
     networks:
       - market-truffler
     healthcheck:

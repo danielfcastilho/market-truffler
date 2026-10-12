@@ -40,6 +40,7 @@ number on `funding_rate_current` for an older range is that ceiling made
 concrete, not a bug in this module.
 """
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -128,7 +129,33 @@ def aligned_candidate_times(
     return candidates
 
 
-def _get_git_commit() -> str | None:
+_APP_DIR = Path(__file__).resolve().parent.parent
+#: The code that determines a dataset's values: feature math, frame/candle
+#: reads, domain types, and the research pipeline itself.
+_FINGERPRINTED_PACKAGES = ("domain", "features", "models", "repositories", "research")
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def code_fingerprint() -> str:
+    """sha256 over the source of every package that determines dataset
+    values (path + content, sorted). Unlike `git_commit` it works inside
+    the container (no `.git` there) and also captures uncommitted edits."""
+    digest = hashlib.sha256()
+    for package in _FINGERPRINTED_PACKAGES:
+        for path in sorted((_APP_DIR / package).rglob("*.py")):
+            digest.update(str(path.relative_to(_APP_DIR)).encode())
+            digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def get_git_commit() -> str | None:
     """Best-effort — `.git` isn't part of the `api` image's Docker build
     context (see `apps/api/Dockerfile`'s `COPY` list), so this is `None`
     when run via `docker compose exec`, and only resolves to a real commit
@@ -244,7 +271,6 @@ async def generate_dataset(
     interval_minutes: int,
     horizons: dict[str, timedelta],
     output_dir: Path,
-    force: bool = False,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
     """Generate one research dataset covering `[start, end)` and write it to
@@ -253,8 +279,16 @@ async def generate_dataset(
     Writes to a sibling temporary directory first and only `rename`s it
     into place as the last step (atomic on the same filesystem) — a failed
     or interrupted run never leaves a directory at `output_dir` that looks
-    like a completed dataset. Refuses to overwrite an existing `output_dir`
-    unless `force=True`.
+    like a completed dataset. Never overwrites: an existing `output_dir`
+    raises `FileExistsError` — a dataset is a permanent research record
+    whose source data may since have expired, so replacing one is a
+    deliberate manual deletion, never a flag.
+
+    The manifest records `data_sha256` (verified by `read_dataset`) and
+    `code_fingerprint`. A frame whose header reports members but which
+    hydrates none (its `market_frame_members` partition was pruned by
+    retention) is counted as `frame_times_missing_pruned`, never as a
+    processed frame with zero rows.
 
     Raises `ValueError` for a sample interval or horizon that isn't a
     multiple of 5 minutes, before touching anything on disk.
@@ -262,11 +296,7 @@ async def generate_dataset(
     validate_sample_interval(interval_minutes)
     validate_horizons(horizons)
     if output_dir.exists():
-        if not force:
-            raise FileExistsError(
-                f"{output_dir} already exists — pass force=True/--force to overwrite"
-            )
-        shutil.rmtree(output_dir)
+        raise FileExistsError(f"{output_dir} already exists — datasets are never overwritten")
 
     horizon_labels = list(horizons)
     candidates = aligned_candidate_times(start, end, interval_minutes)
@@ -279,6 +309,7 @@ async def generate_dataset(
 
     columns = _empty_columns(horizon_labels)
     processed = 0
+    pruned: list[datetime] = []
     for frame_time in sampled:
         async with session_factory() as session:
             replay = await replay_frame(session, frame_time)
@@ -286,6 +317,9 @@ async def generate_dataset(
                 # Genuinely rare: existed a moment ago (`existing`), but
                 # e.g. its partition was concurrently pruned mid-run.
                 missing.append(frame_time)
+                continue
+            if replay.frame.available_instruments > 0 and not replay.frame.members:
+                pruned.append(frame_time)
                 continue
             candle_repo = CandleRepository(session)
             forward = await compute_forward_returns(replay.frame, candle_repo, horizons)
@@ -314,7 +348,8 @@ async def generate_dataset(
         "base_timeframe": BASE_TIMEFRAME,
         "label_definition": _LABEL_DEFINITION,
         "generated_at": datetime.now(UTC).isoformat(),
-        "git_commit": _get_git_commit(),
+        "git_commit": get_git_commit(),
+        "code_fingerprint": code_fingerprint(),
         "feature_names": _FEATURE_NAMES,
         "horizons_minutes": {
             label: int(horizon.total_seconds() // 60) for label, horizon in horizons.items()
@@ -328,6 +363,10 @@ async def generate_dataset(
         "frame_times_processed": processed,
         "frame_times_missing": len(missing),
         "missing_frame_times_sample": [t.isoformat() for t in missing[:20]],
+        "frame_times_missing_pruned": len(pruned),
+        "first_frame_time": min(columns.frame_time).isoformat() if columns.frame_time else None,
+        "last_frame_time": max(columns.frame_time).isoformat() if columns.frame_time else None,
+        "distinct_utc_days": len({t.date() for t in columns.frame_time}),
         "column_coverage": coverage,
         "universe_note": (
             "Each row's cross-sectional universe is exactly that frame's own "
@@ -340,30 +379,63 @@ async def generate_dataset(
             "measure at T', not a replay of whatever software version actually "
             "ran at T. See app.research.replay's module docstring."
         ),
+        "source_retention_note": (
+            "Not regenerable once its sources expire: market_frame_members/"
+            "sniffer_results and candles are pruned by monthly partition "
+            "(~30-61 days), Open Interest/Funding after ~16 days, and frames "
+            "exist only for times the app was running. Preserve this artifact."
+        ),
     }
 
     tmp_dir = output_dir.parent / f".{output_dir.name}.tmp-{uuid4().hex[:8]}"
     tmp_dir.mkdir(parents=True, exist_ok=False)
     try:
         pq.write_table(table, tmp_dir / "data.parquet")
+        manifest["data_sha256"] = file_sha256(tmp_dir / "data.parquet")
         (tmp_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+        if output_dir.exists():  # appeared while this run was generating
+            raise FileExistsError(f"{output_dir} already exists — datasets are never overwritten")
+        tmp_dir.rename(output_dir)
     except Exception:
         shutil.rmtree(tmp_dir, ignore_errors=True)
         raise
 
-    output_dir.parent.mkdir(parents=True, exist_ok=True)
-    tmp_dir.rename(output_dir)
+    # Secondary safeguard only — integrity rests on data_sha256.
+    for name in ("data.parquet", "manifest.json"):
+        (output_dir / name).chmod(0o444)
     return manifest
 
 
-def read_dataset(dataset_dir: Path) -> tuple[dict[str, Any], pa.Table]:
+class DatasetIntegrityError(ValueError):
+    """A dataset's data file doesn't match the hash its manifest recorded
+    (corrupted, modified, or replaced)."""
+
+
+def read_dataset(
+    dataset_dir: Path, columns: Sequence[str] | None = None
+) -> tuple[dict[str, Any], pa.Table]:
     """Load a dataset written by `generate_dataset` as `(manifest, table)`,
     refusing (`IncompatibleDatasetError`) anything not produced under the
     current `DATASET_SCHEMA_VERSION` and base timeframe — checked against
     both the manifest and the Parquet file's own metadata, so a manifest
-    and data file from different generations can't be mixed either."""
+    and data file from different generations can't be mixed either — and
+    refusing (`DatasetIntegrityError`) a data file whose sha256 doesn't
+    match the manifest's `data_sha256` (or a manifest without one).
+    `columns` limits which columns are loaded; the hash always covers the
+    whole file."""
     manifest = json.loads((dataset_dir / "manifest.json").read_text())
-    table = pq.read_table(dataset_dir / "data.parquet")
+    # Integrity first: never parse (let alone trust) bytes the manifest
+    # didn't vouch for.
+    expected_hash = manifest.get("data_sha256")
+    actual_hash = file_sha256(dataset_dir / "data.parquet")
+    if expected_hash != actual_hash:
+        raise DatasetIntegrityError(
+            f"{dataset_dir}/data.parquet sha256 {actual_hash} does not match the manifest's "
+            f"data_sha256 {expected_hash!r}"
+        )
+    table = pq.read_table(
+        dataset_dir / "data.parquet", columns=list(columns) if columns is not None else None
+    )
     metadata = table.schema.metadata or {}
 
     found = {

@@ -34,7 +34,14 @@ replays what today's production `FeatureEngine` would measure at a historical
 `frame_time` (reusing the real feature code, never a research copy), attaches
 research-only `forward_return_H`/`forward_relative_return_H` labels, and
 writes the result as a Parquet file + `manifest.json` under `data/`
-(gitignored — regenerable, never committed). The actual code lives in
+(gitignored, never committed — and **not regenerable** once its source
+frames and market data expire, so each dataset is a permanent research
+record: hash-verified, never overwritten, and to be backed up to an
+independent location; see `docs/ARCHITECTURE.md`'s runbook).
+
+Experiments (`experiments/<experiment_id>.json`, committed) are run with
+`python -m app.scripts.run_experiment`; their immutable results land in
+`data/runs/`. The actual code lives in
 `apps/api/app/research/` (tested/typed alongside the rest of the backend,
 imported by nothing production) rather than in this directory, since this
 boundary is documentation/notebook territory, not a Python package — see

@@ -10,14 +10,35 @@ can never reach live Sniffs, the API, or the background services.
 import ast
 from pathlib import Path
 
+import pytest
+
 APP_DIR = Path(__file__).resolve().parent.parent / "app"
 
 # Entry points that legitimately drive research: the research package
-# itself and its offline CLI.
+# itself and its offline CLIs.
 _RESEARCH_SIDE = {
     APP_DIR / "research",
     APP_DIR / "scripts" / "generate_research_dataset.py",
+    APP_DIR / "scripts" / "run_experiment.py",
 }
+
+# Experiments run on materialized Parquet only — never the database, never
+# Sniffer's live services or feature computation.
+_PARQUET_ONLY = [
+    APP_DIR / "research" / "experiment.py",
+    APP_DIR / "research" / "evaluation.py",
+    APP_DIR / "research" / "runs.py",
+    APP_DIR / "scripts" / "run_experiment.py",
+]
+_FORBIDDEN_FOR_EXPERIMENTS = (
+    "sqlalchemy",
+    "app.db",
+    "app.repositories",
+    "app.services",
+    "app.features",
+    "app.research.replay",
+    "app.research.forward_returns",
+)
 
 
 def _imported_modules(path: Path) -> set[str]:
@@ -53,3 +74,16 @@ def test_guard_actually_sees_the_research_package():
     and itself imports Sniffer's feature engine (replay reuses it)."""
     replay = APP_DIR / "research" / "replay.py"
     assert "app.features.engine" in _imported_modules(replay)
+
+
+@pytest.mark.parametrize("path", _PARQUET_ONLY, ids=lambda p: p.name)
+def test_experiment_modules_never_touch_the_database_or_live_pipeline(path):
+    imported = _imported_modules(path)
+    assert (
+        sorted(
+            m
+            for m in imported
+            if any(m == f or m.startswith(f + ".") for f in _FORBIDDEN_FOR_EXPERIMENTS)
+        )
+        == []
+    )
