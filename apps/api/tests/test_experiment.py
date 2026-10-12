@@ -259,3 +259,30 @@ def test_selection_is_per_timestamp():
     rows = universe_rows(at(19), 60) + universe_rows(at(19) + timedelta(minutes=5), 60)
     obs = select(_spec(), _table(rows))
     assert sum(obs.selected) == 12  # 6 per timestamp (percentile <= 0.1 of 60)
+
+
+def test_noncontiguous_daily_shards_combine_without_double_counting(tmp_path):
+    """Daily 15m shards with gaps between them load as one time-ordered
+    table: every (timestamp, symbol) exactly once, gaps simply absent."""
+    days = (19, 21, 25)  # non-adjacent
+    specs = []
+    for day in days:
+        rows = [
+            row for k in range(4) for row in universe_rows(at(day) + timedelta(minutes=15 * k), 60)
+        ]
+        sha = write_dataset(tmp_path / f"shard_s15m_202609{day}", rows, sample_interval_minutes=15)[
+            "data_sha256"
+        ]
+        specs.append({"name": f"shard_s15m_202609{day}", "data_sha256": sha})
+    spec = spec_dict("unused", SHA)
+    spec["datasets"] = list(reversed(specs))  # order in the spec doesn't matter
+
+    loaded = load_datasets(ExperimentSpec.model_validate(spec), tmp_path)
+
+    times = loaded.table.column("frame_time").to_pylist()
+    symbols = loaded.table.column("symbol").to_pylist()
+    assert len(times) == 3 * 4 * 60
+    assert len(set(zip(times, symbols, strict=True))) == len(times)
+    assert times == sorted(times)
+    assert sorted({t.day for t in times}) == list(days)
+    assert loaded.sample_interval_minutes == 15

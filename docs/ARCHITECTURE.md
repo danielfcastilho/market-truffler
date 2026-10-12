@@ -412,7 +412,9 @@ timeframe's duration; `OpenInterestChangeFeature` — its lookback
 constant; `FundingRateCurrentFeature`/`FundingRate24hAvgFeature` — 24h);
 adding a feature with a longer lookback to `FEATURES` automatically
 raises `REQUIRED_WARMUP`, and with it both `OpenInterestReconciler`'s
-and `FundingRateReconciler`'s bootstrap target/retention and the READY bar
+and `FundingRateReconciler`'s bootstrap target (their retention is the
+separate `market_oi_funding_retention_days`, checked at startup to cover
+`REQUIRED_WARMUP` + 1 day) and the READY bar
 everywhere `symbol_readiness` is used, with no
 other change needed anywhere in the reconciliation system.
 
@@ -1095,12 +1097,14 @@ app.research.dataset.generate_dataset
 
 **Retention is the real ceiling here, deliberately not solved by this
 capability.** Full 23-Sniff replay parity is bounded by whichever
-production retention window is tightest — currently Open Interest/Funding
-Rate's 16 days (`REQUIRED_WARMUP + 1 day`, no partition-protection, a plain
-`DELETE`), with pure candle-based Sniffs reaching further (~30-61 days,
-monthly-partition-rounded). No second historical database, no archival
-infrastructure, and no production retention change were added to work
-around this — the manifest instead makes the ceiling visible:
+production retention window is tightest — Open Interest/Funding now roll
+off after 30 days (`market_oi_funding_retention_days`, a plain `DELETE`;
+16 days before the continuity milestone), and the candle lookback of
+window features can fall into a monthly partition that expires about two
+weeks after a mid-month frame (see "Research data continuity" below). No
+second historical database or archival infrastructure exists — datasets
+are materialized promptly instead, and the manifest makes the ceiling
+visible:
 `frame_times_candidate` vs. `frame_times_processed`/`_missing`, and a
 per-column non-null coverage fraction across the whole dataset, so a
 successful run can never be mistaken for "OINK CORP now has unlimited
@@ -1121,7 +1125,7 @@ indefinitely regenerable**:
 
 | Layer | Lifetime | Rebuildable later? |
 |---|---|---|
-| Raw market data (`market_candles`, `open_interest_observations`, `funding_rate_observations`) | candles: ~30 days, dropped by monthly partition; Open Interest / Funding: rolling 16 days (`REQUIRED_WARMUP + 1 day`) | only within Bybit's own history limits |
+| Raw market data (`market_candles`, `open_interest_observations`, `funding_rate_observations`) | candles: ~30 days, dropped by monthly partition; Open Interest / Funding: rolling `market_oi_funding_retention_days` (30) | only within Bybit's own history limits |
 | Persisted Sniffer frames (`market_frames`, `market_frame_members`, `sniffer_results`) | headers forever; members/results ~30-61 days (monthly partitions) | **no** — frames exist only for times the app was running, never backfilled |
 | Materialized research datasets (`research/oink_corp/data/<name>/`) | permanent research records | **no**, once the two layers above expire |
 
@@ -1151,18 +1155,77 @@ per frame (the same `get_frame` + `FeatureEngine` path live Sniffer uses).
 No resumability by design: a failed run leaves nothing behind and is
 simply re-run, while its sources still exist.
 
+**Research data continuity (automatic).** The `research` compose service
+(`app/scripts/research_continuity.py --loop`, same image as `api`) turns
+every completed UTC day since `research_shards_start` (2026-10-12 15:00 —
+right after the first, manually generated 5-minute dataset ends) into one
+immutable shard, `shard_s15m_YYYYMMDD`, sampled on a fixed 15-minute grid
+with 15m/1h/4h labels. Every 30 minutes, under a Postgres advisory lock
+(shared with the manual dataset command, so two generations never run at
+once), a pass (`app.research.continuity.run_pass`):
+
+- **skips preserved days** — a shard under its real name always passed
+  verification, which now happens inside the temp directory before the
+  atomic rename;
+- reports **collection gaps** — days with no frame on the grid (app
+  downtime). Frame headers are never pruned and never backfilled, so a gap
+  is permanent; it never becomes a dataset and `--spec-refs` never emits
+  it;
+- reports **source-expired** days — frames whose members were already
+  pruned;
+- waits for **label maturity** (day end + 4h + 1h), then for the
+  **readiness gate** (>= 99% of the day's still-active member instruments
+  have candle history reconciled past day end + 4h and Open Interest up to
+  day end; delisted instruments never block), but only until
+  `min(matured + 24h, full-feature deadline - 3 days)`; after that the day
+  is preserved anyway and the manifest's `readiness` block records what was
+  still lagging (recoverable at the time) versus permanently unavailable
+  (missing frames, pruned frames, inactive instruments, expired sources);
+- generates due days in **deadline order**, each in a child process with a
+  hard 6-hour limit (terminated, then killed, and *waited for* before the
+  lock is released; its statements are capped by a 10-minute
+  `statement_timeout`), recording failures with backoff (30m, 2h, 6h, then
+  every 12h) and **moving on**, so a failing day never blocks newer days.
+  A day is retried until its frames are actually gone.
+
+Deadlines (`source_deadlines`) are derived from what replay reads, not from
+nominal retention: frame members (monthly partition) bound the whole
+frame; the candle lookback — `REQUIRED_WARMUP + 2 x` the longest candle
+(17 days), because window features anchor on a candle that trails the
+frame — falls into an older monthly partition that is not protected by
+frame references, so for a day in mid-month full features can expire only
+~14 days later even though candles are "kept 30 days"; Open Interest
+(longest OI lookback + 1h) and funding (24h + 8h) roll off after
+`market_oi_funding_retention_days` (30). Missing a full-feature deadline
+never stops generation: whatever remains is preserved and the loss is
+recorded.
+
+Replay yields to live Sniffer on a **best-effort** basis: a frame replay
+only starts >= 120s after a 5-minute boundary and >= 45s before the next
+(the worker is also capped at one CPU). This avoids most overlap with live
+frame finalization and Sniffer analysis but is not a guarantee — a slow
+live cycle or a slow replay can still overlap. Time spent yielding is
+recorded as `yield_seconds`. A daily shard takes roughly 1.5-2 hours.
+
 **Operational runbook.**
 
-1. Keep the stack running continuously: frames exist only while it runs
-   (most of September 2026 was lost to host downtime, not to a defect).
-2. Generate an immutable dataset shard **weekly**, at 15-minute sampling,
-   covering the previous week, ending at least 4h before generation so
-   every label is realized. Shards must not overlap in time. Experiments
-   can combine shards that share one sampling cadence.
-3. After each generation, `--verify` it, copy the dataset directory to an
-   independent location (another disk or a synced folder) with `cp -a`,
-   and run `sha256sum data.parquet` on the copy against the manifest's
-   `data_sha256`. A single copy on one laptop is not a backup.
+1. Keep the stack running continuously — frames exist only while it runs.
+   After downtime the worker catches up automatically (earliest deadline
+   first); nothing can recover frames that were never produced.
+2. `docker compose exec research python -m app.scripts.research_continuity
+   --status` (add `--verify-all` to re-hash every dataset, `--json` for
+   machine output): preserved days, gaps, waiting/failing days with next
+   retry and last error, expiry warnings, and which datasets are NOT backed
+   up. Vitals' OINK CORP section shows the same summary.
+3. `--spec-refs 2026-10-13 2026-10-31` prints the `datasets` list for an
+   experiment spec (preserved shards only, re-verified; gaps listed
+   separately). The first 5-minute dataset cannot be combined with 15-minute
+   shards — the experiment loader refuses mixed cadences.
+4. **Backup is not automated** and no destination is configured: every
+   dataset is reported as verified but NOT independently backed up. To
+   protect them, copy `research/oink_corp/data/` to an independent location
+   and compare `shasum -a 256 data.parquet` with each manifest's
+   `data_sha256`.
 
 This is research only, an offline batch tool — not the future live
 ranking runtime, which must never depend on it. The boundary is enforced:

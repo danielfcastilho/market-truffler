@@ -47,7 +47,10 @@ behind it: `apps/api/app/research/` + `app/scripts/generate_research_dataset.py`
 replay historical Sniffs using the exact production `FeatureEngine` and
 attach research-only forward-return labels, writing a Parquet dataset +
 manifest to `research/oink_corp/data/` (gitignored, and not regenerable
-once its sources expire — preserve and back it up). Manually written
+once its sources expire — preserve and back it up). A `research` worker
+container preserves every completed UTC day automatically as a verified
+15-minute shard (`docker compose exec research python -m
+app.scripts.research_continuity --status`). Manually written
 experiments (`research/oink_corp/experiments/`) are evaluated against those
 datasets by an independent Evaluator (`app/scripts/run_experiment.py`) —
 see `docs/ARCHITECTURE.md`'s OINK CORP sections. Still no heuristic

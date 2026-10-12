@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
+import type { ResearchStatus } from "@/lib/server-api";
 import {
   buildVitalsSections,
   formatCoveragePercent,
   formatFreshness,
   formatUptime,
   overallStatus,
+  researchRows,
   type VitalsInput,
 } from "./vitals";
 import type { MarketStatus, SnifferStatus, SystemInfo } from "./server-api";
@@ -497,12 +499,83 @@ describe("formatFreshness", () => {
   });
 });
 
-
 it("renders the backend coverage fraction exactly once as a percentage", () => {
   const sections = buildVitalsSections({
-    health: "ok", ready: "ok", system: healthySystem,
-    market: { ...healthyMarket, historical_coverage: 0.207 }, sniffer: healthySniffer,
+    health: "ok",
+    ready: "ok",
+    system: healthySystem,
+    market: { ...healthyMarket, historical_coverage: 0.207 },
+    sniffer: healthySniffer,
   });
-  expect(sections.flatMap((section) => section.rows)
-    .find((row) => row.label === "Historical coverage")?.value).toBe("20.7%");
+  expect(
+    sections.flatMap((section) => section.rows).find((row) => row.label === "Historical coverage")
+      ?.value,
+  ).toBe("20.7%");
+});
+
+describe("researchRows", () => {
+  const base: ResearchStatus = {
+    status: "ok",
+    reported_at: "2026-10-20T12:00:00Z",
+    generating_day: null,
+    last_preserved_day: "2026-10-19",
+    preserved_days: 3,
+    waiting_days: 1,
+    failing_days: 0,
+    collection_gaps: 2,
+    expiry_warnings: 0,
+    unprotected_datasets: 4,
+    backup_configured: false,
+  };
+
+  it("shows four N/A rows before the worker has ever reported", () => {
+    const rows = researchRows(null);
+    expect(rows.map((r) => r.label)).toEqual([
+      "Research data",
+      "Last preserved day",
+      "Failing / waiting days",
+      "Unprotected datasets",
+    ]);
+    expect(rows.every((r) => r.value === "N/A" && r.status === "unavailable")).toBe(true);
+  });
+
+  it("reports a healthy worker but flags datasets without an independent backup", () => {
+    const rows = researchRows(base);
+    expect(rows[0]).toEqual({ label: "Research data", value: "OK", status: "ok" });
+    expect(rows[1]).toEqual({ label: "Last preserved day", value: "2026-10-19", status: "ok" });
+    expect(rows[2]).toEqual({ label: "Failing / waiting days", value: "0 / 1", status: "ok" });
+    expect(rows[3]).toEqual({
+      label: "Unprotected datasets",
+      value: "4 (no backup destination)",
+      status: "down",
+    });
+  });
+
+  it("flags failing days, a stale worker, and shows the day being generated", () => {
+    const failing = researchRows({ ...base, status: "degraded", failing_days: 2 });
+    expect(failing[0].status).toBe("down");
+    expect(failing[2]).toEqual({ label: "Failing / waiting days", value: "2 / 1", status: "down" });
+    const down = researchRows({ ...base, status: "down" });
+    expect(down[0].value).toBe("Worker not reporting");
+    const busy = researchRows({ ...base, generating_day: "2026-10-19" });
+    expect(busy[0].value).toBe("OK (generating 2026-10-19)");
+  });
+
+  it("leads the OINK CORP section with the research-data rows", () => {
+    const sections = buildVitalsSections({
+      health: "ok",
+      ready: "ok",
+      system: null,
+      market: null,
+      sniffer: null,
+      research: { ...base, status: "down" },
+    });
+    const oink = sections.find((s) => s.title === "🧬 OINK CORP");
+    expect(oink?.rows.map((r) => r.label).slice(0, 4)).toEqual([
+      "Research data",
+      "Last preserved day",
+      "Failing / waiting days",
+      "Unprotected datasets",
+    ]);
+  });
 });

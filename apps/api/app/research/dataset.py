@@ -44,7 +44,7 @@ import hashlib
 import json
 import shutil
 import subprocess
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -272,6 +272,8 @@ async def generate_dataset(
     horizons: dict[str, timedelta],
     output_dir: Path,
     on_progress: Callable[[int, int], None] | None = None,
+    before_frame: Callable[[], Awaitable[float]] | None = None,
+    extra_manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Generate one research dataset covering `[start, end)` and write it to
     `output_dir` (Parquet + `manifest.json`). Returns the manifest dict.
@@ -289,6 +291,14 @@ async def generate_dataset(
     hydrates none (its `market_frame_members` partition was pruned by
     retention) is counted as `frame_times_missing_pruned`, never as a
     processed frame with zero rows.
+
+    The dataset is verified *inside the temporary directory* — content
+    hash re-read from disk, version checks, frame accounting — before the
+    rename, so a directory under its real name has always passed
+    verification. `before_frame` (awaited before each frame's replay,
+    returning seconds spent waiting) lets a caller yield to live work; its
+    total is recorded as `yield_seconds`. `extra_manifest` adds caller
+    provenance (e.g. continuity readiness) to the manifest.
 
     Raises `ValueError` for a sample interval or horizon that isn't a
     multiple of 5 minutes, before touching anything on disk.
@@ -310,7 +320,10 @@ async def generate_dataset(
     columns = _empty_columns(horizon_labels)
     processed = 0
     pruned: list[datetime] = []
+    yield_seconds = 0.0
     for frame_time in sampled:
+        if before_frame is not None:
+            yield_seconds += await before_frame()
         async with session_factory() as session:
             replay = await replay_frame(session, frame_time)
             if replay is None:
@@ -386,6 +399,10 @@ async def generate_dataset(
             "exist only for times the app was running. Preserve this artifact."
         ),
     }
+    if before_frame is not None:
+        manifest["yield_seconds"] = round(yield_seconds, 1)
+    if extra_manifest:
+        manifest.update(extra_manifest)
 
     tmp_dir = output_dir.parent / f".{output_dir.name}.tmp-{uuid4().hex[:8]}"
     tmp_dir.mkdir(parents=True, exist_ok=False)
@@ -393,6 +410,7 @@ async def generate_dataset(
         pq.write_table(table, tmp_dir / "data.parquet")
         manifest["data_sha256"] = file_sha256(tmp_dir / "data.parquet")
         (tmp_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+        _verify_written(tmp_dir, manifest)
         if output_dir.exists():  # appeared while this run was generating
             raise FileExistsError(f"{output_dir} already exists — datasets are never overwritten")
         tmp_dir.rename(output_dir)
@@ -404,6 +422,30 @@ async def generate_dataset(
     for name in ("data.parquet", "manifest.json"):
         (output_dir / name).chmod(0o444)
     return manifest
+
+
+def _verify_written(dataset_dir: Path, manifest: dict[str, Any]) -> None:
+    """Re-read what was just written (hash, versions, row count) and check
+    the frame accounting adds up; raises `DatasetIntegrityError`."""
+    on_disk, table = read_dataset(dataset_dir)
+    if on_disk != json.loads(json.dumps(manifest)):
+        raise DatasetIntegrityError(
+            f"{dataset_dir}: manifest on disk differs from what was written"
+        )
+    if table.num_rows != manifest["row_count"]:
+        raise DatasetIntegrityError(
+            f"{dataset_dir}: {table.num_rows} rows on disk, manifest says {manifest['row_count']}"
+        )
+    accounted = (
+        manifest["frame_times_processed"]
+        + manifest["frame_times_missing"]
+        + manifest["frame_times_missing_pruned"]
+    )
+    if accounted != manifest["frame_times_candidate"]:
+        raise DatasetIntegrityError(
+            f"{dataset_dir}: {accounted} frame times accounted for, "
+            f"{manifest['frame_times_candidate']} candidates"
+        )
 
 
 class DatasetIntegrityError(ValueError):

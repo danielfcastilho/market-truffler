@@ -1,0 +1,22 @@
+{
+  "spec_version": 1,
+  "experiment_id": "reversal-24h-losers-long-rel1h-v1",
+  "heuristic": {
+    "id": "fallen-aggressively-long",
+    "text": "Coins that have fallen aggressively may offer attractive Long opportunities."
+  },
+  "hypothesis": {
+    "statement": "Coins in the bottom 10% of 24h returns within a frame subsequently outperform the cross-sectional universe over the next hour (short-term reversal).",
+    "direction": "long",
+    "conditions": [
+      { "feature": "return_24h", "transform": "cs_percentile", "op": "<=", "value": 0.10 }
+    ]
+  },
+  "datasets": [
+    {
+      "name": "research_s5m_20260919-20261012_gen20261012",
+      "data_sha256": "bd24e94d2c07ba9a9972f27c6a5e8952c330b0aa6a580fd0a0b153a119d1896c"
+    }
+  ],
+  "label": "forward_relative_return_1h"
+}

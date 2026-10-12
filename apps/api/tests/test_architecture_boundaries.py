@@ -20,6 +20,7 @@ _RESEARCH_SIDE = {
     APP_DIR / "research",
     APP_DIR / "scripts" / "generate_research_dataset.py",
     APP_DIR / "scripts" / "run_experiment.py",
+    APP_DIR / "scripts" / "research_continuity.py",
 }
 
 # Experiments run on materialized Parquet only — never the database, never

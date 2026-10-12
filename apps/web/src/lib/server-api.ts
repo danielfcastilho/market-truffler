@@ -105,6 +105,32 @@ export interface SnifferStatus {
   coins_analyzed: number | null;
 }
 
+/** OINK CORP research data continuity, as last reported by the backend's
+ * `research` worker (apps/api/app/routers/research.py). Read-only. */
+export interface ResearchStatus {
+  status: "ok" | "degraded" | "down" | "unavailable";
+  reported_at: string | null;
+  generating_day: string | null;
+  last_preserved_day: string | null;
+  preserved_days: number | null;
+  waiting_days: number | null;
+  failing_days: number | null;
+  collection_gaps: number | null;
+  expiry_warnings: number | null;
+  unprotected_datasets: number | null;
+  backup_configured: boolean;
+}
+
+export async function getResearchStatus(): Promise<ResearchStatus | null> {
+  try {
+    const response = await serverFetch("/api/research/status");
+    if (!response.ok) return null;
+    return (await response.json()) as ResearchStatus;
+  } catch {
+    return null;
+  }
+}
+
 export async function getSnifferStatus(): Promise<SnifferStatus | null> {
   try {
     const response = await serverFetch("/api/sniffer/status");

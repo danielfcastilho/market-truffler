@@ -509,3 +509,55 @@ async def test_a_modified_data_file_fails_integrity_verification(session_factory
 
     with pytest.raises(DatasetIntegrityError, match="sha256"):
         read_dataset(output_dir)
+
+
+async def test_a_dataset_failing_verification_before_rename_leaves_nothing(
+    session_factory, tmp_path, monkeypatch
+):
+    """Verification runs inside the temp directory: if it fails, no
+    directory ever appears under the real name and no temp dir remains."""
+    btc = await _add_instrument(session_factory, "BTCUSDT")
+    await _seed_5m_range(session_factory, btc, FIRST_FRAME - timedelta(minutes=75), 90, 100)
+    await _finalize_frame(session_factory, btc, FIRST_FRAME)
+
+    def _corrupt(*args, **kwargs):
+        raise DatasetIntegrityError("simulated bad bytes")
+
+    monkeypatch.setattr(dataset_module, "read_dataset", _corrupt)
+    with pytest.raises(DatasetIntegrityError, match="simulated"):
+        await generate_dataset(
+            session_factory,
+            start=FIRST_FRAME,
+            end=FIRST_FRAME + timedelta(minutes=15),
+            interval_minutes=15,
+            horizons=HORIZONS,
+            output_dir=tmp_path / "v",
+        )
+    assert list(tmp_path.iterdir()) == []
+
+
+async def test_yield_time_and_caller_provenance_are_recorded(session_factory, tmp_path):
+    btc = await _add_instrument(session_factory, "BTCUSDT")
+    await _seed_5m_range(session_factory, btc, FIRST_FRAME - timedelta(minutes=75), 90, 100)
+    await _finalize_frame(session_factory, btc, FIRST_FRAME)
+    await _finalize_frame(session_factory, btc, SECOND_FRAME)
+    calls = []
+
+    async def before_frame() -> float:
+        calls.append(1)
+        return 1.25
+
+    manifest = await generate_dataset(
+        session_factory,
+        start=FIRST_FRAME,
+        end=SECOND_FRAME + timedelta(minutes=15),
+        interval_minutes=15,
+        horizons=HORIZONS,
+        output_dir=tmp_path / "v",
+        before_frame=before_frame,
+        extra_manifest={"generation_mode": "continuity"},
+    )
+    assert len(calls) == 2
+    assert manifest["yield_seconds"] == 2.5
+    assert manifest["generation_mode"] == "continuity"
+    assert read_dataset(tmp_path / "v")[0] == manifest

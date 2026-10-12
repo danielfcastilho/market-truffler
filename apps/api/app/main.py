@@ -1,5 +1,6 @@
 import logging
 from contextlib import asynccontextmanager
+from datetime import timedelta
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,7 +12,7 @@ from app.core.logging import configure_logging
 from app.db.session import get_session_factory
 from app.features.engine import REQUIRED_WARMUP
 from app.integrations.bybit.client import BybitClient
-from app.routers import auth, market, sniffer, system
+from app.routers import auth, market, research, sniffer, system
 from app.services.frame_synchronizer import FrameSynchronizer
 from app.services.funding_rate_reconciler import FundingRateReconciler
 from app.services.history_reconciler import HistoryReconciler
@@ -64,8 +65,17 @@ async def lifespan(app: FastAPI):
     # driven by rsi_14_4h's 60h), so OI backfill needs no separate target
     # of its own — a future feature with a longer lookback raises both
     # automatically.
+    oi_funding_retention = timedelta(days=settings.market_oi_funding_retention_days)
+    if oi_funding_retention < REQUIRED_WARMUP + timedelta(days=1):
+        raise ValueError(
+            "market_oi_funding_retention_days must cover REQUIRED_WARMUP + 1 day "
+            f"({REQUIRED_WARMUP + timedelta(days=1)})"
+        )
     open_interest_reconciler = OpenInterestReconciler(
-        session_factory, bybit_client, required_warmup=REQUIRED_WARMUP
+        session_factory,
+        bybit_client,
+        required_warmup=REQUIRED_WARMUP,
+        retention=oi_funding_retention,
     )
     app.state.open_interest_reconciler = open_interest_reconciler
 
@@ -73,7 +83,10 @@ async def lifespan(app: FastAPI):
     # docstring): funding_rate_24h_avg's 24h window is well within
     # REQUIRED_WARMUP, so it needs no separate backfill target either.
     funding_rate_reconciler = FundingRateReconciler(
-        session_factory, bybit_client, required_warmup=REQUIRED_WARMUP
+        session_factory,
+        bybit_client,
+        required_warmup=REQUIRED_WARMUP,
+        retention=oi_funding_retention,
     )
     app.state.funding_rate_reconciler = funding_rate_reconciler
 
@@ -143,3 +156,4 @@ app.include_router(system.router)
 app.include_router(auth.router)
 app.include_router(market.router)
 app.include_router(sniffer.router)
+app.include_router(research.router)

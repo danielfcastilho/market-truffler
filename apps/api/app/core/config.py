@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from functools import lru_cache
 from typing import Literal
 
@@ -30,6 +31,12 @@ class Settings(BaseSettings):
     # retained members are preserved. Frame headers are not pruned.
     # Old per-instrument targets/frontiers are not rewritten by policy changes.
     market_history_retention_days: int = 30
+    # How long Open Interest / Funding Rate observations are kept, in days.
+    # Must cover REQUIRED_WARMUP + 1 day (checked at startup). Longer than
+    # that strictly needed for live features so OINK CORP research datasets
+    # can still replay a frame's OI/funding features well after the frame
+    # (see docs/ARCHITECTURE.md, "Research data continuity").
+    market_oi_funding_retention_days: int = 30
     # How many instruments the history reconciler works on concurrently.
     market_history_max_concurrent_instruments: int = 5
     # Rows requested per Bybit historical kline page (Bybit's documented max).
@@ -64,6 +71,12 @@ class Settings(BaseSettings):
     # this path to the host (research/oink_corp/data) — nothing else
     # written inside the api container survives a rebuild.
     research_data_dir: str = "/app/research_data"
+    # OINK CORP research data continuity (app.research.continuity): daily
+    # shards are generated for every completed UTC day from this instant on
+    # (the first preserved dataset ends at 2026-10-12 14:50), with one pass
+    # every `research_pass_interval_seconds`.
+    research_shards_start: datetime = datetime(2026, 10, 12, 15, 0, tzinfo=UTC)
+    research_pass_interval_seconds: float = 1800.0
 
     @property
     def allowed_origins_list(self) -> list[str]:

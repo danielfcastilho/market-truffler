@@ -57,6 +57,34 @@ services:
       retries: 10
       start_period: 10s
 
+  # OINK CORP research data continuity worker (app/scripts/research_continuity.py):
+  # turns each completed UTC day of Sniffer frames into a verified, immutable
+  # 15-minute research shard in research/oink_corp/data. Same image as `api`,
+  # but never runs migrations (entrypoint overridden) and only starts once
+  # `api` — which migrates on start — is healthy; it additionally refuses to
+  # generate until the database is at this image's Alembic head. Capped at one
+  # CPU and it yields around live 5-minute frame boundaries so Sniffer keeps
+  # priority. No backup destination is mounted: datasets exist only here.
+  research:
+    build:
+      context: ./apps/api
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    entrypoint: []
+    command: ["python", "-m", "app.scripts.research_continuity", "--loop"]
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-truffler}:${POSTGRES_PASSWORD:-truffler}@postgres:5432/${POSTGRES_DB:-market_truffler}
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET must be set — see .env.example}
+    volumes:
+      - ./research/oink_corp/data:/app/research_data
+    cpus: 1.0
+    networks:
+      - market-truffler
+
   web:
     build:
       context: ./apps/web

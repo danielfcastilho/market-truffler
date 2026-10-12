@@ -1,4 +1,4 @@
-import type { MarketStatus, SnifferStatus, SystemInfo } from "@/lib/server-api";
+import type { MarketStatus, ResearchStatus, SnifferStatus, SystemInfo } from "@/lib/server-api";
 
 export type VitalStatus = "ok" | "down" | "unavailable";
 
@@ -19,12 +19,65 @@ export interface VitalsInput {
   system: SystemInfo | null;
   market: MarketStatus | null;
   sniffer: SnifferStatus | null;
+  research?: ResearchStatus | null;
 }
 
 const NOT_AVAILABLE = "N/A";
 
 function unavailableRow(label: string): VitalRow {
   return { label, value: NOT_AVAILABLE, status: "unavailable" };
+}
+
+const RESEARCH_STATUS_LABEL: Record<ResearchStatus["status"], string> = {
+  ok: "OK",
+  degraded: "Degraded",
+  down: "Worker not reporting",
+  unavailable: NOT_AVAILABLE,
+};
+
+/**
+ * OINK CORP's research-data rows, from the read-only continuity report
+ * (see `ResearchStatus`). Datasets without an independent backup are shown
+ * as a problem ("down" styling) for as long as no backup destination is
+ * configured — they are verified, but a single copy is not preserved.
+ */
+export function researchRows(research: ResearchStatus | null): VitalRow[] {
+  if (research === null || research.status === "unavailable") {
+    return [
+      unavailableRow("Research data"),
+      unavailableRow("Last preserved day"),
+      unavailableRow("Failing / waiting days"),
+      unavailableRow("Unprotected datasets"),
+    ];
+  }
+  const unprotected = research.unprotected_datasets ?? 0;
+  const failing = research.failing_days ?? 0;
+  return [
+    {
+      label: "Research data",
+      value: research.generating_day
+        ? `${RESEARCH_STATUS_LABEL[research.status]} (generating ${research.generating_day})`
+        : RESEARCH_STATUS_LABEL[research.status],
+      status: research.status === "ok" ? "ok" : "down",
+    },
+    {
+      label: "Last preserved day",
+      value: research.last_preserved_day ?? "None yet",
+      status: research.last_preserved_day ? "ok" : "unavailable",
+    },
+    {
+      label: "Failing / waiting days",
+      value: `${failing} / ${research.waiting_days ?? 0}`,
+      status: failing > 0 ? "down" : "ok",
+    },
+    {
+      label: "Unprotected datasets",
+      value: research.backup_configured
+        ? String(unprotected)
+        : `${unprotected} (no backup destination)`,
+      status: unprotected > 0 ? "down" : "ok",
+    },
+  ];
 }
 
 /**
@@ -58,6 +111,7 @@ export function buildVitalsSections({
   system,
   market,
   sniffer,
+  research,
 }: VitalsInput): VitalSection[] {
   const databaseStatus: VitalStatus =
     system?.database === "ok" ? "ok" : system?.database === "unreachable" ? "down" : "unavailable";
@@ -110,7 +164,8 @@ export function buildVitalsSections({
         },
         {
           label: "Market data",
-          value: marketDataStatus === "unavailable" ? NOT_AVAILABLE : marketDataStatus.toUpperCase(),
+          value:
+            marketDataStatus === "unavailable" ? NOT_AVAILABLE : marketDataStatus.toUpperCase(),
           status: marketDataStatus,
         },
         {
@@ -208,7 +263,7 @@ export function buildVitalsSections({
     {
       title: "🧬 OINK CORP",
       rows: [
-        unavailableRow("Status"),
+        ...researchRows(research ?? null),
         unavailableRow("Experiments running"),
         unavailableRow("Last experiment"),
         unavailableRow("Latest ranking"),

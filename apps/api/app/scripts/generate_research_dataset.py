@@ -43,7 +43,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from app.core.config import get_settings
-from app.db.session import get_session_factory
+from app.db.session import get_engine, get_session_factory
+from app.research.continuity import GenerationLock
 from app.research.dataset import generate_dataset, read_dataset, validate_sample_interval
 from app.research.forward_returns import validate_horizons
 
@@ -130,15 +131,22 @@ async def _run(args: argparse.Namespace) -> None:
         if total == 0 or done % 20 == 0 or done == total:
             logger.info("research_dataset_progress", extra={"done": done, "total": total})
 
-    manifest = await generate_dataset(
-        get_session_factory(),
-        start=args.start,
-        end=args.end,
-        interval_minutes=args.sample_interval_minutes,
-        horizons=args.horizons,
-        output_dir=output_dir,
-        on_progress=_on_progress,
-    )
+    # The same lock the continuity worker holds: never two generators at once.
+    lock = GenerationLock(get_engine())
+    if not await lock.acquire():
+        raise RuntimeError("another research dataset generation is running (lock held)")
+    try:
+        manifest = await generate_dataset(
+            get_session_factory(),
+            start=args.start,
+            end=args.end,
+            interval_minutes=args.sample_interval_minutes,
+            horizons=args.horizons,
+            output_dir=output_dir,
+            on_progress=_on_progress,
+        )
+    finally:
+        await lock.release()
 
     logger.info(
         "research_dataset_complete",
@@ -177,7 +185,7 @@ def main() -> None:
         sys.exit(1)
     try:
         asyncio.run(_run(args))
-    except FileExistsError as exc:
+    except (FileExistsError, RuntimeError) as exc:
         print(str(exc), file=sys.stderr)
         sys.exit(1)
 
