@@ -8,6 +8,12 @@ See `app.research.dataset` for how this stays structurally separated from
 historical Sniff replay (`app.research.replay`), and `test_forward_returns.py`
 for the leakage-regression tests this boundary is checked against.
 
+Fixed-horizon forward returns are OINK CORP's *initial* research labels,
+not the definition of a good opportunity: the eventual Martingale-style
+strategy also cares about adverse excursion, recovery, drawdown and time
+to recovery. Further outcome definitions belong beside these, as their own
+labels, without changing what these two mean.
+
 TEMPORAL SEMANTICS — built on the base timeframe's candle convention (see
 `app.domain.timeframes`: a 5m candle opened at `t` covers `[t, t+5m)` and
 becomes knowable at `t+5m`):

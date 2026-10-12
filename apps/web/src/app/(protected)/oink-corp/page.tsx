@@ -5,8 +5,8 @@ export default function OinkCorpPage() {
     <InProgressPage
       icon="🧬"
       name="OINK CORP"
-      tagline="Research laboratory."
-      message="Experiments are still in the lab, not the app."
+      tagline="Research and Long/Short ranking intelligence."
+      message="No research or ranking views yet — research datasets are generated offline, and no ranking model has been approved."
     />
   );
 }

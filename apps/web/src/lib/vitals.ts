@@ -46,11 +46,11 @@ function unavailableRow(label: string): VitalRow {
  * background; this page only observes it, never drives it — reading Vitals
  * never creates a frame. In SNIFFER, "Status"/"Last scan"/"Coins analyzed"
  * are likewise real, reflecting Sniffer's own persisted analysis of the
- * most recently finalized frame (see `app.services.sniffer`); "Latest
- * ranking" and "🍄 Truffles found" stay hardcoded "N/A" since Sniffer has
- * no ranking or Truffle concept yet. Warhog/OINK CORP lay out the shape
- * Vitals will eventually report on, but every row in them is a hardcoded
- * "N/A": there is no live signal for any of it yet, so none is invented.
+ * most recently finalized frame (see `app.services.sniffer`). Warhog/OINK
+ * CORP lay out the shape Vitals will eventually report on — including
+ * OINK CORP's "Latest ranking"/"🍄 Truffles found", since rankings are
+ * OINK CORP's, not Sniffer's — but every row in them is a hardcoded "N/A":
+ * there is no live signal for any of it yet, so none is invented.
  */
 export function buildVitalsSections({
   health,
@@ -192,8 +192,6 @@ export function buildVitalsSections({
           value: sniffer?.coins_analyzed != null ? String(sniffer.coins_analyzed) : NOT_AVAILABLE,
           status: sniffer?.coins_analyzed != null ? "ok" : "unavailable",
         },
-        unavailableRow("Latest ranking"),
-        unavailableRow("🍄 Truffles found"),
       ],
     },
     {
@@ -213,6 +211,8 @@ export function buildVitalsSections({
         unavailableRow("Status"),
         unavailableRow("Experiments running"),
         unavailableRow("Last experiment"),
+        unavailableRow("Latest ranking"),
+        unavailableRow("🍄 Truffles found"),
       ],
     },
   ];

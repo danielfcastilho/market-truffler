@@ -399,7 +399,7 @@ describe("buildVitalsSections", () => {
     });
   });
 
-  it("keeps Latest ranking and Truffles found hardcoded N/A even once Sniffer is live", () => {
+  it("reports rankings under OINK CORP (hardcoded N/A), never under Sniffer", () => {
     const sections = buildVitalsSections({
       health: "ok",
       ready: "ok",
@@ -408,13 +408,15 @@ describe("buildVitalsSections", () => {
       sniffer: healthySniffer,
     });
     const sniffer = sections.find((s) => s.title === "🐽 SNIFFER");
+    const oinkCorp = sections.find((s) => s.title === "🧬 OINK CORP");
 
-    expect(sniffer?.rows.find((r) => r.label === "Latest ranking")).toEqual({
+    expect(sniffer?.rows.map((r) => r.label)).toEqual(["Status", "Last scan", "Coins analyzed"]);
+    expect(oinkCorp?.rows.find((r) => r.label === "Latest ranking")).toEqual({
       label: "Latest ranking",
       value: "N/A",
       status: "unavailable",
     });
-    expect(sniffer?.rows.find((r) => r.label === "🍄 Truffles found")).toEqual({
+    expect(oinkCorp?.rows.find((r) => r.label === "🍄 Truffles found")).toEqual({
       label: "🍄 Truffles found",
       value: "N/A",
       status: "unavailable",

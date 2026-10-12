@@ -1,7 +1,7 @@
 import { getLatestSnifferFrame } from "@/lib/server-api";
-import { SnifferDashboard } from "@/components/sniffer-dashboard";
+import { SnifferSniffs } from "@/components/sniffer-sniffs";
 
 export default async function SnifferPage() {
   const frame = await getLatestSnifferFrame();
-  return <SnifferDashboard frame={frame} />;
+  return <SnifferSniffs frame={frame} />;
 }

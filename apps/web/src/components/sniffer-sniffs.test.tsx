@@ -1,10 +1,24 @@
 import { render, screen } from "@testing-library/react";
-import { it, expect } from "vitest";
+import { it, expect, vi } from "vitest";
 import { SnifferSniffs } from "./sniffer-sniffs";
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: vi.fn() }),
+}));
 
 it("shows a no-analysis message when there is no frame yet", () => {
   render(<SnifferSniffs frame={null} />);
   expect(screen.getByText(/No Sniffer analysis yet/)).toBeInTheDocument();
+  // Symbol inspection stays available even before the first analysis.
+  expect(screen.getByLabelText("Inspect symbol")).toBeInTheDocument();
+});
+
+it("is observation-only: no ranking, score, or truffle surface", () => {
+  render(<SnifferSniffs frame={null} />);
+  // Rankings and Truffles belong to OINK CORP, not Sniffer.
+  expect(screen.queryByText(/truffle/i)).not.toBeInTheDocument();
+  expect(screen.queryByText(/score/i)).not.toBeInTheDocument();
+  expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
 });
 
 it("shows the frame metadata and Sniffs matrix when a frame exists", () => {

@@ -16,7 +16,11 @@ at 5m/15m/1h/4h, Open Interest change at 5m/15m/1h/4h/24h,
 Volatility/ATR% at 15m/1h/4h/24h, Relative Volume at 15m/1h/4h, and
 Funding Rate current/24h-avg from real settled Bybit funding events),
 persisting them for the `/api/sniffer/latest` API and the Sniffer/Vitals
-pages. No ranking, no scoring, no Truffles, no trading logic yet. See
+pages. No ranking, no scoring, no Truffles, no trading logic yet.
+
+*Sniffer senses. OINK CORP thinks. Warhog acts.* Sniffer owns market
+observation and features; OINK CORP owns research and (eventually) the live
+Long/Short rankings that produce Truffles; Warhog will own execution. See
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for where this is headed.
 
 ## Repository structure
@@ -43,9 +47,10 @@ behind it: `apps/api/app/research/` + `app/scripts/generate_research_dataset.py`
 replay historical Sniffs using the exact production `FeatureEngine` and
 attach research-only forward-return labels, writing a Parquet dataset +
 manifest to `research/oink_corp/data/` (gitignored, regenerable — see
-`docs/ARCHITECTURE.md`'s OINK CORP section for the full design). Still no
-Scents/Score/Rank/Truffles/backtesting — this is the research foundation
-those would eventually be built on, not any of them. `packages/shared`/
+`docs/ARCHITECTURE.md`'s OINK CORP sections). Still no heuristics,
+experiments, ranking model, Score/Rank/Truffles, or backtesting — this is
+the research foundation those would eventually be built on, not any of
+them. `packages/shared`/
 `infra` exist as boundaries so
 future work has an obvious home without restructuring the repo, not because
 anything lives there yet.
@@ -139,10 +144,10 @@ from REST, "Market data"/"Last market update"/"Data freshness" from the
 live WebSocket collector, "Historical coverage" from the history
 reconciler's persisted progress, "Latest market frame"/"Frame completeness"
 from the frame synchronizer's most recently finalized snapshot), and in
-🐽 SNIFFER, "Status"/"Last scan"/"Coins analyzed" are now real too — only
-"Latest ranking" and "🍄 Truffles found" stay an honest "N/A", since Sniffer
-has no ranking or Truffle concept yet. 🐗 WARHOG and 🧬 OINK CORP are laid
-out for the future but every value is still "N/A" — nothing is simulated.
+🐽 SNIFFER, "Status"/"Last scan"/"Coins analyzed" are real too. 🐗 WARHOG
+and 🧬 OINK CORP (whose rows include "Latest ranking"/"🍄 Truffles found" —
+rankings are OINK CORP's) are laid out for the future but every value is
+still "N/A" — nothing is simulated.
 
 ## Prerequisites
 
@@ -245,7 +250,9 @@ both the frontend (redirects) and the backend (every protected endpoint
 independently verifies it).
 
 From there you can navigate to Home, Sniffer, Warhog, OINK CORP, and Vitals.
-Sniffer, Warhog, and OINK CORP each show an intentional "in progress" page.
+Sniffer shows Market Data: the latest frame's Sniffs for every tracked
+symbol, plus a per-symbol page. Warhog and OINK CORP each show an
+intentional "in progress" page.
 Vitals shows a SYSTEM section with live operational status (API liveness,
 API readiness, database connectivity, uptime, environment, backend version)
 and a fully-live MARKET section: "Bybit connectivity"/"Symbols tracked"
@@ -254,10 +261,10 @@ freshness" come from the MARKET collector, "Historical coverage" comes from
 the MARKET history reconciler, and "Latest market frame"/"Frame
 completeness" come from the MARKET frame synchronizer — all three have been
 running in the background since the API started; Vitals just reads their
-status, it never triggers any of them. 🐽 SNIFFER/🐗 WARHOG/🧬 OINK CORP
-still preview what Vitals will eventually report on: every row there is an
-honest "N/A", never a fabricated value, since none of that infrastructure
-exists yet.
+status, it never triggers any of them. 🐽 SNIFFER reports Sniffer's latest
+analysis; 🐗 WARHOG/🧬 OINK CORP still preview what Vitals will eventually
+report on: every row there is an honest "N/A", never a fabricated value,
+since none of that infrastructure exists yet.
 
 ## 6. Run tests
 

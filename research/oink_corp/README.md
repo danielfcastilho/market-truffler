@@ -1,6 +1,10 @@
 # 🧬 OINK CORP
 
-OINK CORP is the research laboratory for Market Truffler's trading strategy.
+OINK CORP is Market Truffler's intelligence: *Sniffer senses, OINK CORP
+thinks, Warhog acts.* It owns research (offline) and, eventually, the live
+Long/Short rankings that produce 🍄 Truffles — two operationally isolated
+halves. This directory is the research half's home for notebooks and
+generated data.
 
 It is a **repository boundary, not a running service**. `docker-compose.yml`
 does not build or start anything from here — the `api` service only
@@ -9,15 +13,15 @@ direction as a log file, never the other way around.
 
 ## Conceptual role
 
-OINK CORP develops and validates the strategy; Market Truffler (Sniffer →
-Warhog) runs it. Concretely, this is where future work will live for things
-like:
-
-- quantitative feature research
-- backtesting
-- Martin Gale simulation and calibration
-- ablation studies
-- walk-forward validation
+Research investigates which market characteristics identify attractive
+Long and Short opportunities — starting from human **heuristics** (natural-
+language intuitions, which research may reject) and, eventually, from its
+own hypotheses, both judged by the same evaluation standard. Validated
+results become Challenger ranking models; a human-approved Champion runs in
+the deterministic live ranking runtime, which never depends on research.
+Future work here includes hypothesis experiments, chronological and
+regime-aware evaluation with protected holdout data, path-dependent outcome
+labels for the Martingale-inspired strategy, and Martingale simulation.
 
 See [`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md) for how this relates
 to the production domains.
@@ -51,7 +55,7 @@ Research rules on the 5m base timeframe:
   every dataset generated before the 5m migration. Regenerate old datasets
   rather than mixing them.
 
-Still not implemented: Scents, Score, Rank, Qualification, Truffles,
-backtesting, Martin Gale simulation, ML, or any promotion workflow. No
-notebooks exist yet — none should be added merely to match the illustrative
-tree below.
+Still not implemented: heuristics, hypotheses, experiments, evaluation,
+ranking models, Champion/Challenger promotion, Score, Rank, Truffles,
+backtesting, or Martingale simulation. No notebooks exist yet — none should
+be added merely to look implemented.

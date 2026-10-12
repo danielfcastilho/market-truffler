@@ -15,19 +15,19 @@ export default function HomePage() {
           href="/sniffer"
           icon="🐽"
           title="Sniffer"
-          description="Finds and surfaces market opportunities — the truffles."
+          description="Senses the market: data, history, and measurable features."
         />
         <ModuleCard
           href="/warhog"
           icon="🐗"
           title="Warhog"
-          description="Entries, position management, and exits."
+          description="Acts: entries, position management, and exits."
         />
         <ModuleCard
           href="/oink-corp"
           icon="🧬"
           title="OINK CORP"
-          description="Develops and validates the strategy."
+          description="Thinks: research, and Long/Short rankings — the truffles."
         />
         <ModuleCard
           href="/vitals"
