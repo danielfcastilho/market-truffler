@@ -39,7 +39,19 @@ logger = logging.getLogger(__name__)
 
 _CATEGORY = "linear"
 _INTERVAL_TIME = "5min"
+_BUCKET = timedelta(minutes=5)
 _PAGE_SIZE = 200  # Bybit's own cap for this endpoint
+#: Forward catch-up walks the gap after the latest stored observation in
+#: chronological windows of fewer buckets than one page holds, so a single
+#: response normally covers a window completely (Bybit returns the
+#: *newest* rows of a requested range first — a range wider than one page
+#: used to return only its newest ~16.7h, after which `MAX(observed_at)`
+#: jumped to "now" and permanently sealed the older part of the gap).
+CATCHUP_WINDOW = _BUCKET * (_PAGE_SIZE - 1)
+#: Bound on how much of a gap one instrument recovers per poll round
+#: (4 x ~16.6h); a multi-day outage is recovered over a few rounds, oldest
+#: first, without one round's work growing unboundedly.
+MAX_CATCHUP_WINDOWS_PER_ROUND = 4
 
 SessionFactory = Callable[[], AsyncSession]
 
@@ -61,6 +73,39 @@ def _to_rows(instrument_id: int, result: OpenInterestHistoryResult) -> list[dict
         }
         for entry in result.list
     ]
+
+
+async def fetch_open_interest_window(
+    client: BybitClient, symbol: str, start: datetime, end: datetime
+) -> OpenInterestHistoryResult:
+    """Every 5-minute OI bucket Bybit has for `symbol` in `[start, end]`,
+    following `nextPageCursor` while pages come back full — so a partial
+    (truncated) response is never mistaken for complete coverage. Bounded:
+    at most enough pages for the window's bucket count, plus one. Raises
+    `BybitApiError` if any page fails (nothing partial is returned)."""
+    max_pages = int((end - start) / _BUCKET) // _PAGE_SIZE + 2
+    entries = []
+    cursor: str | None = None
+    category = ""
+    for _ in range(max_pages):
+        raw = await client.get_open_interest(
+            category=_CATEGORY,
+            symbol=symbol,
+            interval_time=_INTERVAL_TIME,
+            start=int(start.timestamp() * 1000),
+            end=int(end.timestamp() * 1000),
+            cursor=cursor,
+            limit=_PAGE_SIZE,
+        )
+        page = OpenInterestHistoryResult.model_validate(raw)
+        category = page.category
+        entries.extend(page.list)
+        cursor = page.nextPageCursor or None
+        if len(page.list) < _PAGE_SIZE or cursor is None:
+            break
+    else:
+        raise BybitApiError(f"{symbol}: more than {max_pages} OI pages for one window")
+    return OpenInterestHistoryResult(category=category, symbol=symbol, list=entries)
 
 
 class OpenInterestReconciler:
@@ -152,9 +197,7 @@ class OpenInterestReconciler:
         )
 
         async with self._session_factory() as session:
-            await OpenInterestRepository(session).delete_before(
-                datetime.now(UTC) - self._retention
-            )
+            await OpenInterestRepository(session).delete_before(datetime.now(UTC) - self._retention)
 
         self._status.last_poll_at = datetime.now(UTC)
         self._status.last_poll_ok = True
@@ -245,32 +288,51 @@ class OpenInterestReconciler:
         instrument: Instrument,
         symbol: str,
     ) -> None:
-        latest = await repo.fetch_latest_observed_at_per_instrument([instrument.id])
-        since = latest.get(instrument.id)
+        """Recover everything after the latest stored observation, oldest
+        first, one bounded window at a time (`CATCHUP_WINDOW`, up to
+        `MAX_CATCHUP_WINDOWS_PER_ROUND` per round). Each window is fetched
+        completely (`fetch_open_interest_window`) before the next, so the
+        stored maximum only ever advances over windows that were actually
+        fetched — a gap can no longer be sealed by a newest-first page.
+
+        A window Bybit has no data for (an exchange-side gap) doesn't stop
+        the walk: the next window is tried in the same round. If a round
+        ends inside such an empty stretch, the next round re-scans it from
+        the same maximum — bounded, and it resolves as soon as data
+        resumes."""
+        # Captured before any upsert: `upsert_many` expires the session's
+        # objects, and lazily reloading `instrument.id` from inside this
+        # async call would raise `MissingGreenlet` (same pitfall
+        # `HistoryReconciler._catchup_step` documents).
+        instrument_id = instrument.id
+        latest = await repo.fetch_latest_observed_at_per_instrument([instrument_id])
+        since = latest.get(instrument_id)
         if since is None:
             return  # nothing bootstrapped yet this round — next round's bootstrap seeds it
 
         now = datetime.now(UTC)
-        if since >= now:
-            return
-
-        try:
-            raw = await self._bybit_client.get_open_interest(
-                category=_CATEGORY,
-                symbol=symbol,
-                interval_time=_INTERVAL_TIME,
-                start=int(since.timestamp() * 1000) + 1,
-                end=int(now.timestamp() * 1000),
-                limit=_PAGE_SIZE,
-            )
-        except BybitApiError as exc:
-            logger.warning(
-                "open_interest_catchup_page_failed", extra={"symbol": symbol, "error": str(exc)}
-            )
-            return
-
-        result = OpenInterestHistoryResult.model_validate(raw)
-        if not result.list:
-            return  # no new bucket has closed since `since` yet — fine, retried next round
-
-        await repo.upsert_many(_to_rows(instrument.id, result))
+        window_start = since + timedelta(milliseconds=1)
+        for _ in range(MAX_CATCHUP_WINDOWS_PER_ROUND):
+            if window_start >= now:
+                return
+            window_end = min(now, since + CATCHUP_WINDOW)
+            try:
+                result = await fetch_open_interest_window(
+                    self._bybit_client, symbol, window_start, window_end
+                )
+            except BybitApiError as exc:
+                logger.warning(
+                    "open_interest_catchup_page_failed",
+                    extra={"symbol": symbol, "error": str(exc)},
+                )
+                return  # retried from the same stored maximum next round
+            if result.list:
+                await repo.upsert_many(_to_rows(instrument_id, result))
+                since = max(
+                    datetime.fromtimestamp(int(e.timestamp) / 1000, tz=UTC) for e in result.list
+                )
+            else:
+                since = window_end
+            window_start = since + timedelta(milliseconds=1)
+            if window_end >= now:
+                return

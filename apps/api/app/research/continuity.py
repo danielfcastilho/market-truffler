@@ -70,6 +70,12 @@ SHARD_HORIZONS = {
 }
 LABEL_MATURITY = max(SHARD_HORIZONS.values()) + timedelta(hours=1)
 READINESS_FRACTION = 0.99
+#: Fraction of an instrument's expected 5-minute Open Interest buckets over
+#: the replay window that must be stored before its OI counts as caught up
+#: — so an interior hole (e.g. one sealed by a past outage) blocks the gate
+#: even when the latest observation is recent. Tolerates Bybit's own
+#: occasional missing bucket.
+OI_BUCKET_COMPLETENESS = 0.99
 MAX_READINESS_WAIT = timedelta(hours=24)
 DEADLINE_SAFETY = timedelta(days=3)
 EXPIRY_WARNING = timedelta(days=5)
@@ -80,7 +86,7 @@ BACKOFF = (
     timedelta(hours=12),
 )
 #: Hard wall-clock limit for one shard's generation subprocess. A daily
-#: shard (96 frames at ~28s plus yielding) takes ~2h.
+#: shard (96 frames at ~30s plus yielding) takes ~2.5-3h; 6h leaves 2x headroom.
 SHARD_TIMEOUT = timedelta(hours=6)
 #: Server-side cap on any single statement the generator issues, so a
 #: killed generator can't leave a runaway query behind for long.
@@ -88,11 +94,13 @@ STATEMENT_TIMEOUT = timedelta(minutes=10)
 
 # Best-effort yield to live Sniffer work: only start replaying a frame
 # when the last 5-minute boundary is at least this far behind and the
-# next at least this far ahead. Live frame finalization + Sniffer analysis
-# measured ~60-70s; a frame replay ~28s. Not a guarantee — a slow live
-# cycle or a slow replay can still overlap.
+# next at least this far ahead. Live finalization + Sniffer analysis
+# measured ~30-40s; a frame replay averaged ~32s but one ran ~58s and
+# delayed a live frame by 12s with a 45s margin (acceptance run,
+# 2026-10-12), hence 75s. Not a guarantee — a slow live cycle or a slow
+# replay can still overlap.
 YIELD_AFTER_BOUNDARY = timedelta(seconds=120)
-YIELD_BEFORE_BOUNDARY = timedelta(seconds=45)
+YIELD_BEFORE_BOUNDARY = timedelta(seconds=75)
 _FIVE_MINUTES = timedelta(minutes=5)
 
 _ADVISORY_LOCK_KEY = 0x0A1C_0C0F  # "OINK CORP research generation"
@@ -363,22 +371,33 @@ async def day_facts(session: AsyncSession, start: datetime, end: datetime) -> Da
         if i.history_synced_through is not None
         and i.history_synced_through >= candles_needed_through
     )
+    # OI is "ready" for an instrument only when the whole window replay
+    # reads — from the earliest frame's OI lookback to the day's end — is
+    # (almost) fully stored, not merely when the latest observation is
+    # recent: a recent maximum says nothing about interior holes.
+    oi_window_start = floor_to_boundary(start - OI_LOOKBACK, _FIVE_MINUTES)
+    expected_buckets = int((end - oi_window_start) / _FIVE_MINUTES)
     oi_rows = (
         await session.execute(
             select(
                 OpenInterestObservation.instrument_id,
+                func.count(),
                 func.max(OpenInterestObservation.observed_at),
             )
             .where(
                 OpenInterestObservation.instrument_id.in_([i.id for i in active]),
-                OpenInterestObservation.observed_at >= end - timedelta(hours=1),
+                OpenInterestObservation.observed_at >= oi_window_start,
+                OpenInterestObservation.observed_at < end,
             )
             .group_by(OpenInterestObservation.instrument_id)
         )
     ).all()
-    oi_latest: dict[int, datetime] = {row[0]: row[1] for row in oi_rows}
     oi_ready = sum(
-        1 for i in active if i.id in oi_latest and oi_latest[i.id] >= end - _FIVE_MINUTES
+        1
+        for _, count, latest in oi_rows
+        if latest is not None
+        and latest >= end - _FIVE_MINUTES
+        and count >= OI_BUCKET_COMPLETENESS * expected_buckets
     )
     return DayFacts(
         grid_frames,

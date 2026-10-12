@@ -465,10 +465,20 @@ app.services.open_interest_reconciler.OpenInterestReconciler
    forward from `MAX(observed_at)` for that instrument (via
    `OpenInterestRepository.fetch_latest_observed_at_per_instrument` — no
    separate persisted "through" watermark; OI's short window makes
-   resuming from the table itself cheap) to `now`. A bad symbol's
+   resuming from the table itself cheap) to `now` — **chronologically**,
+   in windows of fewer buckets than one 200-row page (up to 4 windows per
+   instrument per round), each fetched completely by
+   `fetch_open_interest_window` (which follows `nextPageCursor` rather than
+   trusting a full page). Bybit returns a range's *newest* rows first, so
+   the original single `[latest, now]` request recovered only the last
+   ~16.7h after a longer outage and then sealed the older part of the gap
+   for good (fixed 2026-10-12; `app/scripts/repair_open_interest_gaps.py`
+   refilled the holes it had left). A window Bybit has no data for is
+   walked past, never fabricated. A bad symbol's
    exception is caught and logged per-instrument, never stopping the
    round for the rest of the universe. Each round also prunes
-   observations older than `retention` (default 2 days) via a plain
+   observations older than `retention` (`market_oi_funding_retention_days`,
+   30) via a plain
    `DELETE ... WHERE observed_at < cutoff`
    (`OpenInterestRepository.delete_before`) — not the monthly-partition
    machinery `partition_manager` owns, since at one row per instrument
@@ -570,7 +580,13 @@ app/services/frame_synchronizer.py (FrameSynchronizer)
    the first symbol to arrive. It always builds exactly the boundary it
    slept toward, never one re-derived from the clock after waking (an
    asyncio timer firing a hair early used to floor the frame back to the
-   previous boundary).
+   previous boundary). It waits in <= 5s chunks, re-reading the wall clock
+   each time: the event loop's monotonic timers stop while the host sleeps
+   (laptop lid closed, Docker VM paused), so one long timer used to keep
+   running after wake-up and overshoot further boundaries. After a sleep
+   that skips boundaries it builds the latest one reached and logs the
+   skipped ones (`frame_boundaries_skipped`) — missed frames are never
+   backfilled, and no boundary is ever scheduled twice.
         │
         ▼
 app/repositories/candle_repository.py
@@ -1201,11 +1217,13 @@ never stops generation: whatever remains is preserved and the loss is
 recorded.
 
 Replay yields to live Sniffer on a **best-effort** basis: a frame replay
-only starts >= 120s after a 5-minute boundary and >= 45s before the next
+only starts >= 120s after a 5-minute boundary and >= 75s before the next
 (the worker is also capped at one CPU). This avoids most overlap with live
 frame finalization and Sniffer analysis but is not a guarantee — a slow
 live cycle or a slow replay can still overlap. Time spent yielding is
-recorded as `yield_seconds`. A daily shard takes roughly 1.5-2 hours.
+recorded as `yield_seconds`. A daily shard takes roughly 2.5-3 hours.
+(Acceptance run: with a 45s margin one live frame was delayed 12s by an
+overrunning replay; the margin was widened to 75s.)
 
 **Operational runbook.**
 

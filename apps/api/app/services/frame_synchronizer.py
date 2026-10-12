@@ -54,7 +54,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -72,6 +72,10 @@ logger = logging.getLogger(__name__)
 # the same way but do not gate it (see
 # `app.domain.frame.MarketFrameMember.h4`/`h24`).
 GATING_TIMEFRAMES = ("5m", "15m", "1h")
+
+#: Longest single wait between wall-clock re-checks while sleeping to the
+#: next boundary — bounds how late a frame can start after the host wakes.
+WAIT_CHUNK = timedelta(seconds=5)
 
 SessionFactory = Callable[[], AsyncSession]
 OnFrameFinalized = Callable[[datetime], Awaitable[None]]
@@ -92,6 +96,8 @@ class FrameSynchronizer:
         self._stop_event: asyncio.Event | None = None
         self._task: asyncio.Task[None] | None = None
         self._running = False
+        #: The last boundary handed to `_build_frame` — never scheduled twice.
+        self._last_scheduled: datetime | None = None
 
     @property
     def running(self) -> bool:
@@ -158,24 +164,56 @@ class FrameSynchronizer:
                 logger.exception("frame_build_failed", extra={"frame_time": frame_time.isoformat()})
 
     async def _sleep_until_next_boundary(self) -> datetime | None:
-        """Sleep until the next UTC 5-minute boundary and return it — the
+        """Sleep until the next UTC 5-minute boundary and return the
         frame_time to build — or None if stopped first.
 
-        Never returns before that boundary, and returns that boundary
-        itself rather than re-deriving it from the clock afterwards: asyncio
-        timers can fire a hair early (within the event loop's clock
-        resolution), and flooring a wake-up at 10:04:59.999 would label the
-        10:05 frame as 10:00 — one whole candle stale — and push the next
-        wake-up past 10:05 entirely."""
+        The wait happens in short chunks (`WAIT_CHUNK`), re-reading the wall
+        clock after each. A single long timer is measured on the event
+        loop's monotonic clock, which stops while the host sleeps (e.g. a
+        laptop lid closed with Docker's VM paused): after waking, such a
+        timer kept running out its remaining time and the loop overshot,
+        missing boundaries even though the host was awake again.
+
+        Never returns before a boundary has been reached (asyncio timers can
+        fire a hair early — returning early would build the wrong, previous
+        boundary). Once the wall clock is at or past the awaited boundary it
+        returns the *latest* boundary already reached: after a host sleep
+        that skips past boundaries, the missed ones are logged and never
+        built — frames are only ever produced for the present, not
+        backfilled — and the next frame is the most recent eligible one.
+        Never returns the same boundary twice."""
         assert self._stop_event is not None
-        next_boundary = floor_to_boundary(datetime.now(UTC), BASE_DURATION) + BASE_DURATION
-        while (remaining := (next_boundary - datetime.now(UTC)).total_seconds()) > 0:
-            try:
-                await asyncio.wait_for(self._stop_event.wait(), timeout=remaining)
+        target = floor_to_boundary(datetime.now(UTC), BASE_DURATION) + BASE_DURATION
+        if self._last_scheduled is not None and target <= self._last_scheduled:
+            target = self._last_scheduled + BASE_DURATION
+        while True:
+            now = datetime.now(UTC)
+            if now >= target:
+                latest = floor_to_boundary(now, BASE_DURATION)
+                skipped = int((latest - target) / BASE_DURATION)
+                if skipped:
+                    logger.warning(
+                        "frame_boundaries_skipped",
+                        extra={
+                            "skipped": skipped,
+                            "first_skipped": target.isoformat(),
+                            "building": latest.isoformat(),
+                        },
+                    )
+                self._last_scheduled = latest
+                return latest
+            remaining = min((target - now).total_seconds(), WAIT_CHUNK.total_seconds())
+            if await self._wait_or_stop(remaining):
                 return None
-            except TimeoutError:
-                continue
-        return next_boundary
+
+    async def _wait_or_stop(self, seconds: float) -> bool:
+        """Wait up to `seconds`; True if stopped meanwhile."""
+        assert self._stop_event is not None
+        try:
+            await asyncio.wait_for(self._stop_event.wait(), timeout=seconds)
+            return True
+        except TimeoutError:
+            return False
 
     async def _build_frame(self, frame_time: datetime) -> None:
         async with self._session_factory() as session:

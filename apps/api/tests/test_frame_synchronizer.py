@@ -611,3 +611,118 @@ async def test_on_frame_finalized_hook_failure_does_not_break_finalization(sessi
     async with session_factory() as session:
         frame = await FrameRepository(session).get_frame(FRAME_TIME)
     assert frame.status == FrameStatus.COMPLETE
+
+
+# -- sleep/wake: the wait re-checks the wall clock ------------------------------------
+
+
+class _FakeClock:
+    """Wall clock the synchronizer reads; `_wait_or_stop` advances it by the
+    requested seconds, except where a host sleep is injected (the wall
+    clock jumps while the loop's own waiting was paused)."""
+
+    def __init__(self, start: datetime, sleep_on_wait: dict[int, timedelta] | None = None):
+        self.now = start
+        self.waits: list[float] = []
+        self.sleep_on_wait = sleep_on_wait or {}
+
+    def install(self, monkeypatch, sync: FrameSynchronizer) -> None:
+        from app.services import frame_synchronizer
+
+        clock = self
+
+        class _Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):  # type: ignore[override]
+                return clock.now
+
+        monkeypatch.setattr(frame_synchronizer, "datetime", _Clock)
+
+        async def fake_wait(seconds: float) -> bool:
+            self.waits.append(seconds)
+            self.now += timedelta(seconds=seconds) + self.sleep_on_wait.get(
+                len(self.waits), timedelta(0)
+            )
+            return False
+
+        sync._wait_or_stop = fake_wait  # type: ignore[method-assign]
+
+
+def _at(hh: int, mm: int, ss: int = 0) -> datetime:
+    return datetime(2026, 10, 12, hh, mm, ss, tzinfo=UTC)
+
+
+async def test_an_awake_host_waits_in_short_chunks_and_builds_the_next_boundary(
+    session_factory, monkeypatch
+):
+    sync = _synchronizer(session_factory)
+    sync._stop_event = asyncio.Event()
+    clock = _FakeClock(_at(10, 3))
+    clock.install(monkeypatch, sync)
+
+    assert await sync._sleep_until_next_boundary() == _at(10, 5)
+    assert max(clock.waits) <= 5.0  # re-checks the wall clock every <= 5s
+    assert sum(clock.waits) == pytest.approx(120.0)
+
+
+async def test_after_a_host_sleep_the_latest_boundary_is_built_and_missed_ones_are_skipped(
+    session_factory, monkeypatch, caplog
+):
+    sync = _synchronizer(session_factory)
+    sync._stop_event = asyncio.Event()
+    # Host sleeps ~14 minutes during the 3rd wait chunk (10:03:10 -> ~10:17:15).
+    clock = _FakeClock(_at(10, 3), sleep_on_wait={3: timedelta(minutes=14)})
+    clock.install(monkeypatch, sync)
+
+    with caplog.at_level("WARNING"):
+        frame_time = await sync._sleep_until_next_boundary()
+
+    assert frame_time == _at(10, 15)  # the latest eligible boundary, not stale 10:05
+    assert clock.now - frame_time < timedelta(minutes=5)
+    skipped = [r for r in caplog.records if r.getMessage() == "frame_boundaries_skipped"]
+    assert len(skipped) == 1 and skipped[0].skipped == 2  # 10:05, 10:10 — never built
+
+
+async def test_the_same_boundary_is_never_scheduled_twice(session_factory, monkeypatch):
+    sync = _synchronizer(session_factory)
+    sync._stop_event = asyncio.Event()
+    clock = _FakeClock(_at(10, 3))
+    clock.install(monkeypatch, sync)
+    assert await sync._sleep_until_next_boundary() == _at(10, 5)
+
+    clock.now = _at(10, 5, 2)  # building 10:05 took 2s
+    assert await sync._sleep_until_next_boundary() == _at(10, 10)
+
+    clock.now = _at(10, 9, 59)  # wall clock stepped backwards (e.g. NTP)
+    assert await sync._sleep_until_next_boundary() == _at(10, 15)
+
+
+async def test_the_run_loop_builds_only_the_latest_boundary_after_a_sleep(
+    session_factory, monkeypatch
+):
+    sync = _synchronizer(session_factory)
+    sync._stop_event = asyncio.Event()
+    clock = _FakeClock(_at(10, 3), sleep_on_wait={3: timedelta(minutes=14)})
+    clock.install(monkeypatch, sync)
+    built: list[datetime] = []
+
+    async def fake_build(frame_time: datetime) -> None:
+        built.append(frame_time)
+        if len(built) == 2:
+            sync._stop_event.set()
+
+    sync._build_frame = fake_build  # type: ignore[method-assign]
+
+    async def stop_aware_wait(seconds: float) -> bool:
+        if sync._stop_event.is_set():
+            return True
+        clock.waits.append(seconds)
+        clock.now += timedelta(seconds=seconds) + clock.sleep_on_wait.get(
+            len(clock.waits), timedelta(0)
+        )
+        return False
+
+    sync._wait_or_stop = stop_aware_wait  # type: ignore[method-assign]
+    await sync._run_loop()
+
+    assert built == [_at(10, 15), _at(10, 20)]  # no 10:05/10:10 backfill, no duplicates

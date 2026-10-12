@@ -5,7 +5,7 @@ Same idempotent-upsert, set-oriented-batched-query conventions as
 """
 
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import delete, func, select
@@ -115,6 +115,24 @@ class OpenInterestRepository:
             .group_by(OpenInterestObservation.instrument_id)
         )
         return {instrument_id: observed_at for instrument_id, observed_at in result.all()}
+
+    async def find_gaps(
+        self, instrument_id: int, *, bucket: timedelta
+    ) -> list[tuple[datetime, datetime]]:
+        """Interior gaps in one instrument's stored series: pairs of
+        consecutive observations further apart than one `bucket`, as
+        `(last observation before the gap, first observation after it)`.
+        Only gaps *between* stored observations — nothing before the first
+        or after the last (that's bootstrap's and catch-up's job)."""
+        query = select(OpenInterestObservation.observed_at).where(
+            OpenInterestObservation.instrument_id == instrument_id
+        )
+        times = list((await self._session.execute(query.order_by("observed_at"))).scalars())
+        return [
+            (earlier, later)
+            for earlier, later in zip(times, times[1:], strict=False)
+            if later - earlier > bucket
+        ]
 
     async def delete_before(self, cutoff: datetime) -> None:
         """Prune every observation older than `cutoff` — OI's whole-table

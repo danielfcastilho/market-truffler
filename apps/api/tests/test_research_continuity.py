@@ -3,7 +3,6 @@ import json
 import sys
 import time as wallclock
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
 
 import pytest
 from sqlalchemy import delete
@@ -16,8 +15,8 @@ from app.features.funding_rate import FundingRate24hAvgFeature, FundingRateCurre
 from app.features.open_interest_change import OpenInterestChangeFeature
 from app.models.frame import MarketFrameMember
 from app.models.instrument import Instrument
-from app.models.open_interest import OpenInterestObservation
 from app.repositories.frame_repository import FrameRepository
+from app.repositories.open_interest_repository import OpenInterestRepository
 from app.research import continuity
 from app.research.continuity import (
     CANDLE_LOOKBACK,
@@ -125,15 +124,19 @@ async def _frames(sf, ids, times):
             )
 
 
-async def _oi(sf, ids, observed_at):
+async def _oi(sf, ids, day_end, *, skip=()):
+    """Every 5-minute OI bucket replay of that day reads — from the day's
+    start minus the OI lookback up to its end — except any in `skip`.
+    Upserted, so overlapping days' windows can both be seeded."""
+    t = day_end - timedelta(days=1) - OI_LOOKBACK
+    t = t.replace(minute=t.minute - t.minute % 5, second=0, microsecond=0)
+    rows = []
+    while t < day_end:
+        if t not in skip:
+            rows += [{"instrument_id": i, "observed_at": t, "open_interest": 1} for i in ids]
+        t += timedelta(minutes=5)
     async with sf() as session:
-        session.add_all(
-            OpenInterestObservation(
-                instrument_id=i, observed_at=observed_at, open_interest=Decimal(1)
-            )
-            for i in ids
-        )
-        await session.commit()
+        await OpenInterestRepository(session).upsert_many(rows)
 
 
 async def _ready_day(sf, symbols=("A", "B"), day_start=DAY_START):
@@ -286,6 +289,28 @@ async def test_late_catch_up_preserves_immediately_and_records_expired_sources(
     detail = gen.calls[0][1]
     assert detail["readiness"]["fallback"] is True
     assert "candle_lookback" in detail["sources_expired_at_generation"]
+
+
+async def test_a_recent_oi_maximum_with_an_interior_hole_does_not_pass_the_gate(
+    session_factory, tmp_path
+):
+    """Regression: the gate used to check only the latest OI observation,
+    so a hole sealed inside the replay window (e.g. by a past outage) was
+    invisible and would have been frozen into the shard."""
+    ids = [await _instrument(session_factory, s) for s in ("A", "B")]
+    await _frames(session_factory, ids, [DAY_START])
+    hole = {DAY_START - timedelta(hours=6) + timedelta(minutes=5 * k) for k in range(24)}
+    await _oi(session_factory, ids, DAY_END, skip=hole)  # 2h missing, latest is recent
+    config = _config(tmp_path)
+    gen = _Generator(config)
+
+    summary = await run_pass(session_factory, _Lock(), config, gen, now=lambda: MATURED)
+    assert summary["decisions"][DAY.isoformat()] == "waiting_readiness" and gen.calls == []
+
+    # Bounded: past the fallback the day is still preserved, the shortfall recorded.
+    later = MATURED + timedelta(hours=24)
+    await run_pass(session_factory, _Lock(), config, gen, now=lambda: later)
+    assert gen.calls[0][1]["readiness"]["open_interest_lagging"] == 2
 
 
 async def test_inactive_instruments_never_block_readiness(session_factory, tmp_path):
