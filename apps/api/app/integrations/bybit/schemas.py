@@ -6,6 +6,10 @@ Bybit field rename only ever touches this module.
 
 from pydantic import BaseModel
 
+from app.domain.timeframes import BASE_DURATION, BYBIT_BASE_INTERVAL
+
+_BASE_DURATION_MS = int(BASE_DURATION.total_seconds() * 1000)
+
 
 class BybitInstrument(BaseModel):
     symbol: str
@@ -57,8 +61,14 @@ class KlineHistoryResult(BaseModel):
     except startTime), sorted newest-first — never an object like the
     WebSocket push. `parse_kline_history_row` below turns one row into the
     same `BybitKlineData` shape the WS boundary produces, so downstream code
-    (ingestion, aggregation) never needs to know which transport a 1m
-    candle came from.
+    (ingestion, aggregation) never needs to know which transport a base
+    (5m) candle came from.
+
+    A page can include the still-forming current candle (Bybit returns
+    every candle overlapping the requested `[start, end]`, and with no
+    `end` the newest row is the one in progress) — `parse_kline_history_row`
+    cannot tell, so callers must drop rows that haven't closed yet (see
+    `HistoryReconciler`).
     """
 
     category: str
@@ -67,13 +77,14 @@ class KlineHistoryResult(BaseModel):
 
 
 def parse_kline_history_row(row: list[str]) -> BybitKlineData:
-    """Parse one 1-minute row from `/v5/market/kline` (`interval=1` only —
-    MARKET never fetches other timeframes from REST; see invariant B)."""
+    """Parse one base-timeframe row from `/v5/market/kline`
+    (`interval=BYBIT_BASE_INTERVAL` only — MARKET never fetches any other
+    timeframe from Bybit; see `app.domain.timeframes`)."""
     start_ms = int(row[0])
     return BybitKlineData(
         start=start_ms,
-        end=start_ms + 60_000 - 1,
-        interval="1",
+        end=start_ms + _BASE_DURATION_MS - 1,
+        interval=BYBIT_BASE_INTERVAL,
         open=row[1],
         high=row[2],
         low=row[3],

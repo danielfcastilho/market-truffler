@@ -16,6 +16,7 @@ from app.services.candle_aggregation import derive_higher_timeframes
 from app.services.frame_synchronizer import FrameSynchronizer
 
 FRAME_TIME = datetime(2026, 1, 1, 14, 0, tzinfo=UTC)
+FIVE = timedelta(minutes=5)
 
 
 @pytest.fixture
@@ -41,28 +42,34 @@ async def _add_instrument(session_factory, symbol: str, *, is_active: bool = Tru
         return row.id
 
 
-async def _seed_full_hour(session_factory, instrument_id: int, hour_start: datetime) -> None:
+def _base_row(instrument_id: int, open_time: datetime, close: str = "1") -> dict:
+    return {
+        "instrument_id": instrument_id,
+        "timeframe": "5m",
+        "open_time": open_time,
+        "close_time": open_time + FIVE - timedelta(milliseconds=1),
+        "open": Decimal("1"),
+        "high": Decimal("1"),
+        "low": Decimal("1"),
+        "close": Decimal(close),
+        "volume": Decimal("1"),
+        "turnover": Decimal("1"),
+    }
+
+
+async def _seed_base(session_factory, instrument_id: int, open_times: list[datetime]) -> None:
     async with session_factory() as session:
         candle_repo = CandleRepository(session)
-        rows = [
-            {
-                "instrument_id": instrument_id,
-                "timeframe": "1m",
-                "open_time": hour_start + timedelta(minutes=i),
-                "close_time": hour_start + timedelta(minutes=i + 1) - timedelta(microseconds=1),
-                "open": Decimal("1"),
-                "high": Decimal("1"),
-                "low": Decimal("1"),
-                "close": Decimal(str(i)),
-                "volume": Decimal("1"),
-                "turnover": Decimal("1"),
-            }
-            for i in range(60)
-        ]
-        await candle_repo.upsert_many(rows)
+        await candle_repo.upsert_many([_base_row(instrument_id, t) for t in open_times])
         await derive_higher_timeframes(
-            candle_repo, instrument_id, hour_start, hour_start + timedelta(hours=1)
+            candle_repo, instrument_id, min(open_times), max(open_times) + FIVE
         )
+
+
+async def _seed_full_hour(session_factory, instrument_id: int, hour_start: datetime) -> None:
+    """Twelve 5m candles covering [hour_start, hour_start + 1h), plus the
+    15m/1h candles derived from them."""
+    await _seed_base(session_factory, instrument_id, [hour_start + FIVE * i for i in range(12)])
 
 
 def _synchronizer(session_factory, **overrides) -> FrameSynchronizer:
@@ -71,7 +78,7 @@ def _synchronizer(session_factory, **overrides) -> FrameSynchronizer:
     return FrameSynchronizer(session_factory, **kwargs)
 
 
-# -- one frame per minute, full universe snapshot -----------------------------------
+# -- one frame per 5-minute boundary, full universe snapshot -------------------------
 
 
 async def test_finalize_frame_produces_one_complete_frame_when_all_instruments_ready(
@@ -105,25 +112,9 @@ async def test_finalize_frame_is_partial_when_one_instrument_lacks_full_context(
     btc = await _add_instrument(session_factory, "BTCUSDT")
     eth = await _add_instrument(session_factory, "ETHUSDT")
     await _seed_full_hour(session_factory, btc, hour_start)
-    # ETH has only a few 1m candles — no 1h context will exist for it.
+    # ETH has a single 5m candle — no 15m/1h context will exist for it.
     async with session_factory() as session:
-        candle_repo = CandleRepository(session)
-        await candle_repo.upsert_many(
-            [
-                {
-                    "instrument_id": eth,
-                    "timeframe": "1m",
-                    "open_time": FRAME_TIME - timedelta(minutes=1),
-                    "close_time": FRAME_TIME - timedelta(microseconds=1),
-                    "open": Decimal("1"),
-                    "high": Decimal("1"),
-                    "low": Decimal("1"),
-                    "close": Decimal("1"),
-                    "volume": Decimal("1"),
-                    "turnover": Decimal("1"),
-                }
-            ]
-        )
+        await CandleRepository(session).upsert_many([_base_row(eth, FRAME_TIME - FIVE)])
 
     sync = _synchronizer(session_factory)
     async with session_factory() as session:
@@ -188,37 +179,16 @@ async def test_universe_change_after_finalization_does_not_mutate_expected_count
 
 
 async def test_a_still_forming_higher_timeframe_candle_cannot_leak_into_the_frame(session_factory):
-    """Only 61 of the needed 120 minutes exist — the second 1h window
-    (14:00-14:59) is still forming and must not appear as legal context at
-    frame_time=15:00; only the 13:00-13:59 hour may be selected... here we
-    instead prove the simpler, sharper case: with only ONE complete hour of
-    1m data, frame_time set to the *middle* of what would be a second,
-    still-forming hour must select the earlier, fully-closed hour only."""
+    """With one complete hour (13:00-13:59) plus the first two 5m candles
+    of the next one, a frame at 14:10 must select the fully-closed 13:00
+    hour — never the still-forming 14:00 one — and the latest legal 15m
+    candle is 13:45, since the 14:00 15m bucket still lacks 14:10."""
     hour_start = datetime(2026, 1, 1, 13, 0, tzinfo=UTC)
     btc = await _add_instrument(session_factory, "BTCUSDT")
     await _seed_full_hour(session_factory, btc, hour_start)
-    # A handful of extra 1m candles into the *next*, still-forming hour.
-    async with session_factory() as session:
-        candle_repo = CandleRepository(session)
-        await candle_repo.upsert_many(
-            [
-                {
-                    "instrument_id": btc,
-                    "timeframe": "1m",
-                    "open_time": hour_start + timedelta(hours=1, minutes=i),
-                    "close_time": hour_start
-                    + timedelta(hours=1, minutes=i + 1)
-                    - timedelta(microseconds=1),
-                    "open": Decimal("1"),
-                    "high": Decimal("1"),
-                    "low": Decimal("1"),
-                    "close": Decimal("1"),
-                    "volume": Decimal("1"),
-                    "turnover": Decimal("1"),
-                }
-                for i in range(10)  # only 10 of the 60 minutes needed for the next 1h candle
-            ]
-        )
+    await _seed_base(
+        session_factory, btc, [hour_start + timedelta(hours=1) + FIVE * i for i in range(2)]
+    )
 
     frame_time = hour_start + timedelta(hours=1, minutes=10)  # 14:10
     sync = _synchronizer(session_factory)
@@ -234,7 +204,94 @@ async def test_a_still_forming_higher_timeframe_candle_cannot_leak_into_the_fram
     assert frame.status == FrameStatus.COMPLETE  # the earlier, complete hour is legal
     member = frame.members[0]
     assert member.h1.open_time == hour_start  # NOT the still-forming 14:00 hour
-    assert member.m1.open_time == frame_time - timedelta(minutes=1)  # 14:09, the latest legal 1m
+    assert member.m15.open_time == datetime(2026, 1, 1, 13, 45, tzinfo=UTC)
+    assert member.m5.open_time == frame_time - FIVE  # 14:05, closed exactly at 14:10
+
+
+async def test_a_5m_candle_is_usable_from_its_close_and_never_before(session_factory):
+    """The canonical boundary case: the 5m candle opening at 10:00 closes
+    at 10:05. A frame at 10:05 selects it; a frame at 10:00 must not, even
+    though the row is already sitting in storage (as it would be when a
+    frame is resolved late, e.g. after a restart)."""
+    btc = await _add_instrument(session_factory, "BTCUSDT")
+    ten = datetime(2026, 1, 1, 10, 0, tzinfo=UTC)
+    await _seed_full_hour(session_factory, btc, ten - timedelta(hours=1))
+    await _seed_base(session_factory, btc, [ten])  # opens 10:00, closes 10:05
+
+    sync = _synchronizer(session_factory)
+    async with session_factory() as session:
+        repo = FrameRepository(session)
+        for frame_time in (ten, ten + FIVE):
+            await repo.create_building(
+                frame_time, expected_instrument_ids=[btc], now=datetime.now(UTC)
+            )
+    await sync._finalize_frame(ten)
+    await sync._finalize_frame(ten + FIVE)
+
+    async with session_factory() as session:
+        at_ten = await FrameRepository(session).get_frame(ten)
+        at_ten_oh_five = await FrameRepository(session).get_frame(ten + FIVE)
+    assert at_ten.members[0].m5.open_time == ten - FIVE  # 09:55 — the 10:00 candle isn't closed
+    assert at_ten_oh_five.members[0].m5.open_time == ten  # usable from 10:05 on
+
+
+async def test_run_loop_builds_exactly_the_boundary_it_slept_toward(session_factory):
+    """The loop builds the boundary `_sleep_until_next_boundary` returns,
+    never one re-derived from the clock afterwards."""
+    sync = _synchronizer(session_factory)
+    sync._stop_event = asyncio.Event()
+    wakeups = iter([datetime(2026, 1, 1, 10, 5, tzinfo=UTC), None])  # one boundary, then stop
+
+    async def fake_sleep() -> datetime | None:
+        return next(wakeups)
+
+    built: list[datetime] = []
+
+    async def fake_build(frame_time: datetime) -> None:
+        built.append(frame_time)
+
+    sync._sleep_until_next_boundary = fake_sleep  # type: ignore[method-assign]
+    sync._build_frame = fake_build  # type: ignore[method-assign]
+    await sync._run_loop()
+
+    assert built == [datetime(2026, 1, 1, 10, 5, tzinfo=UTC)]
+
+
+async def test_an_early_timer_wakeup_still_yields_the_upcoming_boundary(
+    session_factory, monkeypatch
+):
+    """asyncio timers can fire a hair early. Waking at 10:04:59.9995 must
+    keep waiting the remainder and return 10:05 — never floor back to the
+    10:00 boundary, which would build a frame one candle stale."""
+    from app.services import frame_synchronizer
+
+    clock = iter(
+        [
+            datetime(2026, 1, 1, 10, 4, 59, 990_000, tzinfo=UTC),  # computing the target
+            datetime(2026, 1, 1, 10, 4, 59, 995_000, tzinfo=UTC),  # first wait: 5ms
+            datetime(2026, 1, 1, 10, 4, 59, 999_500, tzinfo=UTC),  # woke early: 0.5ms more
+            datetime(2026, 1, 1, 10, 5, 0, 200, tzinfo=UTC),  # boundary reached
+        ]
+    )
+
+    class _Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            return next(clock)
+
+    monkeypatch.setattr(frame_synchronizer, "datetime", _Clock)
+    sync = _synchronizer(session_factory)
+    sync._stop_event = asyncio.Event()
+
+    assert await sync._sleep_until_next_boundary() == datetime(2026, 1, 1, 10, 5, tzinfo=UTC)
+
+
+async def test_sleep_until_next_boundary_returns_none_when_stopped(session_factory):
+    sync = _synchronizer(session_factory)
+    sync._stop_event = asyncio.Event()
+    sync._stop_event.set()
+
+    assert await sync._sleep_until_next_boundary() is None
 
 
 # -- idempotency ------------------------------------------------------------------
@@ -247,7 +304,7 @@ async def test_duplicate_build_frame_call_is_idempotent(session_factory):
 
     sync = _synchronizer(session_factory)
     await sync._build_frame(FRAME_TIME)
-    await sync._build_frame(FRAME_TIME)  # duplicate trigger for the same minute
+    await sync._build_frame(FRAME_TIME)  # duplicate trigger for the same frame_time
 
     async with session_factory() as session:
         rows = (await session.execute(select(MarketFrame))).scalars().all()
@@ -378,9 +435,9 @@ async def test_resolve_interrupted_build_is_a_noop_when_nothing_was_building(ses
         assert (await session.execute(select(MarketFrame))).scalars().all() == []
 
 
-async def test_downtime_does_not_fabricate_frames_for_skipped_minutes(session_factory):
+async def test_downtime_does_not_fabricate_frames_for_skipped_boundaries(session_factory):
     """Only the one interrupted BUILDING frame is resolved at startup —
-    minutes that were simply never observed (the app was offline) get no
+    boundaries that were simply never observed (the app was offline) get no
     frame at all, fabricated or otherwise."""
     hour_start = FRAME_TIME - timedelta(hours=1)
     btc = await _add_instrument(session_factory, "BTCUSDT")
@@ -396,7 +453,7 @@ async def test_downtime_does_not_fabricate_frames_for_skipped_minutes(session_fa
 
     async with session_factory() as session:
         rows = (await session.execute(select(MarketFrame))).scalars().all()
-    # Exactly the one (resolved) frame — nothing fabricated for any other minute.
+    # Exactly the one (resolved) frame — nothing fabricated for any other boundary.
     assert len(rows) == 1
     assert rows[0].frame_time == FRAME_TIME
 
@@ -440,8 +497,8 @@ async def test_finalize_frame_uses_a_bounded_number_of_queries_not_one_per_instr
     session_factory,
 ):
     """M4 section 25: resolving an entire universe's frame must be a small,
-    bounded number of set-oriented queries (four — one per timeframe —
-    plus light bookkeeping), never proportional to instrument count."""
+    bounded number of set-oriented queries (one per timeframe plus light
+    bookkeeping), never proportional to instrument count."""
     hour_start = FRAME_TIME - timedelta(hours=1)
     instrument_ids = []
     for i in range(20):
@@ -468,16 +525,16 @@ async def test_finalize_frame_uses_a_bounded_number_of_queries_not_one_per_instr
         frame_repo = FrameRepository(session)
         expected_ids = await frame_repo.get_expected_instrument_ids(FRAME_TIME)
         candle_repo = CandleRepository(session)
-        for timeframe, minutes in (("1m", 1), ("5m", 5), ("15m", 15), ("1h", 60)):
+        for timeframe, minutes in (("5m", 5), ("15m", 15), ("1h", 60)):
             await candle_repo.fetch_latest_closed_per_instrument(
                 timeframe, expected_ids, FRAME_TIME - timedelta(minutes=minutes)
             )
 
     # One query to read the frame's expected-instrument snapshot, plus
-    # exactly one query per timeframe (four) — five total for a
-    # 20-instrument universe, not 20 and not 80 (20 instruments x 4
+    # exactly one query per gating timeframe (three) — four total for a
+    # 20-instrument universe, not 20 and not 60 (20 instruments x 3
     # timeframes).
-    assert query_count == 5
+    assert query_count == 4
 
 
 async def test_vitals_reading_the_latest_frame_never_creates_one(session_factory):

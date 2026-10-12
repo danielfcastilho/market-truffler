@@ -168,7 +168,7 @@ class BybitClient:
         `5min`, the finest Bybit offers, so every coarser OI lookback this
         app needs (15m/1h/4h/24h are all exact multiples of 5 minutes) can
         be satisfied by an exact-timestamp lookup against that one series,
-        the same way `get_kline` only ever fetches `interval="1"`. Returns
+        the same way `get_kline` only ever fetches the 5m base interval. Returns
         at most `limit` rows (max 200 per Bybit's own cap), newest first —
         paging further back is the caller's concern via `cursor`.
         """

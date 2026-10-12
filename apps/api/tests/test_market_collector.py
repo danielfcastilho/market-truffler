@@ -1,4 +1,5 @@
 import asyncio
+from datetime import timedelta
 
 import pytest
 
@@ -9,9 +10,9 @@ from app.services.market_universe import MarketUniverseUnavailable
 
 def _kline(confirm: bool, close: str = "100.5") -> BybitKlineData:
     return BybitKlineData(
-        start=1700000000000,
-        end=1700000059999,
-        interval="1",
+        start=1700000100000,  # 2023-11-14 22:15:00 UTC, a 5m boundary
+        end=1700000399999,
+        interval="5",
         open="100.0",
         high="101.0",
         low="99.5",
@@ -19,7 +20,7 @@ def _kline(confirm: bool, close: str = "100.5") -> BybitKlineData:
         volume="10.0",
         turnover="1005.0",
         confirm=confirm,
-        timestamp=1700000060000,
+        timestamp=1700000400000,
     )
 
 
@@ -144,7 +145,8 @@ async def test_handle_kline_publishes_confirmed_candles_and_updates_status():
     candle = sunk[0]
     assert candle.exchange == "bybit"
     assert candle.symbol == "BTCUSDT"
-    assert candle.timeframe == "1m"
+    assert candle.timeframe == "5m"
+    assert candle.close_time - candle.open_time == timedelta(minutes=5, milliseconds=-1)
     assert str(candle.close) == "43005.5"
     assert candle.key == (candle.exchange, candle.symbol, candle.timeframe, candle.open_time)
 
@@ -252,3 +254,13 @@ async def test_stop_cancels_all_connection_tasks_cleanly():
 
     assert collector.status.running is False
     assert collector.status.connections_active == 0
+
+
+def test_collector_subscribes_to_native_5m_klines_only():
+    """The live stream is the 5m kline topic — MARKET never subscribes to
+    any finer interval."""
+    collector = MarketCollector(
+        _FakeMarketUniverse(symbols=["BTCUSDT"]), ws_base_url="wss://example.invalid"
+    )
+    client = collector._build_client(["BTCUSDT"])
+    assert client._interval == "5"

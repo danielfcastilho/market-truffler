@@ -216,3 +216,18 @@ async def test_get_funding_rate_history_raises_on_nonzero_ret_code():
     client = _client(handler)
     with pytest.raises(BybitApiError):
         await client.get_funding_rate_history("linear", "BTCUSDT")
+
+
+def test_parse_kline_history_row_is_a_5m_candle():
+    """REST history rows carry only a start time; the parsed candle must
+    span exactly one 5m base candle, matching what the WebSocket
+    delivers for the same interval."""
+    from app.integrations.bybit.schemas import parse_kline_history_row
+
+    kline = parse_kline_history_row(
+        ["1700000100000", "100.0", "101.0", "99.0", "100.5", "10.0", "1005.0"]
+    )
+    assert kline.start == 1700000100000
+    assert kline.end == 1700000100000 + 5 * 60_000 - 1
+    assert kline.interval == "5"
+    assert kline.confirm is True

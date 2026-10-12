@@ -108,7 +108,6 @@ async def ensure_partitions(
 async def _has_candle_references(session: AsyncSession, start: datetime, end: datetime) -> bool:
     """Frame members can reference arbitrarily stale candles, across month boundaries."""
     columns = (
-        MarketFrameMember.open_time_1m,
         MarketFrameMember.open_time_5m,
         MarketFrameMember.open_time_15m,
         MarketFrameMember.open_time_1h,

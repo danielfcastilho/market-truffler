@@ -66,8 +66,9 @@ def parse_kline_message(payload: object) -> list[tuple[str, BybitKlineData]]:
 
 
 class BybitKlineWebSocketClient:
-    """One Bybit public WebSocket connection subscribed to 1m kline topics
-    for a shard of symbols.
+    """One Bybit public WebSocket connection subscribed to kline topics (at
+    MARKET's base interval — see `app.domain.timeframes`) for a shard of
+    symbols.
 
     Owns the full connection lifecycle: connect, subscribe (batched to stay
     well under Bybit's documented per-request args-length limit), heartbeat

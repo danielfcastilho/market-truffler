@@ -11,14 +11,14 @@ from app.integrations.bybit.ws_client import (
 
 def _raw_kline(confirm: bool, symbol: str = "BTCUSDT") -> dict:
     return {
-        "topic": f"kline.1.{symbol}",
+        "topic": f"kline.5.{symbol}",
         "type": "snapshot",
         "ts": 1700000000123,
         "data": [
             {
-                "start": 1700000000000,
-                "end": 1700000059999,
-                "interval": "1",
+                "start": 1700000100000,
+                "end": 1700000399999,
+                "interval": "5",
                 "open": "43000.5",
                 "high": "43010.0",
                 "low": "42990.0",
@@ -26,7 +26,7 @@ def _raw_kline(confirm: bool, symbol: str = "BTCUSDT") -> dict:
                 "volume": "12.345",
                 "turnover": "531000.12",
                 "confirm": confirm,
-                "timestamp": 1700000060000,
+                "timestamp": 1700000400000,
             }
         ],
     }
@@ -34,14 +34,14 @@ def _raw_kline(confirm: bool, symbol: str = "BTCUSDT") -> dict:
 
 class TestParseKlineTopicSymbol:
     def test_extracts_symbol(self):
-        assert parse_kline_topic_symbol("kline.1.BTCUSDT") == "BTCUSDT"
+        assert parse_kline_topic_symbol("kline.5.BTCUSDT") == "BTCUSDT"
 
     def test_rejects_non_kline_topic(self):
         assert parse_kline_topic_symbol("orderbook.1.BTCUSDT") is None
 
     def test_rejects_malformed_topic(self):
         assert parse_kline_topic_symbol("kline") is None
-        assert parse_kline_topic_symbol("kline.1") is None
+        assert parse_kline_topic_symbol("kline.5") is None
 
 
 class TestParseKlineMessage:
@@ -68,7 +68,7 @@ class TestParseKlineMessage:
         assert parse_kline_message(None) == []
 
     def test_ignores_malformed_kline_data(self):
-        payload = {"topic": "kline.1.BTCUSDT", "type": "snapshot", "data": [{"start": "oops"}]}
+        payload = {"topic": "kline.5.BTCUSDT", "type": "snapshot", "data": [{"start": "oops"}]}
         assert parse_kline_message(payload) == []
 
     def test_handles_multiple_symbols_independently(self):
@@ -141,7 +141,7 @@ async def test_subscribe_sends_batched_topics():
     client = BybitKlineWebSocketClient(
         url="wss://example.invalid",
         symbols=[f"SYM{i}USDT" for i in range(5)],
-        interval="1",
+        interval="5",
         on_kline=lambda symbol, kline: received.append((symbol, kline)),
         subscribe_batch_size=2,
         connector=connector,
@@ -160,7 +160,7 @@ async def test_handle_raw_message_dispatches_confirmed_klines_only():
     client = BybitKlineWebSocketClient(
         url="wss://example.invalid",
         symbols=["BTCUSDT"],
-        interval="1",
+        interval="5",
         on_kline=lambda symbol, kline: received.append((symbol, kline)),
     )
 
@@ -177,7 +177,7 @@ async def test_handle_raw_message_ignores_malformed_json():
     client = BybitKlineWebSocketClient(
         url="wss://example.invalid",
         symbols=["BTCUSDT"],
-        interval="1",
+        interval="5",
         on_kline=lambda symbol, kline: calls.append((symbol, kline)),
     )
 
@@ -203,7 +203,7 @@ async def test_run_reconnects_after_failed_connection_then_stops():
     client = BybitKlineWebSocketClient(
         url="wss://example.invalid",
         symbols=["BTCUSDT"],
-        interval="1",
+        interval="5",
         on_kline=lambda symbol, kline: received.append((symbol, kline)),
         on_connection_state_change=state_changes.append,
         reconnect_initial_delay=0.001,
@@ -232,7 +232,7 @@ async def test_run_stops_cleanly_without_ever_connecting():
     client = BybitKlineWebSocketClient(
         url="wss://example.invalid",
         symbols=["BTCUSDT"],
-        interval="1",
+        interval="5",
         on_kline=lambda symbol, kline: None,
         connector=connector,
     )
@@ -252,7 +252,7 @@ async def test_run_never_raises_when_connection_repeatedly_fails():
     client = BybitKlineWebSocketClient(
         url="wss://example.invalid",
         symbols=["BTCUSDT"],
-        interval="1",
+        interval="5",
         on_kline=lambda symbol, kline: None,
         reconnect_initial_delay=0.001,
         reconnect_max_delay=0.005,
@@ -277,7 +277,7 @@ async def test_run_pings_the_connection_while_open():
     client = BybitKlineWebSocketClient(
         url="wss://example.invalid",
         symbols=["BTCUSDT"],
-        interval="1",
+        interval="5",
         on_kline=lambda symbol, kline: None,
         ping_interval=0.01,
         connector=connector,

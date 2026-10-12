@@ -9,11 +9,11 @@ from app.db.types import IntArray, UTCDateTime
 
 class MarketFrame(Base):
     """One unified cross-sectional snapshot of the active market universe,
-    produced once per closed UTC minute — see
+    produced once per closed UTC 5-minute boundary — see
     `app.services.frame_synchronizer`.
 
     `frame_time` is the natural primary key (no surrogate id): it is the
-    instant immediately after the corresponding minute closed, and every
+    instant immediately after the corresponding 5m candle closed, and every
     candle referenced by this frame's members has `close_time <= frame_time`
     (see `MarketFrameMember`).
 
@@ -51,8 +51,8 @@ class MarketFrame(Base):
 class MarketFrameMember(Base):
     """One instrument's fully-available synchronized context for one frame.
 
-    A row exists only for instruments where all four *membership-gating*
-    timeframes (1m/5m/15m/1h) had a legal candle at finalization time — an
+    A row exists only for instruments where all three *membership-gating*
+    timeframes (5m/15m/1h) had a legal candle at finalization time — an
     instrument missing even one of those simply has no member row here
     (frame-level `available_instruments` counts these rows; the gap versus
     `expected_instruments` is what made the frame PARTIAL).
@@ -71,12 +71,17 @@ class MarketFrameMember(Base):
     the column and `instrument_id` implied by this row. The full OHLCV
     context is fetched by joining back to `market_candles` on demand
     (`app.repositories.frame_repository`), never duplicated here — keeping
-    this table's rows compact at the ~405M/year scale one row per
-    instrument per minute implies. A genuine foreign key per timeframe
-    would need a redundant constant `timeframe` column on each of the four
-    (FK target columns can't be literals); not worth it for four fixed
+    this table's rows compact at the ~80M/year scale one row per
+    instrument per 5 minutes implies. A genuine foreign key per timeframe
+    would need a redundant constant `timeframe` column on each (FK target
+    columns can't be literals); not worth it for a handful of fixed
     values, so these are plain indexed-by-PK datetime columns instead,
     documented here rather than enforced by the schema.
+
+    The table still physically has a nullable, unmapped `open_time_1m`
+    column from before 5m became the base timeframe (populated only on
+    rows written before that migration); nothing reads or writes it. See
+    `docs/ARCHITECTURE.md` for the optional manual step that drops it.
 
     Partitioned by RANGE(frame_time), monthly, mirroring `market_candles` —
     same retention mechanism (`app.services.partition_manager`), same
@@ -93,7 +98,6 @@ class MarketFrameMember(Base):
         ForeignKey("instruments.id"), primary_key=True, nullable=False
     )
 
-    open_time_1m: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     open_time_5m: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     open_time_15m: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     open_time_1h: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)

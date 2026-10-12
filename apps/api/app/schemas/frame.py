@@ -18,7 +18,6 @@ class FrameCandleContext(BaseModel):
 class FrameMember(BaseModel):
     instrument_id: int
     symbol: str
-    m1: FrameCandleContext
     m5: FrameCandleContext
     m15: FrameCandleContext
     h1: FrameCandleContext

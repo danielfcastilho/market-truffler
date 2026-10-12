@@ -79,7 +79,6 @@ def _member(iid: int, anchor: datetime, *, h4=None) -> MarketFrameMember:
     return MarketFrameMember(
         instrument_id=iid,
         symbol="BTCUSDT",
-        m1=placeholder,
         m5=placeholder,
         m15=placeholder,
         h1=placeholder,

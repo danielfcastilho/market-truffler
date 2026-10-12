@@ -1,6 +1,6 @@
 """MARKET FRAME production: the temporal synchronizer that turns
 `market_candles` (what happened) into `market_frames`/`market_frame_members`
-(what was knowable about the whole market at a given minute).
+(what was knowable about the whole market at a given 5-minute boundary).
 
 A third long-lived background capability, started/stopped from the FastAPI
 lifespan exactly like `MarketCollector` and `HistoryReconciler`. It is a
@@ -8,17 +8,22 @@ pure consumer of already-persisted candle data — it never talks to Bybit
 directly.
 
 FRAME TIME
-    Market Frames occur on UTC minute boundaries. `frame_time` = M means
-    "the decision point immediately after the M-1..M minute has closed":
-    every candle a frame may reference has `close_time <= frame_time`.
-    Since every timeframe's `close_time` is exactly
-    `open_time + duration - 1 tick`, that condition is equivalent to (and
-    implemented as) `open_time <= frame_time - duration` — a comparison
-    that only needs the existing `(instrument_id, timeframe, open_time)`
-    index, never `close_time` itself.
+    Market Frames occur on UTC 5-minute boundaries — the base timeframe's
+    own boundaries (see `app.domain.timeframes`), so every frame lines up
+    with exactly one just-closed 5m candle and there are no frames in
+    between whose "current" 5m candle would simply repeat the previous
+    frame's. `frame_time` = T means "the decision point immediately after
+    the 5m candle [T-5m, T) has closed": every candle a frame may
+    reference has `close_time < frame_time`. Since every timeframe's
+    `close_time` is just before `open_time + duration`, that condition is
+    equivalent to (and implemented as) `open_time <= frame_time -
+    duration` — a comparison that only needs the existing
+    `(instrument_id, timeframe, open_time)` index, never `close_time`
+    itself. The 5m candle opened at T itself — still forming at T — is
+    never selectable.
 
-LIFECYCLE (per minute)
-    1. Wake exactly at a UTC minute boundary M.
+LIFECYCLE (per 5-minute boundary)
+    1. Wake exactly at a UTC 5-minute boundary T.
     2. Snapshot the active universe *now* — this fixes `expected_instruments`
        immutably; later universe changes never retroactively alter an
        already-built frame (M4 section 6).
@@ -26,12 +31,12 @@ LIFECYCLE (per minute)
        crash-safe, inspectable state even mid-build (M4 section 11/19).
     4. Wait `grace_period_seconds` for normal live delivery to settle
        (M4 section 12) — does not finalize on the first symbol to arrive.
-    5. For each configured timeframe — the four membership-gating ones
-       (1m/5m/15m/1h) plus 4h and 24h — one set-oriented query resolves the
+    5. For each configured timeframe — the three membership-gating ones
+       (5m/15m/1h) plus 4h and 24h — one set-oriented query resolves the
        latest legal candle per instrument across the *entire* snapshotted
        universe (`CandleRepository.fetch_latest_closed_per_instrument`) —
        never a per-instrument loop (M4 section 25).
-    6. An instrument is "available" only if all four gating timeframes
+    6. An instrument is "available" only if all three gating timeframes
        resolved; its `open_time`s become one member row, plus 4h's/24h's
        `open_time` when either happens to be available too (never gating —
        see `app.domain.frame.MarketFrameMember.h4`/`h24`). Missing even one
@@ -49,10 +54,11 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.timeframes import BASE_DURATION, TIMEFRAMES, floor_to_boundary
 from app.models.candle import Candle
 from app.repositories.candle_repository import CandleRepository
 from app.repositories.frame_repository import FrameRepository
@@ -60,26 +66,15 @@ from app.repositories.instrument_repository import InstrumentRepository
 
 logger = logging.getLogger(__name__)
 
-# (timeframe label, duration in minutes) — the configured frame timeframes.
-# Fixed, not configurable: this is MARKET's contract with future Sniffer,
-# not an operational tuning knob. 1m/5m/15m/1h gate member availability;
-# 4h and 24h are resolved the same way but do not gate it (see
+# Every stored timeframe is resolved into each frame (fixed, not
+# configurable: this is MARKET's contract with Sniffer, not an operational
+# tuning knob). 5m/15m/1h gate member availability; 4h and 24h are resolved
+# the same way but do not gate it (see
 # `app.domain.frame.MarketFrameMember.h4`/`h24`).
-TIMEFRAMES: tuple[tuple[str, int], ...] = (
-    ("1m", 1),
-    ("5m", 5),
-    ("15m", 15),
-    ("1h", 60),
-    ("4h", 240),
-    ("24h", 1440),
-)
+GATING_TIMEFRAMES = ("5m", "15m", "1h")
 
 SessionFactory = Callable[[], AsyncSession]
 OnFrameFinalized = Callable[[datetime], Awaitable[None]]
-
-
-def _floor_to_minute(dt: datetime) -> datetime:
-    return dt.replace(second=0, microsecond=0)
 
 
 class FrameSynchronizer:
@@ -134,7 +129,7 @@ class FrameSynchronizer:
         late finalize introduces no look-ahead.
 
         Downtime itself is never backfilled — this only ever resolves the
-        single interrupted frame, never fabricates the missed minutes in
+        single interrupted frame, never fabricates the missed frames in
         between (M4 section 19).
         """
         async with self._session_factory() as session:
@@ -148,31 +143,39 @@ class FrameSynchronizer:
         )
         await self._finalize_frame(building.frame_time)
 
-    # -- steady-state per-minute loop ----------------------------------------------
+    # -- steady-state per-boundary loop ---------------------------------------------
 
     async def _run_loop(self) -> None:
         assert self._stop_event is not None
         while not self._stop_event.is_set():
-            if await self._sleep_until_next_minute_boundary():
+            frame_time = await self._sleep_until_next_boundary()
+            if frame_time is None:
                 break
 
-            frame_time = _floor_to_minute(datetime.now(UTC))
             try:
                 await self._build_frame(frame_time)
             except Exception:  # noqa: BLE001 - one bad frame must not kill the loop
                 logger.exception("frame_build_failed", extra={"frame_time": frame_time.isoformat()})
 
-    async def _sleep_until_next_minute_boundary(self) -> bool:
-        """Sleep until the next :00 boundary. Returns True if stopped first."""
+    async def _sleep_until_next_boundary(self) -> datetime | None:
+        """Sleep until the next UTC 5-minute boundary and return it — the
+        frame_time to build — or None if stopped first.
+
+        Never returns before that boundary, and returns that boundary
+        itself rather than re-deriving it from the clock afterwards: asyncio
+        timers can fire a hair early (within the event loop's clock
+        resolution), and flooring a wake-up at 10:04:59.999 would label the
+        10:05 frame as 10:00 — one whole candle stale — and push the next
+        wake-up past 10:05 entirely."""
         assert self._stop_event is not None
-        now = datetime.now(UTC)
-        next_boundary = _floor_to_minute(now) + timedelta(minutes=1)
-        seconds = (next_boundary - now).total_seconds()
-        try:
-            await asyncio.wait_for(self._stop_event.wait(), timeout=seconds)
-            return True
-        except TimeoutError:
-            return False
+        next_boundary = floor_to_boundary(datetime.now(UTC), BASE_DURATION) + BASE_DURATION
+        while (remaining := (next_boundary - datetime.now(UTC)).total_seconds()) > 0:
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=remaining)
+                return None
+            except TimeoutError:
+                continue
+        return next_boundary
 
     async def _build_frame(self, frame_time: datetime) -> None:
         async with self._session_factory() as session:
@@ -216,8 +219,8 @@ class FrameSynchronizer:
 
             candle_repo = CandleRepository(session)
             per_timeframe: dict[str, dict[int, Candle]] = {}
-            for timeframe, duration_minutes in TIMEFRAMES:
-                max_open_time = frame_time - timedelta(minutes=duration_minutes)
+            for timeframe, duration in TIMEFRAMES.items():
+                max_open_time = frame_time - duration
                 per_timeframe[timeframe] = await candle_repo.fetch_latest_closed_per_instrument(
                     timeframe, instrument_ids, max_open_time
                 )
@@ -225,11 +228,7 @@ class FrameSynchronizer:
             now = datetime.now(UTC)
             member_rows = []
             for instrument_id in instrument_ids:
-                m1 = per_timeframe["1m"].get(instrument_id)
-                m5 = per_timeframe["5m"].get(instrument_id)
-                m15 = per_timeframe["15m"].get(instrument_id)
-                h1 = per_timeframe["1h"].get(instrument_id)
-                if m1 is None or m5 is None or m15 is None or h1 is None:
+                if any(instrument_id not in per_timeframe[tf] for tf in GATING_TIMEFRAMES):
                     continue  # missing even one gating timeframe — not available, no member row
                 h4 = per_timeframe["4h"].get(instrument_id)
                 h24 = per_timeframe["24h"].get(instrument_id)
@@ -237,10 +236,9 @@ class FrameSynchronizer:
                     {
                         "frame_time": frame_time,
                         "instrument_id": instrument_id,
-                        "open_time_1m": m1.open_time,
-                        "open_time_5m": m5.open_time,
-                        "open_time_15m": m15.open_time,
-                        "open_time_1h": h1.open_time,
+                        "open_time_5m": per_timeframe["5m"][instrument_id].open_time,
+                        "open_time_15m": per_timeframe["15m"][instrument_id].open_time,
+                        "open_time_1h": per_timeframe["1h"][instrument_id].open_time,
                         # Not gating (see MarketFrameMember.h4/h24) —
                         # legitimately None when this instrument's first
                         # 4h/24h bucket hasn't closed yet, never fabricated.

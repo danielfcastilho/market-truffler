@@ -49,7 +49,7 @@ class FrameRepository:
 
         A no-op if a row already exists for this frame_time (any status) —
         never resets an already-finalized frame, and a duplicate build
-        trigger for the same minute never creates a second row (M4 section
+        trigger for the same frame_time never creates a second row (M4 section
         18/11). `expected_instrument_ids` — not just a count — is what
         finalization (including after a crash/restart) actually iterates,
         so the original snapshot survives regardless of later universe
@@ -93,7 +93,7 @@ class FrameRepository:
 
         Used only at startup to deterministically resolve a build
         interrupted by a previous process's crash/restart (M4 section 19) —
-        never called from the steady-state per-minute loop.
+        never called from the steady-state per-boundary loop.
         """
         result = await self._session.execute(
             select(MarketFrameRow).where(MarketFrameRow.status == FrameStatus.BUILDING.value)
@@ -140,6 +140,23 @@ class FrameRepository:
         self._session.expire_all()
         return True
 
+    async def list_frame_times_in_range(self, start: datetime, end: datetime) -> list[datetime]:
+        """Every `frame_time` that actually has a `market_frames` row in the
+        half-open interval `[start, end)`, ascending — the "which frame
+        times did MARKET actually finalize" read `app.research.dataset` uses to
+        turn a wall-clock-aligned sampling grid into the real, existing
+        frame_times to replay, and to know which aligned candidates are
+        genuinely missing (see that module) rather than guessing from a
+        gap-free assumption. Includes every status (BUILDING/COMPLETE/
+        PARTIAL) — callers that care about status filter it themselves,
+        the same way `get_frame`'s own caller does today."""
+        result = await self._session.execute(
+            select(MarketFrameRow.frame_time)
+            .where(MarketFrameRow.frame_time >= start, MarketFrameRow.frame_time < end)
+            .order_by(MarketFrameRow.frame_time)
+        )
+        return list(result.scalars().all())
+
     async def get_frame(self, frame_time: datetime) -> MarketFrame | None:
         """Frame metadata plus every member's full joined OHLCV context —
         the "give me frame T" read. One query per timeframe join, never a
@@ -169,12 +186,13 @@ class FrameRepository:
     async def get_latest_finalized_summary(self) -> MarketFrame | None:
         """Same frame as `get_latest_finalized`, but frame-level metadata
         only (`members` always `[]`) — never runs `_fetch_members`'s
-        five-way join over unbounded per-timeframe candle subqueries.
+        multi-timeframe join over unbounded per-timeframe candle subqueries.
 
         That join is the single most expensive query in this service
-        (measured ~16s locally against a ~30-day/771-instrument universe,
-        because each of the five per-timeframe subqueries scans its whole
-        timeframe's candles with no time bound) and is wholly unnecessary
+        (measured ~3.7s locally against a ~30-day/795-instrument universe —
+        ~19s before the 1m join was removed — because the planner can
+        satisfy a per-timeframe subquery with a scan of every candle
+        partition, there being no time bound) and is wholly unnecessary
         for a caller that only wants `frame_time`/`completeness` — e.g.
         Vitals' "Latest market frame"/"Frame completeness" rows, which
         must stay a cheap observation, never triggering this cost merely
@@ -217,27 +235,22 @@ class FrameRepository:
     async def _fetch_members(self, frame_time: datetime) -> list[MarketFrameMember]:
         # Re-derive proper mapped Candle entities from each timeframe-scoped
         # subquery (see CandleRepository.fetch_latest_closed_per_instrument
-        # for why `aliased` rather than raw Row tuples), then join all six
+        # for why `aliased` rather than raw Row tuples), then join all five
         # to the member row plus the instrument, in one query — the
         # "give me frame T" read is always this one statement, never a
-        # per-instrument loop. 4h/24h are OUTER joins (unlike the four
+        # per-instrument loop. 4h/24h are OUTER joins (unlike the three
         # gating timeframes): `open_time_4h`/`open_time_24h` can be NULL
         # (see `MarketFrameMember.h4`/`h24`), and even when set, an INNER
         # join would be just as correct — OUTER costs nothing extra and
         # stays correct either way.
-        m1, m5, m15, h1, h4, h24 = (
+        m5, m15, h1, h4, h24 = (
             aliased(Candle, select(Candle).where(Candle.timeframe == tf).subquery())
-            for tf in ("1m", "5m", "15m", "1h", "4h", "24h")
+            for tf in ("5m", "15m", "1h", "4h", "24h")
         )
 
         stmt = (
-            select(MarketFrameMemberRow, Instrument.symbol, m1, m5, m15, h1, h4, h24)
+            select(MarketFrameMemberRow, Instrument.symbol, m5, m15, h1, h4, h24)
             .join(Instrument, Instrument.id == MarketFrameMemberRow.instrument_id)
-            .join(
-                m1,
-                (m1.instrument_id == MarketFrameMemberRow.instrument_id)
-                & (m1.open_time == MarketFrameMemberRow.open_time_1m),
-            )
             .join(
                 m5,
                 (m5.instrument_id == MarketFrameMemberRow.instrument_id)
@@ -268,12 +281,11 @@ class FrameRepository:
         result = await self._session.execute(stmt)
 
         members: list[MarketFrameMember] = []
-        for member_row, symbol, c1, c5, c15, ch1, ch4, ch24 in result.all():
+        for member_row, symbol, c5, c15, ch1, ch4, ch24 in result.all():
             members.append(
                 MarketFrameMember(
                     instrument_id=member_row.instrument_id,
                     symbol=symbol,
-                    m1=_to_context(c1),
                     m5=_to_context(c5),
                     m15=_to_context(c15),
                     h1=_to_context(ch1),

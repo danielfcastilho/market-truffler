@@ -120,7 +120,7 @@ export interface SnifferInstrument {
   symbol: string;
   /** Decimal fraction (e.g. 0.01 == +1%) as a string, or null when Sniffer
    * genuinely had no exact historical candle to compare against — never a
-   * substituted or zeroed value. Exact rolling return using canonical 1m
+   * substituted or zeroed value. Exact rolling return using canonical 5m
    * closes, one offset per labeled timeframe. */
   return_5m: string | null;
   return_15m: string | null;

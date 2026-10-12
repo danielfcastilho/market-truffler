@@ -15,7 +15,8 @@ class Instrument(Base):
     only live watching and new bootstrap work stop.
 
     The three `history_*` columns are MARKET's persisted watermark for this
-    instrument's canonical 1m reconciliation, kept intentionally simple:
+    instrument's base-timeframe (5m) candle reconciliation, kept
+    intentionally simple:
 
     - `history_target_start`: the initial discovery target (`now - retention`),
       not rewritten when policy changes or REST reaches its data floor.

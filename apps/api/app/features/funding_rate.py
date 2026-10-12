@@ -13,7 +13,7 @@ completely ordinary, legitimate reading — never treated as "unavailable".
 Both features read `funding_rate_observations` directly against
 `frame.frame_time`, the same way `OpenInterestChangeFeature` reads
 `open_interest_observations` against it — never a frame member's own
-m1/m5/... candle anchor (funding is not a candle-derived measurement),
+m5/m15/... candle anchor (funding is not a candle-derived measurement),
 but still fully no-look-ahead-safe: every query below is bounded to
 "at or before" / "no later than" `frame.frame_time`.
 

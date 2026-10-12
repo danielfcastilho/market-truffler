@@ -29,6 +29,14 @@ dev = [
     "mypy>=1.13",
     "aiosqlite>=0.20",
 ]
+# OINK CORP's dataset-generation script (app/scripts/generate_research_dataset.py)
+# needs a columnar file writer. Isolated from the main runtime dependencies —
+# nothing in app.main/app.services/app.features ever imports pyarrow — but
+# installed in the api image (see Dockerfile) since the script runs inside
+# that same container, matching every other app/scripts/ convention.
+research = [
+    "pyarrow>=17",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

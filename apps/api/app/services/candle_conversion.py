@@ -1,5 +1,5 @@
-"""Shared conversion from Bybit's raw 1m kline shape to the canonical
-`ClosedCandle` domain model.
+"""Shared conversion from Bybit's raw base-timeframe (5m) kline shape to
+the canonical `ClosedCandle` domain model.
 
 Both the live WebSocket collector and the REST history reconciler produce a
 `BybitKlineData` (the WS boundary parses one directly off the wire; the REST
@@ -13,17 +13,17 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from app.domain.market import ClosedCandle
+from app.domain.timeframes import BASE_TIMEFRAME
 from app.integrations.bybit.schemas import BybitKlineData
 
 EXCHANGE = "bybit"
-TIMEFRAME_1M = "1m"
 
 
 def to_closed_candle(symbol: str, kline: BybitKlineData) -> ClosedCandle:
     return ClosedCandle(
         exchange=EXCHANGE,
         symbol=symbol,
-        timeframe=TIMEFRAME_1M,
+        timeframe=BASE_TIMEFRAME,
         open_time=datetime.fromtimestamp(kline.start / 1000, tz=UTC),
         close_time=datetime.fromtimestamp(kline.end / 1000, tz=UTC),
         open=Decimal(kline.open),

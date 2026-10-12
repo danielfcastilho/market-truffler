@@ -1,7 +1,8 @@
 """MARKET's "Historical coverage" metric.
 
 How much of the promised rolling `retention_days` (currently ~30 days —
-see `Settings.market_history_retention_days`) of 1m history is actually
+see `Settings.market_history_retention_days`) of base-timeframe (5m)
+candle history is actually
 reconciled for the CURRENT active universe, right now, according to each
 active instrument's persisted watermarks. This is a pure, read-only
 computation over already-persisted state — it never triggers bootstrap,

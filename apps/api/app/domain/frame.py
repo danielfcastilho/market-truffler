@@ -1,6 +1,7 @@
 """Domain model for MARKET FRAMES — a unified, temporally-legal
 cross-sectional snapshot of the active market universe, produced once per
-closed UTC minute.
+closed UTC 5-minute boundary (the base timeframe — see
+`app.domain.timeframes`).
 
 A candle answers "what happened?"; a Market Frame answers "what was
 knowable about the whole market at time T?" See
@@ -21,7 +22,7 @@ class FrameStatus(StrEnum):
     BUILDING: persisted the instant construction starts (before the grace
       period), so an interrupted build is always inspectable, never silent
       corrupt state.
-    COMPLETE: every expected instrument had legal 1m/5m/15m/1h context at
+    COMPLETE: every expected instrument had legal 5m/15m/1h context at
       finalization.
     PARTIAL: finalized truthfully with fewer available instruments than
       expected — a valid, usable fact, never faked into COMPLETE.
@@ -57,10 +58,16 @@ class FrameCandleContext:
 class MarketFrameMember:
     """One instrument's synchronized, legal context within a frame.
 
-    Present only for instruments where ALL FOUR of the *membership-gating*
-    timeframes (1m/5m/15m/1h) had a legal (close_time <= frame_time) candle
-    at finalization — an instrument missing even one of those simply has no
+    Present only for instruments where ALL THREE of the *membership-gating*
+    timeframes (5m/15m/1h) had a legal (closed by frame_time) candle at
+    finalization — an instrument missing even one of those simply has no
     member (see `MarketFrame.available_instruments`).
+
+    `m5` is the base-timeframe anchor: its `close` is "the price knowable
+    at frame_time" every price-based feature treats as current. It is the
+    latest legal 5m candle, which is normally the one closing exactly at
+    frame_time but can be older for an instrument with a recent gap —
+    features measure from wherever it actually is, never assuming.
 
     `h4`/`h24` are additional, non-gating context: the latest fully-closed
     4h/24h candle at frame_time, when one exists. Each is `None` — never
@@ -78,7 +85,6 @@ class MarketFrameMember:
 
     instrument_id: int
     symbol: str
-    m1: FrameCandleContext
     m5: FrameCandleContext
     m15: FrameCandleContext
     h1: FrameCandleContext

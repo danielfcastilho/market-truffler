@@ -1,19 +1,21 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+import pytest
+
 from app.domain.frame import FrameCandleContext, FrameStatus, MarketFrame, MarketFrameMember
 from app.features.return_feature import ReturnFeature
 from app.models.instrument import Instrument
 from app.repositories.candle_repository import CandleRepository
 
 FRAME_TIME = datetime(2026, 1, 1, 14, 0, tzinfo=UTC)
-CURRENT_OPEN = FRAME_TIME - timedelta(minutes=1)
+CURRENT_OPEN = FRAME_TIME - timedelta(minutes=5)
 
 
 def _ctx(open_time: datetime, close: str) -> FrameCandleContext:
     return FrameCandleContext(
         open_time=open_time,
-        close_time=open_time + timedelta(minutes=1) - timedelta(microseconds=1),
+        close_time=open_time + timedelta(minutes=5) - timedelta(microseconds=1),
         open=Decimal(close),
         high=Decimal(close),
         low=Decimal(close),
@@ -26,7 +28,7 @@ def _ctx(open_time: datetime, close: str) -> FrameCandleContext:
 def _member(instrument_id: int, symbol: str, current_close: str) -> MarketFrameMember:
     ctx = _ctx(CURRENT_OPEN, current_close)
     return MarketFrameMember(
-        instrument_id=instrument_id, symbol=symbol, m1=ctx, m5=ctx, m15=ctx, h1=ctx
+        instrument_id=instrument_id, symbol=symbol, m5=ctx, m15=ctx, h1=ctx
     )
 
 
@@ -59,15 +61,15 @@ async def _seed_instrument(db_session, symbol: str = "BTCUSDT") -> int:
     return row.id
 
 
-async def _seed_1m_candle(db_session, instrument_id: int, open_time: datetime, close: str) -> None:
+async def _seed_5m_candle(db_session, instrument_id: int, open_time: datetime, close: str) -> None:
     repo = CandleRepository(db_session)
     await repo.upsert_many(
         [
             {
                 "instrument_id": instrument_id,
-                "timeframe": "1m",
+                "timeframe": "5m",
                 "open_time": open_time,
-                "close_time": open_time + timedelta(minutes=1) - timedelta(microseconds=1),
+                "close_time": open_time + timedelta(minutes=5) - timedelta(microseconds=1),
                 "open": Decimal(close),
                 "high": Decimal(close),
                 "low": Decimal(close),
@@ -92,12 +94,33 @@ def test_name_and_required_history_are_derived_from_the_timeframe_label():
     assert feature.required_history == timedelta(hours=24)
 
 
+@pytest.mark.parametrize("lookback", [timedelta(minutes=1), timedelta(minutes=7), timedelta(0)])
+def test_lookback_must_be_a_whole_number_of_5m_candles(lookback):
+    """A lookback with no 5m candle exactly that far back can't be
+    measured exactly — rejected at construction, never rounded."""
+    with pytest.raises(ValueError, match="5m"):
+        _feature("x", lookback)
+
+
+async def test_return_spans_elapsed_time_not_candle_count(db_session):
+    """return_1h compares against the 5m candle exactly 60 minutes back
+    (12 candles), never the 60th previous candle (300 minutes back)."""
+    iid = await _seed_instrument(db_session)
+    await _seed_5m_candle(db_session, iid, CURRENT_OPEN - timedelta(minutes=60), "100")
+    await _seed_5m_candle(db_session, iid, CURRENT_OPEN - timedelta(minutes=300), "50")
+    frame = _frame([_member(iid, "BTCUSDT", "110")])
+
+    result = await _feature("1h", timedelta(hours=1)).calculate(frame, CandleRepository(db_session))
+
+    assert result[iid] == Decimal("0.1")
+
+
 # -- formula, parametrized over the new timeframes ---------------------------------
 
 
 async def test_formula_100_to_101_is_plus_one_percent_at_15m(db_session):
     iid = await _seed_instrument(db_session)
-    await _seed_1m_candle(db_session, iid, CURRENT_OPEN - timedelta(minutes=15), "100")
+    await _seed_5m_candle(db_session, iid, CURRENT_OPEN - timedelta(minutes=15), "100")
     frame = _frame([_member(iid, "BTCUSDT", "101")])
 
     result = await _feature("15m", timedelta(minutes=15)).calculate(
@@ -109,7 +132,7 @@ async def test_formula_100_to_101_is_plus_one_percent_at_15m(db_session):
 
 async def test_formula_at_4h(db_session):
     iid = await _seed_instrument(db_session)
-    await _seed_1m_candle(db_session, iid, CURRENT_OPEN - timedelta(hours=4), "200")
+    await _seed_5m_candle(db_session, iid, CURRENT_OPEN - timedelta(hours=4), "200")
     frame = _frame([_member(iid, "BTCUSDT", "180")])
 
     result = await _feature("4h", timedelta(hours=4)).calculate(
@@ -122,7 +145,7 @@ async def test_formula_at_4h(db_session):
 
 async def test_formula_at_24h(db_session):
     iid = await _seed_instrument(db_session)
-    await _seed_1m_candle(db_session, iid, CURRENT_OPEN - timedelta(hours=24), "50")
+    await _seed_5m_candle(db_session, iid, CURRENT_OPEN - timedelta(hours=24), "50")
     frame = _frame([_member(iid, "BTCUSDT", "55")])
 
     result = await _feature("24h", timedelta(hours=24)).calculate(
@@ -135,7 +158,7 @@ async def test_formula_at_24h(db_session):
 async def test_missing_exact_historical_candle_is_none_never_approximated(db_session):
     iid = await _seed_instrument(db_session)
     # A candle exists, but not at exactly T-24h.
-    await _seed_1m_candle(db_session, iid, CURRENT_OPEN - timedelta(hours=23, minutes=59), "50")
+    await _seed_5m_candle(db_session, iid, CURRENT_OPEN - timedelta(hours=23, minutes=59), "50")
     frame = _frame([_member(iid, "BTCUSDT", "55")])
 
     result = await _feature("24h", timedelta(hours=24)).calculate(
@@ -151,7 +174,7 @@ async def test_non_positive_historical_close_is_none():
     iid = 1
     ctx_now = _ctx(CURRENT_OPEN, "100")
     member = MarketFrameMember(
-        instrument_id=iid, symbol="BTCUSDT", m1=ctx_now, m5=ctx_now, m15=ctx_now, h1=ctx_now
+        instrument_id=iid, symbol="BTCUSDT", m5=ctx_now, m15=ctx_now, h1=ctx_now
     )
     frame = _frame([member])
 
@@ -176,14 +199,14 @@ async def test_no_members_returns_empty_dict(db_session):
 
 
 async def test_shared_anchor_across_members_batches_into_one_query(db_session):
-    """Every member sharing the same m1.open_time (the common case) must
+    """Every member sharing the same m5.open_time (the common case) must
     collapse to a single batched historical lookup, never one per
     instrument — mirrors return_5m/return_1h's own batching guarantee."""
     from unittest.mock import AsyncMock
 
     ids = [await _seed_instrument(db_session, f"SYM{i}USDT") for i in range(5)]
     for iid in ids:
-        await _seed_1m_candle(db_session, iid, CURRENT_OPEN - timedelta(hours=24), "100")
+        await _seed_5m_candle(db_session, iid, CURRENT_OPEN - timedelta(hours=24), "100")
     frame = _frame([_member(iid, f"SYM{i}USDT", "110") for i, iid in enumerate(ids)])
 
     candle_repo = CandleRepository(db_session)

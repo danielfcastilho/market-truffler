@@ -125,11 +125,94 @@ app/routers/market.py (`GET /api/market/status`)   Presentation boundary
                                    caller see a 500.
 ```
 
+### Canonical base timeframe: 5m
+
+**5m is the single canonical base candle timeframe. 1m is unsupported** —
+it is never requested from Bybit, never stored by new code, and nothing
+reads it. Every timeframe and duration lives in one place,
+`app/domain/timeframes.py` (`BASE_TIMEFRAME`, `BASE_DURATION`,
+`BYBIT_BASE_INTERVAL`, `TIMEFRAMES`, and the epoch-aligned
+`floor_to_boundary`/`is_aligned`/`is_base_multiple` helpers); nothing else
+hardcodes 300 seconds.
+
+| Timeframe | Source | Built from |
+|---|---|---|
+| 5m | Bybit — WS `kline.5.{symbol}` live, REST `/v5/market/kline?interval=5` history | — |
+| 15m / 1h / 4h / 24h | Derived locally | 3 / 12 / 48 / 288 stored 5m candles |
+
+**Candle timestamp semantics.** A candle is identified by its `open_time`
+and covers `[open_time, open_time + duration)`. It becomes knowable
+("closed") at instant `open_time + duration`; `close_time` is stored just
+before that (1ms before for Bybit candles, 1µs for derived ones). So the
+5m candle opened at 10:00 UTC is usable by a decision at 10:05 or later,
+never by one before 10:05. Every boundary is UTC-epoch-aligned.
+
+**Never an unfinished candle.** Live: only `confirm=true` WebSocket pushes
+are ingested. REST: Bybit returns every candle *overlapping* the requested
+`[start, end]` (verified live), including the one still forming, so the
+reconciler requests `end = boundary - 1ms`, keeps catch-up chunks on 5m
+boundaries, and additionally drops any row whose `open_time + 5m` is still
+in the future before ingesting.
+
+**Decision cadence.** Market Frames — and therefore Sniffs — are produced
+once per closed UTC **5-minute** boundary, the only instants at which a
+base candle has just closed (see "MARKET synchronizes" below). At
+`frame_time = T`, `member.m5` is the candle `[T-5m, T)`, and its close is
+"the price knowable at T".
+
+**Feature availability.** Every feature keeps its meaning, because every
+lookback is defined in *elapsed time*:
+
+- `return_{5m,15m,1h,4h,24h}`: `m5.close` vs. the 5m candle exactly
+  `lookback` earlier (`m5.open_time - lookback`), so `return_1h` is still
+  60 minutes (12 candles back), never 60 candles. Lookbacks must be whole
+  multiples of 5m (enforced when the feature is constructed).
+- `rsi_14_*`, `volatility_*`, `relative_volume_*`: defined in *candle
+  count* (15 consecutive candles) on their own timeframe's candles, which
+  were already 5m/15m/1h/4h/24h — unchanged. `rsi_14_5m` now reads native
+  Bybit 5m candles instead of 1m-derived ones.
+- `oi_change_*`, `funding_rate_*`: read their own observation tables
+  against `frame_time` — unchanged (Open Interest was always 5-minute
+  buckets).
+
+**Database migration (`a9c4e2f7b3d1`, applied automatically, non-destructive).**
+`market_frame_members.open_time_1m` becomes nullable and is no longer
+mapped. Every instrument's `history_synced_from` is reset to its
+(5m-floored) `history_synced_through`, so the history reconciler re-walks
+the whole retention window at 5m from Bybit: the 5m rows already stored
+were derived from 1m, and the app must not depend on 1m-derived data.
+Re-fetched candles are idempotent upserts, so there is no gap while that
+runs; "Historical coverage" and symbol readiness on Vitals dip and recover
+over a few minutes. Legacy frames persisted at non-5m minutes stay in
+`market_frames` but are never replayed or sampled.
+
+Existing `timeframe = '1m'` candle rows are left in place, unread, and age
+out with normal monthly partition retention (the retention guard no longer
+counts `open_time_1m` references). **Optional manual cleanup** — not run
+automatically because it deletes data; run only once you no longer want
+the legacy rows (e.g. to shrink the partitions sooner, which also speeds up
+the frame read below):
+
+```sql
+-- inside: docker compose exec postgres psql -U truffler -d market_truffler
+DELETE FROM market_candles WHERE timeframe = '1m';   -- tens of millions of rows; slow
+VACUUM (ANALYZE) market_candles;
+ALTER TABLE market_frame_members DROP COLUMN open_time_1m;
+```
+
+**Frame read performance.** `FrameRepository.get_frame` (used by Sniffer
+and by research replay) measured ~19s per frame against this project's
+local data (~61M 1m + ~12M 5m candle rows) with its 1m join; after removing
+that join it measured ~3.7s. The remainder is pre-existing: the planner
+hash-joins one timeframe's unbounded subquery via a sequential scan of
+every candle partition — still physically including the retired 1m rows
+until they age out or are deleted. Not addressed in this migration.
+
 ### Live MARKET watching: the WebSocket collector
 
 Beyond REST discovery, MARKET now continuously watches the discovered
 universe over Bybit's public WebSocket and turns confirmed klines into
-canonical closed 1-minute candles:
+canonical closed 5-minute candles:
 
 ```
 app/integrations/bybit/ws_client.py   BybitKlineWebSocketClient: one WS
@@ -187,7 +270,7 @@ or an intentional correction if the exchange-backed values differ.
 
 `ClosedCandle`s are now durably persisted, backfilled up to a rolling
 horizon, self-repairing after gaps or outages, and locally aggregated into
-5m/15m/1h/4h — all as a continuously-running background capability, never
+15m/1h/4h/24h — all as a continuously-running background capability, never
 triggered by a request. The horizon itself is one setting,
 `Settings.market_history_retention_days` — this milestone's original
 design target and the value used throughout the rest of this section's
@@ -203,7 +286,7 @@ app/models/instrument.py, app/models/candle.py
    model's docstring for exact semantics).
    Candle: composite PK (instrument_id, timeframe, open_time), a native
    PostgreSQL table partitioned by RANGE(open_time) in monthly partitions
-   — the same table and partitioning serve all six timeframes.
+   — the same table and partitioning serve every timeframe.
         │
         ▼
 app/services/partition_manager.py
@@ -234,15 +317,15 @@ app/services/history_reconciler.py (HistoryReconciler)
         │
         ▼
 app/services/candle_ingestion.py, app/services/candle_aggregation.py
-   The shared canonical-1m boundary both the live sink and the reconciler
-   funnel through: upsert the 1m batch, then re-derive any 5m/15m/1h/4h
-   window the batch touches — but only ones where every constituent 1m
+   The shared canonical-5m boundary both the live sink and the reconciler
+   funnel through: upsert the 5m batch, then re-derive any 15m/1h/4h/24h
+   window the batch touches — but only ones where every constituent 5m
    candle actually exists in storage. An incomplete window is silently
    left alone and completes itself whenever this is next called over a
-   range that includes it (a later recovery, or a correction). 4h is
-   derived the same one-level-from-1m way as every other timeframe here
-   (240 constituent 1m candles, not chained through 1h) — no special-casing
-   per timeframe beyond one more entry in `_DERIVED_TIMEFRAMES`.
+   range that includes it (a later recovery, or a correction). Every
+   derived timeframe is built one level from 5m (e.g. 48 constituent 5m
+   candles for 4h, not chained through 1h) — no special-casing per
+   timeframe beyond `app.domain.timeframes.TIMEFRAMES`.
 ```
 
 "Historical coverage" (`app/services/historical_coverage.py`) is a pure,
@@ -334,7 +417,7 @@ Funding-Rate-based, and ATR-based features alike (today, `volatility_24h`'s
 15-candle/24h window — 15 days — is the longest, well past
 `rsi_14_4h`'s/`relative_volume_4h`'s shared 60h and `funding_rate_24h_avg`'s
 24h). Each `Feature` declares its own `required_history: timedelta`
-(`Return5m`/`Return1h`/`ReturnFeature` — their lookback constant;
+(`ReturnFeature` — its lookback;
 `RsiFeature`/`VolatilityFeature`/`RelativeVolumeFeature` — 15 × their
 timeframe's duration; `OpenInterestChangeFeature` — its lookback
 constant; `FundingRateCurrentFeature`/`FundingRate24hAvgFeature` — 24h);
@@ -371,7 +454,7 @@ short rolling window (`REQUIRED_WARMUP`-scale — currently 60h — not the
 app.integrations.bybit.client.BybitClient.get_open_interest
    GET /v5/market/open-interest, always at intervalTime=5min (the finest
    granularity Bybit offers) — MARKET's one canonical OI series, the OI
-   equivalent of 1m candles. Bybit's public WebSocket does carry a live
+   equivalent of the 5m base candles. Bybit's public WebSocket does carry a live
    openInterest field on its `tickers` topic, but since the REST history
    endpoint already buckets at a fixed 5 minutes, polling it every 5
    minutes is exactly as fresh as that native granularity allows — a
@@ -477,7 +560,8 @@ its candle/OI backfill.
 ### MARKET synchronizes: Market Frames
 
 A candle answers "what happened?" A **Market Frame** answers "what was
-knowable about the whole market at time T?" Every closed UTC minute, a
+knowable about the whole market at time T?" Every closed UTC 5-minute
+boundary, a
 third background capability turns `market_candles` (many independent
 per-instrument, per-timeframe time series) into one synchronized
 cross-sectional snapshot future Sniffer can consume without re-deriving
@@ -485,12 +569,17 @@ temporal alignment itself:
 
 ```
 app/services/frame_synchronizer.py (FrameSynchronizer)
-   Wakes exactly on UTC minute boundaries. At frame_time = M: snapshots the
+   Wakes exactly on UTC 5-minute boundaries. At frame_time = T: snapshots the
    *active* universe right then (fixing expected_instruments immutably —
    a later universe change never rewrites an already-finalized frame's
    expectations), persists a BUILDING row immediately (crash-safe), waits
-   a short configurable grace period for normal WebSocket delivery jitter
-   to settle, then finalizes — never on the first symbol to arrive.
+   a configurable grace period (default 15s — persisting the whole
+   just-closed 5m candle burst measured 8-11s after the boundary) so each
+   instrument's newest candle is stored in time, then finalizes — never on
+   the first symbol to arrive. It always builds exactly the boundary it
+   slept toward, never one re-derived from the clock after waking (an
+   asyncio timer firing a hair early used to floor the frame back to the
+   previous boundary).
         │
         ▼
 app/repositories/candle_repository.py
@@ -499,7 +588,7 @@ app/repositories/candle_repository.py
    instrument_id ORDER BY open_time DESC) window function — works
    identically on SQLite in tests and PostgreSQL in production) resolves
    the whole active universe's latest *legal* candle for one timeframe.
-   Called once per configured timeframe (six total: 1m/5m/15m/1h/4h/24h) —
+   Called once per configured timeframe (five total: 5m/15m/1h/4h/24h) —
    never once per instrument. `max_open_time` is `frame_time - duration`,
    which is exactly equivalent to "close_time <= frame_time" given how M3
    already defines close_time, without needing an index on close_time at
@@ -507,8 +596,8 @@ app/repositories/candle_repository.py
         │
         ▼
 app/repositories/frame_repository.py (FrameRepository)
-   An instrument is a frame "member" only if all four *gating* timeframes
-   (1m/5m/15m/1h) resolved — missing even one means no member row, never a
+   An instrument is a frame "member" only if all three *gating* timeframes
+   (5m/15m/1h) resolved — missing even one means no member row, never a
    fabricated placeholder. 4h and 24h are resolved the same no-look-ahead
    way but do not gate membership (see "4h/24h: two non-gating timeframes"
    below). Batch-inserts members and flips BUILDING ->
@@ -519,9 +608,10 @@ app/repositories/frame_repository.py (FrameRepository)
    actually had available at T.
 ```
 
-**Frame time.** `frame_time = M` means "the decision point immediately
-after the M-1..M minute closed." A frame may only reference candles with
-`close_time <= frame_time` — e.g. at `frame_time=14:37`, the legal 1h
+**Frame time.** `frame_time = T` (always a 5-minute boundary) means "the
+decision point immediately after the 5m candle `[T-5m, T)` closed." A
+frame may only reference candles that have closed by `frame_time` — e.g.
+at `frame_time=14:35`, `m5` is `14:30-14:34`, and the legal 1h
 candle is `13:00-13:59` (`14:00-14:59` is still forming, so it can never be
 selected); the legal 4h candle is `08:00-11:59` (`12:00-15:59` is still
 forming); the legal 24h candle (on that same day) is the *previous* day's
@@ -531,16 +621,17 @@ dedicated tests in `tests/test_frame_4h.py`/`tests/test_frame_24h.py` for
 the 4h/24h cases specifically.
 
 **Schema.** `market_frames` (frame_time as PK — no surrogate id; small,
-~525,600 rows/year, not partitioned) and `market_frame_members`
+~105,000 rows/year at one per 5 minutes, not partitioned) and `market_frame_members`
 (`(frame_time, instrument_id)` composite PK, partitioned by
 `RANGE(frame_time)` exactly like `market_candles` — same
 `app.services.partition_manager`, generalized to take a `table` parameter
-rather than duplicated). A member stores six `open_time` datetimes (the
+rather than duplicated). A member stores five `open_time` datetimes (the
 identifying half of `market_candles`' own `(instrument_id, timeframe,
 open_time)` key, `timeframe` implied by the column) — never duplicated
 OHLCV; `open_time_4h`/`open_time_24h` are nullable (see below), the other
-four are not. The dominant "give me frame T" read joins back to
-`market_candles` six times (one per timeframe, the 4h/24h joins are LEFT
+three are not (plus the legacy, unmapped `open_time_1m` — see "Canonical
+base timeframe" above). The dominant "give me frame T" read joins back to
+`market_candles` five times (one per timeframe, the 4h/24h joins are LEFT
 JOINs); "give me the latest finalized frame" is the same, keyed off
 `MAX(frame_time) WHERE status != 'building'`.
 
@@ -563,15 +654,15 @@ being present, and are `None` when it isn't.
 finalizing it leaves that one row inspectable, never silently corrupt. On
 the next startup, `FrameSynchronizer` finalizes exactly that one
 interrupted frame (safe at any delay — the temporal bound is on
-`frame_time`, not on when the query runs) and resumes the per-minute loop
-from there; it never fabricates frames for whatever minutes were missed
+`frame_time`, not on when the query runs) and resumes the 5-minute loop
+from there; it never fabricates frames for whatever boundaries were missed
 while the process was down.
 
 Vitals reads two new values — "Latest market frame" and "Frame
 completeness" — purely from `FrameRepository.get_latest_finalized()`;
 opening Vitals never creates, advances, or otherwise drives a frame.
 
-### Sniffer measures: Returns, RSI, Open Interest change, and Volatility
+### Sniffer measures: Returns, RSI, OI change, Volatility, Relative Volume, Funding Rate
 
 Sniffer's capability is deliberately narrow: consume one finalized Market
 Frame, compute factual metrics per instrument member, and persist them.
@@ -620,10 +711,9 @@ app/services/sniffer.py (Sniffer.on_frame_finalized -> analyze_frame)
         ▼
 app/features/engine.py (FeatureEngine.run)
    Orchestration only, no formulas. Iterates the fixed FEATURES tuple —
-   Return5m, Return1h (the original two, kept as their own dedicated,
-   already-tested classes), ReturnFeature("15m"/"4h"/"24h") (a later,
-   generalized "one class, many timeframe instances" class — the same
-   pattern RsiFeature already established), one RsiFeature instance per
+   one ReturnFeature instance per lookback (5m, 15m, 1h, 4h, 24h — the
+   same "one class, many timeframe instances" pattern RsiFeature uses),
+   one RsiFeature instance per
    timeframe (5m, 15m, 1h, 4h), one OpenInterestChangeFeature instance per
    timeframe (5m, 15m, 1h, 4h, 24h), one VolatilityFeature instance per
    timeframe (15m, 1h, 4h, 24h), one RelativeVolumeFeature instance per
@@ -638,12 +728,12 @@ app/features/engine.py (FeatureEngine.run)
    them — see app/features/base.py).
         │
         ▼
-app/features/return_5m.py, return_1h.py, and return_feature.py (all implement Feature)
+app/features/return_feature.py (ReturnFeature, one instance per lookback)
    return_{timeframe} = (current_close / close_{timeframe}_ago) - 1
-   Uses Decimal. "current_close" is the frame member's own selected m1
+   Uses Decimal. "current_close" is the frame member's own selected m5
    candle (never a fresh market_candles query — no look-ahead is even
-   possible by construction). The historical anchor is
-   member.m1.open_time minus the labeled lookback, resolved via one
+   possible by construction). The historical anchor is the 5m candle at
+   member.m5.open_time minus the labeled lookback, resolved via one
    batched exact-open_time lookup (CandleRepository.fetch_exact_open_time)
    per distinct anchor timestamp across the whole frame for each feature —
    one query when members share the same anchor, never an individual
@@ -673,8 +763,8 @@ app/features/funding_rate.py (FundingRateCurrentFeature, FundingRate24hAvgFeatur
    features" below.
 ```
 
-The hourly return uses canonical 1m candles, not the frame's closed hourly
-OHLC reference. All measurements are factual — decimal fractions or a
+The hourly return uses canonical 5m candles exactly 60 minutes apart, not
+the frame's closed hourly OHLC reference. All measurements are factual — decimal fractions or a
 plain 0-100 index, never desirability or trade signals. The API and
 Sniffer's Sniffs view expose all of them; older stored analyses without a
 given metric expose it as null/N/A. There is no historical re-analysis.
@@ -769,9 +859,8 @@ Bybit's own `/v5/market/open-interest` data is bucketed at a fixed
 (5m/15m/1h/4h/24h) is an exact multiple of 5 minutes, so one canonical
 5-minute-bucket series serves all of them via exact-timestamp lookup,
 the same one-canonical-series-derives-every-timeframe shape
-`market_candles`' 1m→5m/15m/1h/4h derivation uses, just without needing
-any local aggregation step (Bybit already provides the finest granularity
-this app needs, unlike candles' 1m).
+`market_candles`' 5m→15m/1h/4h/24h derivation uses, just without needing
+any local aggregation step.
 
 **Volatility features (`volatility_15m`/`1h`/`4h`/`24h`).** Normalized
 ATR(14) — descriptive only, no scoring/desirability judgment:
@@ -1186,10 +1275,105 @@ was removed once "a Truffle is a classification of a Score, not another
 metric" was settled — see "Symbol detail" above for the current
 badge-beside-Score representation.
 
+### OINK CORP: historical Sniff replay and research datasets
+
+The first real OINK CORP capability: answering "given everything Sniffer
+could have known about instrument X at historical time T, what happened to
+it afterward?" — the precondition for ever discovering a real Scent, not a
+Scent itself. Lives in `apps/api/app/research/` (tested/typed alongside the
+rest of the backend, imported by nothing production — never the reverse)
+and `app/scripts/generate_research_dataset.py`, a batch/offline CLI in the
+same `python -m app.scripts.X` family as `backfill_derived_timeframes.py`.
+
+```
+app.research.replay.replay_frame(session, frame_time)
+   FrameRepository.get_frame(frame_time) + FeatureEngine.run(...) — the
+   exact same two calls Sniffer.analyze_frame makes for "now", just for a
+   frame_time in the past. This is what makes production-vs-research Sniff
+   parity structural rather than maintained: see test_replay.py's parity
+   test. Answers "what would TODAY's FeatureEngine measure at T" — not "what
+   did the historical software version compute at T" (feature definitions
+   evolve; there is no historical code-version execution). Mirrors
+   Sniffer's own BUILDING-skip rule. Only 5-minute-boundary frame_times
+   are accepted (ValueError otherwise).
+        │
+        ▼
+app.research.forward_returns.compute_forward_returns / compute_forward_relative_returns
+   The ONLY place in the codebase allowed to read data after frame_time —
+   never a Feature, never in FEATURES, never persisted to sniffer_results.
+   forward_return_H = P(T+H) / P(T) - 1, where P(X) is the close of the 5m
+   candle closing exactly at X: P(T) is member.m5.close, and only when
+   member.m5 is the candle opened at T-5m (a stale anchor after a gap
+   yields null for every horizon rather than silently stretching the
+   label); P(T+H) is the 5m candle opened at T+H-5m — not the one opened
+   at T+H, which closes 5 minutes too late. Example: T=10:05, H=15m uses
+   the 10:00 candle's close and the 10:15 candle's close (at 10:20). H must
+   be a positive multiple of 5m; anything else is rejected, never rounded.
+   forward_relative_return_H subtracts the cross-sectional median
+   forward_return_H (across that same frame's own members with a real
+   label — never today's active universe, never a mean, which crypto's
+   extreme single-instrument tail moves would dominate with no market-cap/
+   liquidity weighting data available to justify weighting one way or another).
+        │
+        ▼
+app.research.dataset.generate_dataset
+   Samples a wall-clock-aligned grid of frame_times (anchored to absolute
+   epoch-minute divisibility, never to the requested start — so widening a
+   range never shifts which boundaries get sampled). The interval must be a
+   positive multiple of 5 minutes, so every grid point is a 5m boundary.
+   Skips and counts any grid point with no real market_frames row (never
+   substitutes a neighbor), replays + labels each one, and writes Parquet +
+   manifest.json to a sibling temp directory before an atomic rename into
+   place — a failed run never leaves a directory that looks like a
+   finished dataset.
+```
+
+**Retention is the real ceiling here, deliberately not solved by this
+capability.** Full 23-Sniff replay parity is bounded by whichever
+production retention window is tightest — currently Open Interest/Funding
+Rate's 16 days (`REQUIRED_WARMUP + 1 day`, no partition-protection, a plain
+`DELETE`), with pure candle-based Sniffs reaching further (~30-61 days,
+monthly-partition-rounded). No second historical database, no archival
+infrastructure, and no production retention change were added to work
+around this — the manifest instead makes the ceiling visible:
+`frame_times_candidate` vs. `frame_times_processed`/`_missing`, and a
+per-column non-null coverage fraction across the whole dataset, so a
+successful run can never be mistaken for "OINK CORP now has unlimited
+historical raw-data replay." Extending durable research history is
+explicitly future-milestone work.
+
+**Dataset compatibility.** Datasets carry `dataset_schema_version` (now
+`2`), `base_timeframe` (`"5m"`) and the exact `label_definition`, both in
+`manifest.json` and in the Parquet file's own schema metadata.
+`app.research.dataset.read_dataset` refuses anything else with
+`IncompatibleDatasetError`. Datasets generated before the 5m migration
+(version 1: sampled at any minute, 1m-based labels) carry no version and
+are refused — regenerate them rather than mixing them with v2 data. Bump
+the version whenever a feature or label definition changes meaning.
+
+Generate a dataset: `docker compose exec api python -m app.scripts.
+generate_research_dataset --start 2026-09-01T00:00:00Z --end
+2026-09-27T00:00:00Z --sample-interval-minutes 15 --horizons 15m,1h,4h,24h
+--output research_v1` — writes to `Settings.research_data_dir`, bind-mounted
+to `research/oink_corp/data/` on the host (gitignored; regenerable, never
+committed). No resumability/checkpointing by design: generation is a pure,
+cheap, fully regenerable read pipeline bounded by a short retention window,
+so "re-run the whole command" is simpler and more honest than partial-state
+recovery machinery.
+
+Still explicitly not this milestone: Scents, 0-1 desirability
+transformations, Score, Rank, Qualification, Truffles, Warhog, backtesting,
+Martin Gale simulation, ML, optimization, a promotion registry, a research
+web UI, or new production API endpoints — this is an offline batch tool
+only. Sniffs stay in their native factual units throughout (fractions,
+0-100, ratios) — no 0-1 transform exists yet.
+
 ### OINK CORP and the Scent Model
 
-OINK CORP and Sniffer are deliberately decoupled by a versioned contract,
-not a live dependency:
+The replay/dataset capability above is real; everything below this line is
+still the illustrative future contract for how a research finding
+eventually becomes a Scent — none of it exists yet. OINK CORP and Sniffer
+are deliberately decoupled by a versioned contract, not a live dependency:
 
 ```
 notebooks / experiments
@@ -1331,26 +1515,33 @@ never silently drift from what Sniffer actually executes.
   see "MARKET watches Open Interest" above), `FundingRateReconciler`
   (`app/services/funding_rate_reconciler.py`, funding bootstrap + poll —
   see "MARKET watches Funding Rate" above), `FrameSynchronizer`
-  (`app/services/frame_synchronizer.py`, per-minute cross-sectional
+  (`app/services/frame_synchronizer.py`, 5-minute cross-sectional
   synchronization), and `Sniffer` (`app/services/sniffer.py`, reactive
   per-frame feature analysis) — all six run for the life of the process.
 - **`postgres`**: `users`, `instruments` (the instrument dimension, now
   also carrying `oi_synced_from`/`funding_synced_from`), `market_candles`
   (a native `RANGE`-partitioned table on `open_time`, monthly partitions,
-  holding all six timeframes: 1m/5m/15m/1h/4h/24h),
+  holding 5m/15m/1h/4h/24h — plus legacy 1m rows awaiting retention, never
+  read),
   `open_interest_observations` (composite PK `(instrument_id,
   observed_at)`, deliberately *not* partitioned — see
   `OpenInterestObservation`'s model docstring for why its much smaller
   data volume doesn't need it), `funding_rate_observations` (composite PK
   `(instrument_id, funding_time)`, same not-partitioned reasoning),
-  `market_frames` (one row per synchronized minute), `market_frame_members`
+  `market_frames` (one row per synchronized 5-minute boundary), `market_frame_members`
   (`RANGE`-partitioned on `frame_time`, same monthly scheme), and
   `sniffer_results` (`RANGE`-partitioned on `frame_time`, same monthly
   scheme, one row per `(frame_time, instrument_id, metric)`). No ranking
   or trade-related schema exists — those get designed when their
   requirements are known, not speculatively now.
-- **`research/oink_corp`, `packages/shared`, `infra`**: boundaries reserved
-  for future work (see each directory's own README). Deliberately empty.
+- **`research/oink_corp`**: no longer empty — `apps/api/app/research/` +
+  `app/scripts/generate_research_dataset.py` implement historical Sniff
+  replay and forward-outcome research dataset generation (see "OINK CORP:
+  historical Sniff replay and research datasets" above); this directory
+  itself holds only its README and the gitignored `data/` output the `api`
+  service bind-mounts to. `packages/shared`, `infra`: still boundaries
+  reserved for future work (see each directory's own README), deliberately
+  empty.
 - **Vitals** (`apps/web/src/app/(protected)/vitals/page.tsx`): reads
   `/health`, `/ready`, `/api/system`, `/api/market/status`, and
   `/api/sniffer/status`. Status/health logic is a pure module

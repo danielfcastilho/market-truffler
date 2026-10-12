@@ -42,7 +42,7 @@ function unavailableRow(label: string): VitalRow {
  * synchronizer's most recently finalized Market Frame (see
  * `app.services.frame_synchronizer` in the backend — a frame is a
  * synchronized, temporally-legal cross-section of the whole market,
- * produced once per closed UTC minute). All of it runs continuously in the
+ * produced once per closed UTC 5-minute boundary). All of it runs continuously in the
  * background; this page only observes it, never drives it — reading Vitals
  * never creates a frame. In SNIFFER, "Status"/"Last scan"/"Coins analyzed"
  * are likewise real, reflecting Sniffer's own persisted analysis of the

@@ -31,6 +31,13 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.market import ClosedCandle
+from app.domain.timeframes import (
+    BASE_DURATION,
+    BASE_TIMEFRAME,
+    BYBIT_BASE_INTERVAL,
+    floor_to_boundary,
+)
 from app.integrations.bybit.client import BybitApiError, BybitClient
 from app.integrations.bybit.schemas import parse_kline_history_row
 from app.models.instrument import Instrument
@@ -45,7 +52,7 @@ logger = logging.getLogger(__name__)
 
 _CATEGORY = "linear"
 
-# Every RANGE-partitioned, per-minute table MARKET/Sniffer own, sharing the
+# Every RANGE-partitioned, time-series table MARKET/Sniffer own, sharing the
 # same rolling retention horizon and monthly partition scheme. Partitioned
 # by open_time; the frame/Sniffer tables are partitioned by frame_time, but
 # `partition_manager` only needs the column name for documentation — the
@@ -58,6 +65,17 @@ _PARTITIONED_TABLES: tuple[tuple[str, str], ...] = (
 
 SessionFactory = Callable[[], AsyncSession]
 NewSymbolsHook = Callable[[list[str]], "Awaitable[None]"]
+
+
+def _closed_candles(symbol: str, rows: list[list[str]], now: datetime) -> list[ClosedCandle]:
+    """Convert one REST kline page, keeping only candles that have actually
+    closed by `now`. Bybit returns every candle overlapping the requested
+    range, including the one still forming — whose OHLCV isn't final and
+    must never be persisted as if it were (it would then be served to
+    frames/features as a closed candle). Request bounds already keep this
+    from happening in the normal case; this is the guarantee."""
+    candles = [to_closed_candle(symbol, parse_kline_history_row(row)) for row in rows]
+    return [c for c in candles if c.open_time + BASE_DURATION <= now]
 
 
 @dataclass
@@ -275,7 +293,7 @@ class HistoryReconciler:
             raw = await self._bybit_client.get_kline(
                 category=_CATEGORY,
                 symbol=instrument.symbol,
-                interval="1",
+                interval=BYBIT_BASE_INTERVAL,
                 start=start_ms,
                 end=end_ms,
                 limit=self._page_size,
@@ -298,11 +316,10 @@ class HistoryReconciler:
             logger.info("history_bootstrap_reached_floor", extra={"symbol": instrument.symbol})
             return
 
-        parsed = [parse_kline_history_row(row) for row in rows]
-        candles = [to_closed_candle(instrument.symbol, kline) for kline in parsed]
-        await candle_ingestion.ingest_1m_candles(instrument.id, candles)
+        oldest_ms = min(int(row[0]) for row in rows)
+        candles = _closed_candles(instrument.symbol, rows, datetime.now(UTC))
+        await candle_ingestion.ingest_base_candles(instrument.id, candles)
 
-        oldest_ms = min(kline.start for kline in parsed)
         instrument.history_synced_from = datetime.fromtimestamp(oldest_ms / 1000, tz=UTC)
         await session.commit()
 
@@ -318,7 +335,7 @@ class HistoryReconciler:
         if instrument.history_synced_through is None:
             return
 
-        # Resolved once, up front: `candle_ingestion.ingest_1m_candles`
+        # Resolved once, up front: `candle_ingestion.ingest_base_candles`
         # (called below, possibly twice) upserts via Core and then calls
         # `session.expire_all()` (see `CandleRepository.upsert_many`), so
         # `instrument`'s attributes become lazy-load-on-access afterwards
@@ -332,16 +349,20 @@ class HistoryReconciler:
         symbol = instrument.symbol
 
         now = datetime.now(UTC)
-        target_end = now - self._catchup_buffer
+        # Chunks always start and end on base-candle boundaries, so "is this
+        # chunk complete" is an exact candle count and a chunk's end never
+        # falls inside a candle that may still be forming.
+        target_end = floor_to_boundary(now - self._catchup_buffer, BASE_DURATION)
         # Skip expired work after a long outage without rewriting the historical
         # backward frontier. Coverage already intersects it with this window.
-        catchup_start = max(
-            instrument.history_synced_through, now - timedelta(days=self._retention_days)
+        catchup_start = floor_to_boundary(
+            max(instrument.history_synced_through, now - timedelta(days=self._retention_days)),
+            BASE_DURATION,
         )
         if instrument.history_synced_through >= target_end:
             return
 
-        max_chunk = catchup_start + timedelta(minutes=self._page_size)
+        max_chunk = catchup_start + BASE_DURATION * self._page_size
         chunk_end = min(target_end, max_chunk)
         if chunk_end <= catchup_start:
             return
@@ -361,18 +382,18 @@ class HistoryReconciler:
             return  # request itself failed; retry this exact chunk next round
 
         # A gap this close to "now" can be the exchange's REST kline
-        # endpoint simply not having indexed the very latest minute(s) yet
+        # endpoint simply not having indexed the very latest candle(s) yet
         # — it can lag a little behind what the WebSocket already
         # delivered live, independent of `catchup_buffer_minutes`. Give it
         # exactly one bounded retry before accepting whatever's left as a
-        # genuine, permanent gap (no trade recorded that minute) — never
+        # genuine, permanent gap (no trade recorded in that candle) — never
         # more than one retry, so a truly-absent candle can't stall this
         # instrument's catch-up forever. Without this, a single
         # transiently-incomplete REST response used to get the watermark
         # advanced past the gap anyway, permanently sealing in a hole that
         # was actually recoverable (this is what caused every instrument
-        # to simultaneously lose one live minute and never recover it,
-        # breaking every RSI window that minute fell inside).
+        # to simultaneously lose one live candle and never recover it,
+        # breaking every RSI window that candle fell inside).
         if not await self._chunk_complete(candle_repo, instrument_id, catchup_start, chunk_end):
             await asyncio.sleep(self._gap_retry_delay)
             await self._fetch_and_ingest_page(
@@ -389,14 +410,14 @@ class HistoryReconciler:
         start: datetime,
         end: datetime,
     ) -> bool:
-        """Whether every expected 1m minute in the half-open `[start, end)`
-        window is already present — a plain count comparison is exact
-        here since `(instrument_id, timeframe, open_time)` is the
-        candle's primary key, so `fetch_range` can never return a
-        duplicate open_time to inflate the count."""
-        expected_minutes = int((end - start).total_seconds() // 60)
-        existing = await candle_repo.fetch_range(instrument_id, "1m", start, end)
-        return len(existing) >= expected_minutes
+        """Whether every expected base candle in the half-open, boundary-
+        aligned `[start, end)` window is already present — a plain count
+        comparison is exact here since `(instrument_id, timeframe,
+        open_time)` is the candle's primary key, so `fetch_range` can never
+        return a duplicate open_time to inflate the count."""
+        expected_candles = (end - start) // BASE_DURATION
+        existing = await candle_repo.fetch_range(instrument_id, BASE_TIMEFRAME, start, end)
+        return len(existing) >= expected_candles
 
     async def _fetch_and_ingest_page(
         self,
@@ -409,14 +430,19 @@ class HistoryReconciler:
         """Fetch and ingest one REST page for `[start, end)`. Returns
         whether the request itself succeeded — a successful request that
         came back short of the full expected window is still `True`; it's
-        the caller's job to decide whether a remaining gap is acceptable."""
-        start_ms = int(start.timestamp() * 1000) + 1
-        end_ms = int(end.timestamp() * 1000)
+        the caller's job to decide whether a remaining gap is acceptable.
+
+        Bybit returns every candle *overlapping* `[start_ms, end_ms]`
+        (verified live), so `end_ms` is the last millisecond before `end` —
+        otherwise the candle opening exactly at `end`, which may still be
+        forming, would come back too."""
+        start_ms = int(start.timestamp() * 1000)
+        end_ms = int(end.timestamp() * 1000) - 1
         try:
             raw = await self._bybit_client.get_kline(
                 category=_CATEGORY,
                 symbol=symbol,
-                interval="1",
+                interval=BYBIT_BASE_INTERVAL,
                 start=start_ms,
                 end=end_ms,
                 limit=self._page_size,
@@ -430,6 +456,6 @@ class HistoryReconciler:
 
         rows = raw.get("list", [])
         if rows:
-            candles = [to_closed_candle(symbol, parse_kline_history_row(row)) for row in rows]
-            await candle_ingestion.ingest_1m_candles(instrument_id, candles)
+            candles = _closed_candles(symbol, rows, datetime.now(UTC))
+            await candle_ingestion.ingest_base_candles(instrument_id, candles)
         return True

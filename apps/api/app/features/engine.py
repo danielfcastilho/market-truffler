@@ -12,8 +12,6 @@ from app.domain.sniffer import SnifferFrameResult, SnifferInstrumentResult
 from app.features.funding_rate import FundingRate24hAvgFeature, FundingRateCurrentFeature
 from app.features.open_interest_change import OpenInterestChangeFeature
 from app.features.relative_volume import RelativeVolumeFeature
-from app.features.return_1h import Return1h
-from app.features.return_5m import Return5m
 from app.features.return_feature import ReturnFeature
 from app.features.rsi import RsiFeature
 from app.features.volatility import VolatilityFeature
@@ -22,9 +20,9 @@ from app.repositories.funding_rate_repository import FundingRateRepository
 from app.repositories.open_interest_repository import OpenInterestRepository
 
 FEATURES = (
-    Return5m(),
+    ReturnFeature("5m", timedelta(minutes=5)),
     ReturnFeature("15m", timedelta(minutes=15)),
-    Return1h(),
+    ReturnFeature("1h", timedelta(minutes=60)),
     ReturnFeature("4h", timedelta(minutes=240)),
     ReturnFeature("24h", timedelta(minutes=1440)),
     RsiFeature("5m", timedelta(minutes=5), lambda member: member.m5),

@@ -61,4 +61,4 @@ class PersistingCandleSink:
 
         async with self._session_factory() as session:
             candle_repo = CandleRepository(session)
-            await CandleIngestionService(candle_repo).ingest_1m_candles(instrument_id, [candle])
+            await CandleIngestionService(candle_repo).ingest_base_candles(instrument_id, [candle])

@@ -13,9 +13,9 @@ class SnifferInstrument(BaseModel):
     # this instrument for return_5m and it was genuinely unavailable (e.g.
     # no exact T-5m candle), never a substituted/approximated value.
     return_5m: Decimal | None
-    # Exact canonical 1m anchor at member.m1.open_time - the labeled
-    # lookback. Same fraction convention as return_5m. None for older
-    # analyses that predate a given timeframe, or genuine unavailability.
+    # Exact 5m anchor at member.m5.open_time - the labeled lookback. Same
+    # fraction convention as return_5m. None for older analyses that
+    # predate a given timeframe, or genuine unavailability.
     return_15m: Decimal | None
     return_1h: Decimal | None
     return_4h: Decimal | None

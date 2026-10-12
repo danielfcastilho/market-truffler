@@ -40,19 +40,30 @@ class Settings(BaseSettings):
     market_history_request_delay_seconds: float = 0.2
     # How far behind "now" the live/catch-up frontier is allowed to trail
     # before the reconciler treats it as stale and fetches a REST catch-up
-    # page for it, in minutes. Also used as the safety buffer against the
-    # still-forming current candle.
+    # page for it, in minutes — gives the live WebSocket first chance to
+    # deliver each just-closed 5m candle. Catch-up never reaches past the
+    # last 5m boundary before `now - buffer`, so it never touches a candle
+    # that is still forming.
     market_history_catchup_buffer_minutes: int = 2
     # How often the background reconciler re-discovers the Bybit universe
     # (to pick up new listings/delistings) and rolls candle partitions.
     market_universe_refresh_interval_seconds: float = 900.0
 
-    # How long the frame synchronizer waits after each UTC minute boundary
-    # before finalizing that minute's Market Frame, to let normal WebSocket
-    # delivery jitter across hundreds of symbols/several connections settle.
-    # 5s is comfortably above what M2/M3 real-network testing observed (live
-    # candles typically land within ~1-2s of the boundary).
-    market_frame_grace_period_seconds: float = 5.0
+    # How long the frame synchronizer waits after each UTC 5-minute boundary
+    # before finalizing that boundary's Market Frame, so each instrument's
+    # just-closed 5m candle is *persisted* in time to be its frame anchor.
+    # Bybit pushes them within ~1-2s, but persisting the whole ~800-candle
+    # burst (upsert + aggregate re-derivation per candle) measured 8-11s
+    # after the boundary; anything missing at finalization is anchored on
+    # the previous candle, 5 minutes stale. A delay here costs nothing at a
+    # 5-minute cadence.
+    market_frame_grace_period_seconds: float = 15.0
+
+    # Where app.scripts.generate_research_dataset writes its output inside
+    # the container. Durable only because docker-compose.yml bind-mounts
+    # this path to the host (research/oink_corp/data) — nothing else
+    # written inside the api container survives a rebuild.
+    research_data_dir: str = "/app/research_data"
 
     @property
     def allowed_origins_list(self) -> list[str]:

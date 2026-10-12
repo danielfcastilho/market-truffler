@@ -32,17 +32,17 @@ async def instrument_id(db_session) -> int:
     return row.id
 
 
-async def _seed_full_hour_of_1m(db_session, instrument_id: int, hour_start: datetime) -> None:
-    """Seed 60 contiguous 1m candles and derive 5m/15m/1h from them, so
-    `hour_start + 1h` (== FRAME_TIME in these tests) has legal context on
-    every configured timeframe."""
+async def _seed_full_hour_of_5m(db_session, instrument_id: int, hour_start: datetime) -> None:
+    """Seed 12 contiguous 5m candles (candle i closing at `i`) and derive
+    15m/1h from them, so `hour_start + 1h` (== FRAME_TIME in these tests)
+    has legal context on every gating timeframe."""
     candle_repo = CandleRepository(db_session)
     rows = [
         {
             "instrument_id": instrument_id,
-            "timeframe": "1m",
-            "open_time": hour_start + timedelta(minutes=i),
-            "close_time": hour_start + timedelta(minutes=i + 1) - timedelta(microseconds=1),
+            "timeframe": "5m",
+            "open_time": hour_start + timedelta(minutes=5 * i),
+            "close_time": hour_start + timedelta(minutes=5 * i + 5) - timedelta(milliseconds=1),
             "open": Decimal("1"),
             "high": Decimal("1"),
             "low": Decimal("1"),
@@ -50,7 +50,7 @@ async def _seed_full_hour_of_1m(db_session, instrument_id: int, hour_start: date
             "volume": Decimal("1"),
             "turnover": Decimal("1"),
         }
-        for i in range(60)
+        for i in range(12)
     ]
     await candle_repo.upsert_many(rows)
     await derive_higher_timeframes(
@@ -60,9 +60,6 @@ async def _seed_full_hour_of_1m(db_session, instrument_id: int, hour_start: date
 
 async def _member_rows_for(db_session, instrument_id: int, frame_time: datetime) -> list[dict]:
     candle_repo = CandleRepository(db_session)
-    m1 = await candle_repo.fetch_latest_closed_per_instrument(
-        "1m", [instrument_id], frame_time - timedelta(minutes=1)
-    )
     m5 = await candle_repo.fetch_latest_closed_per_instrument(
         "5m", [instrument_id], frame_time - timedelta(minutes=5)
     )
@@ -72,7 +69,7 @@ async def _member_rows_for(db_session, instrument_id: int, frame_time: datetime)
     h1 = await candle_repo.fetch_latest_closed_per_instrument(
         "1h", [instrument_id], frame_time - timedelta(minutes=60)
     )
-    if instrument_id not in m1 or instrument_id not in m5 or instrument_id not in m15:
+    if instrument_id not in m5 or instrument_id not in m15:
         return []
     if instrument_id not in h1:
         return []
@@ -80,7 +77,6 @@ async def _member_rows_for(db_session, instrument_id: int, frame_time: datetime)
         {
             "frame_time": frame_time,
             "instrument_id": instrument_id,
-            "open_time_1m": m1[instrument_id].open_time,
             "open_time_5m": m5[instrument_id].open_time,
             "open_time_15m": m15[instrument_id].open_time,
             "open_time_1h": h1[instrument_id].open_time,
@@ -131,7 +127,6 @@ async def test_finalize_transitions_to_complete_when_all_expected_are_available(
             {
                 "frame_time": FRAME_TIME,
                 "instrument_id": 1,
-                "open_time_1m": FRAME_TIME,
                 "open_time_5m": FRAME_TIME,
                 "open_time_15m": FRAME_TIME,
                 "open_time_1h": FRAME_TIME,
@@ -157,7 +152,6 @@ async def test_finalize_transitions_to_partial_when_fewer_available_than_expecte
             {
                 "frame_time": FRAME_TIME,
                 "instrument_id": 1,
-                "open_time_1m": FRAME_TIME,
                 "open_time_5m": FRAME_TIME,
                 "open_time_15m": FRAME_TIME,
                 "open_time_1h": FRAME_TIME,
@@ -194,7 +188,6 @@ async def test_finalize_is_idempotent_and_never_rewrites_a_terminal_frame(db_ses
             {
                 "frame_time": FRAME_TIME,
                 "instrument_id": 1,
-                "open_time_1m": FRAME_TIME,
                 "open_time_5m": FRAME_TIME,
                 "open_time_15m": FRAME_TIME,
                 "open_time_1h": FRAME_TIME,
@@ -211,7 +204,6 @@ async def test_finalize_is_idempotent_and_never_rewrites_a_terminal_frame(db_ses
             {
                 "frame_time": FRAME_TIME,
                 "instrument_id": 1,
-                "open_time_1m": FRAME_TIME,
                 "open_time_5m": FRAME_TIME,
                 "open_time_15m": FRAME_TIME,
                 "open_time_1h": FRAME_TIME,
@@ -219,7 +211,6 @@ async def test_finalize_is_idempotent_and_never_rewrites_a_terminal_frame(db_ses
             {
                 "frame_time": FRAME_TIME,
                 "instrument_id": 2,
-                "open_time_1m": FRAME_TIME,
                 "open_time_5m": FRAME_TIME,
                 "open_time_15m": FRAME_TIME,
                 "open_time_1h": FRAME_TIME,
@@ -243,7 +234,6 @@ async def test_finalize_deduplicates_a_repeated_member_within_one_call(db_sessio
     member = {
         "frame_time": FRAME_TIME,
         "instrument_id": 1,
-        "open_time_1m": FRAME_TIME,
         "open_time_5m": FRAME_TIME,
         "open_time_15m": FRAME_TIME,
         "open_time_1h": FRAME_TIME,
@@ -286,14 +276,14 @@ async def test_find_building_returns_none_once_finalized(db_session):
 
 async def test_get_frame_returns_full_joined_ohlcv_context(db_session, instrument_id):
     hour_start = FRAME_TIME - timedelta(hours=1)
-    await _seed_full_hour_of_1m(db_session, instrument_id, hour_start)
+    await _seed_full_hour_of_5m(db_session, instrument_id, hour_start)
 
     repo = FrameRepository(db_session)
     await repo.create_building(
         FRAME_TIME, expected_instrument_ids=[instrument_id], now=datetime.now(UTC)
     )
     members = await _member_rows_for(db_session, instrument_id, FRAME_TIME)
-    assert len(members) == 1  # sanity: all 4 timeframes were available
+    assert len(members) == 1  # sanity: all 3 gating timeframes were available
     await repo.finalize(FRAME_TIME, members, now=datetime.now(UTC))
 
     frame = await repo.get_frame(FRAME_TIME)
@@ -304,9 +294,8 @@ async def test_get_frame_returns_full_joined_ohlcv_context(db_session, instrumen
 
     member = frame.members[0]
     assert member.symbol == "BTCUSDT"
-    assert member.m1.open_time == FRAME_TIME - timedelta(minutes=1)
-    assert member.m1.close == Decimal("59")  # close of the last (minute-59) 1m candle
     assert member.m5.open_time == FRAME_TIME - timedelta(minutes=5)
+    assert member.m5.close == Decimal("11")  # close of the last (12th) 5m candle
     assert member.m15.open_time == FRAME_TIME - timedelta(minutes=15)
     assert member.h1.open_time == hour_start
 
@@ -316,9 +305,67 @@ async def test_get_frame_returns_none_for_unknown_frame_time(db_session):
     assert await repo.get_frame(FRAME_TIME) is None
 
 
+# -- list_frame_times_in_range ------------------------------------------------------
+
+
+async def test_list_frame_times_in_range_returns_ascending_existing_times(db_session):
+    repo = FrameRepository(db_session)
+    now = datetime.now(UTC)
+    for offset in (0, 5, 10, 15):
+        await repo.create_building(
+            FRAME_TIME + timedelta(minutes=offset), expected_instrument_ids=[], now=now
+        )
+
+    result = await repo.list_frame_times_in_range(FRAME_TIME, FRAME_TIME + timedelta(minutes=20))
+
+    assert result == [
+        FRAME_TIME,
+        FRAME_TIME + timedelta(minutes=5),
+        FRAME_TIME + timedelta(minutes=10),
+        FRAME_TIME + timedelta(minutes=15),
+    ]
+
+
+async def test_list_frame_times_in_range_is_half_open(db_session):
+    """`[start, end)`: `start` is included, `end` is excluded."""
+    repo = FrameRepository(db_session)
+    now = datetime.now(UTC)
+    await repo.create_building(FRAME_TIME, expected_instrument_ids=[], now=now)
+    await repo.create_building(
+        FRAME_TIME + timedelta(minutes=10), expected_instrument_ids=[], now=now
+    )
+
+    result = await repo.list_frame_times_in_range(FRAME_TIME, FRAME_TIME + timedelta(minutes=10))
+
+    assert result == [FRAME_TIME]
+
+
+async def test_list_frame_times_in_range_includes_every_status(db_session):
+    """Callers filter status themselves, same as `get_frame`'s own caller
+    does today — this method doesn't discriminate."""
+    repo = FrameRepository(db_session)
+    now = datetime.now(UTC)
+    await repo.create_building(FRAME_TIME, expected_instrument_ids=[], now=now)
+    await repo.finalize(FRAME_TIME, [], now=now)  # 0 available, 0 expected -> COMPLETE
+    await repo.create_building(
+        FRAME_TIME + timedelta(minutes=5), expected_instrument_ids=[1], now=now
+    )
+    # left BUILDING (expects 1, never finalized)
+
+    result = await repo.list_frame_times_in_range(FRAME_TIME, FRAME_TIME + timedelta(minutes=6))
+
+    assert result == [FRAME_TIME, FRAME_TIME + timedelta(minutes=5)]
+
+
+async def test_list_frame_times_in_range_returns_empty_for_no_matches(db_session):
+    repo = FrameRepository(db_session)
+    result = await repo.list_frame_times_in_range(FRAME_TIME, FRAME_TIME + timedelta(hours=1))
+    assert result == []
+
+
 async def test_get_latest_finalized_ignores_a_still_building_frame(db_session):
     repo = FrameRepository(db_session)
-    later = FRAME_TIME + timedelta(minutes=1)
+    later = FRAME_TIME + timedelta(minutes=5)
     await repo.create_building(FRAME_TIME, expected_instrument_ids=[1], now=datetime.now(UTC))
     await repo.finalize(FRAME_TIME, [], now=datetime.now(UTC))
     await repo.create_building(later, expected_instrument_ids=[1], now=datetime.now(UTC))
@@ -342,7 +389,7 @@ async def test_get_latest_finalized_summary_reports_frame_metadata_without_hydra
     `get_latest_finalized`, but `members` must stay empty — this must
     never run the per-timeframe candle join `get_latest_finalized` does."""
     hour_start = FRAME_TIME - timedelta(hours=1)
-    await _seed_full_hour_of_1m(db_session, instrument_id, hour_start)
+    await _seed_full_hour_of_5m(db_session, instrument_id, hour_start)
 
     repo = FrameRepository(db_session)
     await repo.create_building(
@@ -361,7 +408,7 @@ async def test_get_latest_finalized_summary_reports_frame_metadata_without_hydra
 
 async def test_get_latest_finalized_summary_ignores_a_still_building_frame(db_session):
     repo = FrameRepository(db_session)
-    later = FRAME_TIME + timedelta(minutes=1)
+    later = FRAME_TIME + timedelta(minutes=5)
     await repo.create_building(FRAME_TIME, expected_instrument_ids=[1], now=datetime.now(UTC))
     await repo.finalize(FRAME_TIME, [], now=datetime.now(UTC))
     await repo.create_building(later, expected_instrument_ids=[1], now=datetime.now(UTC))

@@ -82,8 +82,8 @@ def _member(
 ) -> MarketFrameMember:
     duration = _TIMEFRAME_DURATIONS[timeframe]
     ctx = _ctx(anchor_open_time, _FLAT_VOLUMES[-1], duration)
-    placeholder = _ctx(anchor_open_time, "0", timedelta(minutes=1))
-    fields = {"m1": placeholder, "m5": placeholder, "m15": placeholder, "h1": placeholder}
+    placeholder = _ctx(anchor_open_time, "0", timedelta(minutes=5))
+    fields = {"m5": placeholder, "m15": placeholder, "h1": placeholder}
     fields[_ANCHOR_FIELD[timeframe]] = ctx
     return MarketFrameMember(instrument_id=instrument_id, symbol=symbol, **fields)
 
@@ -212,11 +212,10 @@ async def test_missing_anchor_is_none(db_session):
     bucket hasn't closed) -> relative_volume_4h must be None, never
     substituted from a different timeframe."""
     iid = await _seed_instrument(db_session)
-    placeholder = _ctx(FRAME_TIME, "0", timedelta(minutes=1))
+    placeholder = _ctx(FRAME_TIME, "0", timedelta(minutes=5))
     member = MarketFrameMember(
         instrument_id=iid,
         symbol="BTCUSDT",
-        m1=placeholder,
         m5=placeholder,
         m15=placeholder,
         h1=placeholder,

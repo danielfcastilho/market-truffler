@@ -32,7 +32,6 @@ def _to_frame_response(frame: MarketFrameDomain) -> MarketFrameResponse:
             FrameMember(
                 instrument_id=m.instrument_id,
                 symbol=m.symbol,
-                m1=FrameCandleContext(**m.m1.__dict__),
                 m5=FrameCandleContext(**m.m5.__dict__),
                 m15=FrameCandleContext(**m.m15.__dict__),
                 h1=FrameCandleContext(**m.h1.__dict__),

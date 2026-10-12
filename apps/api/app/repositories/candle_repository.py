@@ -178,8 +178,8 @@ class CandleRepository:
         instrument set, never a per-instrument loop.
 
         Used for frame-relative, time-based historical lookups (e.g.
-        Sniffer's `return_5m`: "the canonical 1m candle exactly 5 minutes
-        before the current one", never "the Nth previous row"). An
+        Sniffer's `return_1h`: "the 5m candle exactly 1 hour before the
+        current one", never "the Nth previous row"). An
         instrument absent from the result genuinely has no candle at that
         exact instant — callers must treat that as unavailable, never
         substitute the nearest one.

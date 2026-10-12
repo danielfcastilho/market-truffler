@@ -1,6 +1,6 @@
 """Continuous MARKET collector: watches the discovered universe over Bybit's
-public WebSocket and turns confirmed klines into canonical closed 1-minute
-candles.
+public WebSocket and turns confirmed klines into canonical closed base-
+timeframe (5m) candles.
 
 This is a long-lived application capability, not a request-driven one. It
 is started once from the FastAPI lifespan and runs for the life of the
@@ -16,13 +16,12 @@ from datetime import datetime
 from typing import Any
 
 from app.domain.market import ClosedCandle, Instrument
+from app.domain.timeframes import BYBIT_BASE_INTERVAL
 from app.integrations.bybit.schemas import BybitKlineData
 from app.integrations.bybit.ws_client import BybitKlineWebSocketClient
 from app.services.candle_conversion import to_closed_candle
 
 logger = logging.getLogger(__name__)
-
-_KLINE_INTERVAL = "1"
 
 # Bybit documents no per-connection topic limit for the linear (futures)
 # category, but sharding the universe across several connections keeps any
@@ -100,7 +99,7 @@ class MarketCollector:
         return BybitKlineWebSocketClient(
             url=self._ws_base_url,
             symbols=symbols,
-            interval=_KLINE_INTERVAL,
+            interval=BYBIT_BASE_INTERVAL,
             on_kline=self._handle_kline,
             on_connection_state_change=self._handle_connection_state_change,
             subscribe_batch_size=self._subscribe_batch_size,
@@ -166,6 +165,9 @@ class MarketCollector:
         )
 
     async def _handle_kline(self, symbol: str, kline: BybitKlineData) -> None:
+        # Bybit pushes the forming candle repeatedly while it's open; only
+        # the final `confirm=True` push is a closed candle. An unconfirmed
+        # push must never reach storage — its OHLCV is not final yet.
         if not kline.confirm:
             return
 

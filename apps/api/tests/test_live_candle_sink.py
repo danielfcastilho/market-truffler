@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -20,9 +20,9 @@ def _candle(symbol: str, open_time: datetime) -> ClosedCandle:
     return ClosedCandle(
         exchange="bybit",
         symbol=symbol,
-        timeframe="1m",
+        timeframe="5m",
         open_time=open_time,
-        close_time=open_time.replace(second=59, microsecond=999000),
+        close_time=open_time + timedelta(minutes=5, milliseconds=-1),
         open=Decimal("100"),
         high=Decimal("101"),
         low=Decimal("99"),
@@ -57,7 +57,7 @@ async def test_persists_a_live_candle_for_a_known_instrument(session_factory):
     async with session_factory() as session:
         stored = (await session.execute(select(Candle))).scalars().all()
         assert len(stored) == 1
-        assert stored[0].timeframe == "1m"
+        assert stored[0].timeframe == "5m"
 
 
 async def test_ignores_a_candle_for_an_unknown_symbol_without_raising(session_factory):

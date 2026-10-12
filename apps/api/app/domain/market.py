@@ -46,8 +46,8 @@ class ClosedCandle:
 class OpenInterestObservation:
     """One point-in-time open interest reading for one instrument, at
     Bybit's own 5-minute bucket granularity (see
-    `BybitClient.get_open_interest`) — the OI equivalent of a canonical 1m
-    candle: every coarser OI lookback MARKET needs is an exact-timestamp
+    `BybitClient.get_open_interest`) — the OI equivalent of the canonical
+    5m base candle: every coarser OI lookback MARKET needs is an exact-timestamp
     offset from this one series, never re-fetched or re-derived per
     timeframe.
     """

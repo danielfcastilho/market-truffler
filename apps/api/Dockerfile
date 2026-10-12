@@ -11,7 +11,7 @@ COPY app ./app
 COPY alembic ./alembic
 COPY alembic.ini ./
 
-RUN pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir -e ".[research]"
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh

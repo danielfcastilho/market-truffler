@@ -38,6 +38,13 @@ services:
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
     ports:
       - "${API_PORT:-8000}:8000"
+    volumes:
+      # OINK CORP's app/scripts/generate_research_dataset.py writes here.
+      # Without this mount, output written inside the container is lost on
+      # the next `docker compose up --build` — the rest of the api service
+      # has no volumes because nothing else it does needs to survive a
+      # rebuild; this one artifact deliberately must.
+      - ./research/oink_corp/data:/app/research_data
     networks:
       - market-truffler
     healthcheck:

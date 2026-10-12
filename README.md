@@ -5,11 +5,11 @@ real MARKET capability and Sniffer's factual measurements: a clean,
 containerized, runnable application shell — authentication, a database, a
 typed API, a navigable frontend — that discovers its Bybit market universe
 over REST, continuously watches it over Bybit's public WebSocket, durably
-remembers it (closed 1-minute candles persisted, backfilled up to a rolling
-history horizon, self-repaired after gaps or outages, locally aggregated
-into 5m/15m/1h/4h/24h), continuously polls Open Interest from Bybit's
-public REST API, and every closed UTC minute synchronizes MARKET into one
-Market Frame — a single, temporally-legal cross-sectional snapshot of the
+remembers it (closed 5-minute candles — the canonical base timeframe —
+persisted, backfilled up to a rolling history horizon, self-repaired after
+gaps or outages, locally aggregated into 15m/1h/4h/24h), continuously polls
+Open Interest from Bybit's public REST API, and every closed UTC 5-minute
+boundary synchronizes MARKET into one Market Frame — a single, temporally-legal cross-sectional snapshot of the
 whole market. Sniffer now reacts to each finalized frame and computes 23
 factual measurements per instrument (Returns at 5m/15m/1h/4h/24h, RSI(14)
 at 5m/15m/1h/4h, Open Interest change at 5m/15m/1h/4h/24h,
@@ -27,7 +27,7 @@ market-truffler/
 │   ├── api/            FastAPI backend (Python 3.13, SQLAlchemy 2, Alembic)
 │   └── web/             Next.js frontend (TypeScript, Tailwind, shadcn/ui)
 ├── research/
-│   └── oink_corp/       🧬 OINK CORP — reserved boundary for future strategy research
+│   └── oink_corp/       🧬 OINK CORP — historical Sniff replay + research datasets (data/ is gitignored output)
 ├── packages/
 │   └── shared/           Reserved boundary for future code shared across apps
 ├── infra/                 Reserved boundary for future non-app infrastructure
@@ -37,8 +37,16 @@ market-truffler/
 └── .env.example
 ```
 
-`research/oink_corp`, `packages/shared`, and `infra` are intentionally empty
-except for a README explaining their purpose — they exist as boundaries so
+`packages/shared` and `infra` are intentionally empty except for a README
+explaining their purpose. `research/oink_corp` now has a real capability
+behind it: `apps/api/app/research/` + `app/scripts/generate_research_dataset.py`
+replay historical Sniffs using the exact production `FeatureEngine` and
+attach research-only forward-return labels, writing a Parquet dataset +
+manifest to `research/oink_corp/data/` (gitignored, regenerable — see
+`docs/ARCHITECTURE.md`'s OINK CORP section for the full design). Still no
+Scents/Score/Rank/Truffles/backtesting — this is the research foundation
+those would eventually be built on, not any of them. `packages/shared`/
+`infra` exist as boundaries so
 future work has an obvious home without restructuring the repo, not because
 anything lives there yet.
 
@@ -53,16 +61,16 @@ discovers the current market universe (linear, USDT-settled, perpetual,
 currently tradable instruments), a continuously-running MARKET collector
 that watches that universe over Bybit's public WebSocket, and a
 continuously-running MARKET history reconciler that durably persists every
-closed 1-minute candle (native PostgreSQL partitioning, monthly partitions,
+closed 5-minute candle (native PostgreSQL partitioning, monthly partitions,
 a rolling retention policy — currently **~30 days**, configured by one
 setting, `market_history_retention_days` — applied uniformly across
-1m/5m/15m/1h/4h/24h), backfills that same horizon of history per instrument
+5m/15m/1h/4h/24h), backfills that same horizon of history per instrument
 in the background, detects and repairs gaps after a WebSocket hiccup or an
 extended outage,
-and locally derives 5m/15m/1h/4h/24h candles from complete sets of stored
-1m candles, plus a continuously-running MARKET frame synchronizer that,
-every closed UTC minute, snapshots the active universe and resolves each
-instrument's latest legally-closed 1m/5m/15m/1h(/4h/24h) context into one
+and locally derives 15m/1h/4h/24h candles from complete sets of stored
+5m candles, plus a continuously-running MARKET frame synchronizer that,
+every closed UTC 5-minute boundary, snapshots the active universe and
+resolves each instrument's latest legally-closed 5m/15m/1h(/4h/24h) context into one
 unified Market Frame — truthfully marked COMPLETE or PARTIAL, never faked — no API
 key required for any of it. All three background capabilities start with
 the application (not with any page view or API call) and keep running
@@ -117,8 +125,10 @@ never break MARKET's own background capabilities.
 > the current policy, and retention protects surviving frame references. See "Design notes worth knowing"
 > below for how to change it back.
 
-What's **not** real: higher-timeframe candles fetched from the exchange
-directly (they're always derived locally from 1m), historical frame
+What's **not** real: 1-minute candles (5m is the canonical base timeframe
+and 1m is unsupported — see `docs/ARCHITECTURE.md`'s "Canonical base
+timeframe: 5m"), higher-timeframe candles fetched from the exchange
+directly (they're always derived locally from 5m), historical frame
 backfill/reconstruction (frames are only ever produced live, going
 forward), `rsi_14_24h`/`volatility_5m`/`relative_volume_24h` (deliberately
 not part of this feature set yet), ranking, scoring, Truffles, or trading
@@ -199,6 +209,13 @@ docker compose exec api alembic revision --autogenerate -m "describe the change"
 
 Autogenerated migrations are reviewed and committed like any other code
 change — they are not applied blindly.
+
+Upgrading an existing database past migration `a9c4e2f7b3d1` (5m becomes
+the canonical base timeframe) is automatic and deletes nothing: the
+reconciler re-fetches the retention window as native 5m candles over the
+next few minutes, and legacy 1m rows simply age out. An optional manual
+cleanup to drop them sooner is documented in `docs/ARCHITECTURE.md`'s
+"Canonical base timeframe: 5m".
 
 `market_candles`' monthly partitions are the one exception: the migration
 that creates the table only provisions a handful of partitions around the

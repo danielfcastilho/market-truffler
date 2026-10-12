@@ -96,7 +96,7 @@ async def lifespan(app: FastAPI):
     # live sink and the collector's own discovery both then rely on), so it
     # must start before the collector. The frame synchronizer only reads
     # already-persisted candles, so its start order relative to the other
-    # two doesn't matter beyond both being up before its first minute tick.
+    # two doesn't matter beyond both being up before its first 5-minute boundary.
     await history_reconciler.start()
     await market_collector.start()
     await open_interest_reconciler.start()

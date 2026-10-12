@@ -45,9 +45,9 @@ async def _seed_full_hour(session_factory, instrument_id: int, hour_start: datet
         rows = [
             {
                 "instrument_id": instrument_id,
-                "timeframe": "1m",
-                "open_time": hour_start + timedelta(minutes=i),
-                "close_time": hour_start + timedelta(minutes=i + 1) - timedelta(microseconds=1),
+                "timeframe": "5m",
+                "open_time": hour_start + timedelta(minutes=5 * i),
+                "close_time": hour_start + timedelta(minutes=5 * i + 5) - timedelta(milliseconds=1),
                 "open": Decimal("100"),
                 "high": Decimal("100"),
                 "low": Decimal("100"),
@@ -55,7 +55,7 @@ async def _seed_full_hour(session_factory, instrument_id: int, hour_start: datet
                 "volume": Decimal("1"),
                 "turnover": Decimal("1"),
             }
-            for i in range(60)
+            for i in range(12)
         ]
         await candle_repo.upsert_many(rows)
         await derive_higher_timeframes(
@@ -72,9 +72,6 @@ async def _finalize_complete_frame(
         await frame_repo.create_building(
             frame_time, expected_instrument_ids=[instrument_id], now=datetime.now(UTC)
         )
-        m1 = await candle_repo.fetch_latest_closed_per_instrument(
-            "1m", [instrument_id], frame_time - timedelta(minutes=1)
-        )
         m5 = await candle_repo.fetch_latest_closed_per_instrument(
             "5m", [instrument_id], frame_time - timedelta(minutes=5)
         )
@@ -87,7 +84,6 @@ async def _finalize_complete_frame(
         member = {
             "frame_time": frame_time,
             "instrument_id": instrument_id,
-            "open_time_1m": m1[instrument_id].open_time,
             "open_time_5m": m5[instrument_id].open_time,
             "open_time_15m": m15[instrument_id].open_time,
             "open_time_1h": h1[instrument_id].open_time,

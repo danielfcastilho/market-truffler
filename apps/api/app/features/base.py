@@ -5,7 +5,7 @@ finalized `MarketFrame` and a `CandleRepository` for any historical lookups
 it needs, returning a value per instrument (or `None` — unavailable).
 
 No registry, no dynamic discovery, no dependency graph. Adding a metric
-means writing one more file like `return_5m.py` and listing it in
+means writing one more file like `return_feature.py` and listing it in
 `app.features.engine.FEATURES` — nothing else changes.
 """
 
@@ -26,7 +26,7 @@ class Feature(ABC):
     set-oriented/batched repository calls for the *whole* frame at once —
     never a per-instrument query loop (M5 section 12) — and must derive its
     notion of "current" only from data already selected into `frame`
-    (`frame.members[i].m1/m5/m15/h1`), never by querying `market_candles`
+    (`frame.members[i].m5/m15/h1/h4/h24`), never by querying `market_candles`
     for "the latest" candle independently (M5 section 13). Any historical
     comparison point must be computed as an exact time offset from that
     already-legal reference, so it can never reach past `frame.frame_time`.
@@ -35,7 +35,7 @@ class Feature(ABC):
     name: str
 
     #: How far back before `frame_time` this feature needs real, already-
-    #: reconciled 1m history to ever produce a non-`None` value — the
+    #: reconciled history to ever produce a non-`None` value — the
     #: single source of truth `app.features.engine.REQUIRED_WARMUP` (and,
     #: through it, `app.services.symbol_readiness`) derives from, so a
     #: feature with a longer lookback automatically raises the readiness

@@ -393,7 +393,7 @@ async def test_market_status_reports_the_real_latest_finalized_frame(client, tes
     # ORM object stale and trigger a lazy-refresh outside async context.
     await _login(client, test_user)
 
-    frame_time = datetime(2026, 1, 1, 14, 37, tzinfo=UTC)
+    frame_time = datetime(2026, 1, 1, 14, 35, tzinfo=UTC)
     repo = FrameRepository(db_session)
     await repo.create_building(frame_time, expected_instrument_ids=[1, 2], now=datetime.now(UTC))
     await repo.finalize(
@@ -402,7 +402,6 @@ async def test_market_status_reports_the_real_latest_finalized_frame(client, tes
             {
                 "frame_time": frame_time,
                 "instrument_id": 1,
-                "open_time_1m": frame_time,
                 "open_time_5m": frame_time,
                 "open_time_15m": frame_time,
                 "open_time_1h": frame_time,
@@ -418,14 +417,14 @@ async def test_market_status_reports_the_real_latest_finalized_frame(client, tes
         _clear_overrides()
 
     body = response.json()
-    assert body["latest_market_frame"] == "2026-01-01T14:37:00Z"
+    assert body["latest_market_frame"] == "2026-01-01T14:35:00Z"
     assert body["frame_completeness"] == 0.5  # 1 of 2 expected — PARTIAL, truthfully reported
 
 
 async def test_market_status_ignores_a_still_building_frame(client, test_user, db_session):
     await _login(client, test_user)  # login first — see comment above
 
-    frame_time = datetime(2026, 1, 1, 14, 37, tzinfo=UTC)
+    frame_time = datetime(2026, 1, 1, 14, 35, tzinfo=UTC)
     await FrameRepository(db_session).create_building(
         frame_time, expected_instrument_ids=[1, 2, 3, 4, 5], now=datetime.now(UTC)
     )

@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock
 
@@ -31,13 +31,18 @@ async def instrument_id(db_session) -> int:
     return row.id
 
 
-def _row(instrument_id: int, minute: int, close: str = "100.0") -> dict:
-    open_time = datetime(2026, 1, 1, 0, minute, tzinfo=UTC)
+def _t(index: int) -> datetime:
+    """The open_time of the `index`-th 5m candle from 2026-01-01 00:00 UTC."""
+    return datetime(2026, 1, 1, tzinfo=UTC) + timedelta(minutes=5 * index)
+
+
+def _row(instrument_id: int, index: int, close: str = "100.0") -> dict:
+    open_time = _t(index)
     return {
         "instrument_id": instrument_id,
-        "timeframe": "1m",
+        "timeframe": "5m",
         "open_time": open_time,
-        "close_time": open_time.replace(second=59, microsecond=999000),
+        "close_time": open_time + timedelta(minutes=5, milliseconds=-1),
         "open": Decimal("100.0"),
         "high": Decimal("101.0"),
         "low": Decimal("99.0"),
@@ -54,7 +59,7 @@ async def test_closed_candle_persists_correctly(db_session, instrument_id):
     stored = (await db_session.execute(select(Candle))).scalars().all()
     assert len(stored) == 1
     assert stored[0].instrument_id == instrument_id
-    assert stored[0].timeframe == "1m"
+    assert stored[0].timeframe == "5m"
     assert stored[0].close == Decimal("100.0")
 
 
@@ -103,12 +108,12 @@ async def test_fetch_range_returns_only_rows_within_bounds_ordered(db_session, i
 
     rows = await repo.fetch_range(
         instrument_id,
-        "1m",
-        datetime(2026, 1, 1, 0, 2, tzinfo=UTC),
-        datetime(2026, 1, 1, 0, 5, tzinfo=UTC),
+        "5m",
+        _t(2),
+        _t(5),
     )
 
-    assert [r.open_time.minute for r in rows] == [2, 3, 4]
+    assert [r.open_time for r in rows] == [_t(2), _t(3), _t(4)]
 
 
 @pytest.fixture
@@ -138,37 +143,31 @@ class TestFetchLatestClosedPerInstrument:
         self, db_session, instrument_id
     ):
         repo = CandleRepository(db_session)
-        await repo.upsert_many([_row(instrument_id, m) for m in range(5)])  # minutes 0-4
+        await repo.upsert_many([_row(instrument_id, m) for m in range(5)])  # candles 0-4
 
-        latest = await repo.fetch_latest_closed_per_instrument(
-            "1m", [instrument_id], datetime(2026, 1, 1, 0, 4, tzinfo=UTC)
-        )
+        latest = await repo.fetch_latest_closed_per_instrument("5m", [instrument_id], _t(4))
 
-        assert latest[instrument_id].open_time == datetime(2026, 1, 1, 0, 4, tzinfo=UTC)
+        assert latest[instrument_id].open_time == _t(4)
 
     async def test_a_candle_newer_than_the_bound_never_leaks_in(self, db_session, instrument_id):
         """The exact invariant M4 depends on: a row that exists in the
         database but closes after the requested bound must never be
         selected, however recently it was written."""
         repo = CandleRepository(db_session)
-        await repo.upsert_many([_row(instrument_id, m) for m in range(5)])  # minutes 0-4
+        await repo.upsert_many([_row(instrument_id, m) for m in range(5)])  # candles 0-4
 
-        latest = await repo.fetch_latest_closed_per_instrument(
-            "1m", [instrument_id], datetime(2026, 1, 1, 0, 2, tzinfo=UTC)
-        )
+        latest = await repo.fetch_latest_closed_per_instrument("5m", [instrument_id], _t(2))
 
-        assert latest[instrument_id].open_time == datetime(2026, 1, 1, 0, 2, tzinfo=UTC)
-        assert latest[instrument_id].open_time < datetime(2026, 1, 1, 0, 4, tzinfo=UTC)
+        assert latest[instrument_id].open_time == _t(2)
+        assert latest[instrument_id].open_time < _t(4)
 
     async def test_instrument_with_no_candle_at_or_before_the_bound_is_absent(
         self, db_session, instrument_id
     ):
         repo = CandleRepository(db_session)
-        await repo.upsert_many([_row(instrument_id, 5)])  # only minute 5, after the bound
+        await repo.upsert_many([_row(instrument_id, 5)])  # only candle 5, after the bound
 
-        latest = await repo.fetch_latest_closed_per_instrument(
-            "1m", [instrument_id], datetime(2026, 1, 1, 0, 4, tzinfo=UTC)
-        )
+        latest = await repo.fetch_latest_closed_per_instrument("5m", [instrument_id], _t(4))
 
         assert instrument_id not in latest
 
@@ -176,24 +175,24 @@ class TestFetchLatestClosedPerInstrument:
         self, db_session, instrument_id, second_instrument_id
     ):
         repo = CandleRepository(db_session)
-        await repo.upsert_many([_row(instrument_id, m) for m in range(5)])  # minutes 0-4
+        await repo.upsert_many([_row(instrument_id, m) for m in range(5)])  # candles 0-4
         await repo.upsert_many(
             [
                 {**_row(second_instrument_id, m), "instrument_id": second_instrument_id}
-                for m in range(2)  # only minutes 0-1
+                for m in range(2)  # only candles 0-1
             ]
         )
 
         latest = await repo.fetch_latest_closed_per_instrument(
-            "1m", [instrument_id, second_instrument_id], datetime(2026, 1, 1, 0, 4, tzinfo=UTC)
+            "5m", [instrument_id, second_instrument_id], _t(4)
         )
 
-        assert latest[instrument_id].open_time == datetime(2026, 1, 1, 0, 4, tzinfo=UTC)
-        assert latest[second_instrument_id].open_time == datetime(2026, 1, 1, 0, 1, tzinfo=UTC)
+        assert latest[instrument_id].open_time == _t(4)
+        assert latest[second_instrument_id].open_time == _t(1)
 
     async def test_empty_instrument_list_returns_empty_without_querying(self, db_session):
         repo = CandleRepository(db_session)
-        assert await repo.fetch_latest_closed_per_instrument("1m", [], datetime.now(UTC)) == {}
+        assert await repo.fetch_latest_closed_per_instrument("5m", [], datetime.now(UTC)) == {}
 
     async def test_uses_exactly_one_query_regardless_of_instrument_count(self, db_session):
         """M4 performance requirement: resolving an entire universe's latest
@@ -224,9 +223,7 @@ class TestFetchLatestClosedPerInstrument:
         spy = AsyncMock(side_effect=real_execute)
         db_session.execute = spy
 
-        await repo.fetch_latest_closed_per_instrument(
-            "1m", instrument_ids, datetime(2026, 1, 1, 0, 1, tzinfo=UTC)
-        )
+        await repo.fetch_latest_closed_per_instrument("5m", instrument_ids, _t(1))
 
         assert spy.await_count == 1
 
@@ -242,9 +239,9 @@ async def test_fetch_range_excludes_a_still_forming_candle_at_the_upper_bound(
 
     rows = await repo.fetch_range(
         instrument_id,
-        "1m",
-        datetime(2026, 1, 1, 0, 0, tzinfo=UTC),
-        datetime(2026, 1, 1, 0, 5, tzinfo=UTC),
+        "5m",
+        _t(0),
+        _t(5),
     )
 
     assert rows == []

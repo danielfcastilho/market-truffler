@@ -33,7 +33,7 @@ class SnifferResult(Base):
 
     Partitioned by RANGE(frame_time), monthly, mirroring `market_candles`/
     `market_frame_members` — same retention mechanism
-    (`app.services.partition_manager`), same reason (real per-minute,
+    (`app.services.partition_manager`), same reason (real per-frame,
     per-instrument scale).
     """
 

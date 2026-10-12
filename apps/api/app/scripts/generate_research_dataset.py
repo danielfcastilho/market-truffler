@@ -1,0 +1,165 @@
+"""OINK CORP: generate a historical Sniff-replay + forward-outcome research
+dataset (Parquet + manifest.json) — the first real OINK CORP capability
+(see `docs/ARCHITECTURE.md`'s OINK CORP section and `app.research.*`).
+
+This is a pure, regenerable batch job: it never mutates production data
+(read-only against `market_frames`/`market_candles`/`open_interest_
+observations`/`funding_rate_observations`), and never writes to
+`sniffer_results`. Safe to re-run — the same `[start, end)`/interval/
+horizons always produce the same dataset (module docstrings in
+`app.research.replay`/`app.research.forward_returns` explain the exact
+temporal semantics this reuses).
+
+No resumability/checkpointing by design: generation is cheap enough
+(bounded by production's own ~16-30 day retention anyway) that "just re-run
+the whole command" is simpler and more honest than partial-state recovery
+machinery — matching this project's existing "safe to re-run" scripts
+rather than inventing a new resumability contract for a bounded, regenerable
+artifact.
+
+Usage (inside the api container):
+
+    python -m app.scripts.generate_research_dataset \\
+        --start 2026-09-01T00:00:00Z --end 2026-09-27T00:00:00Z \\
+        --sample-interval-minutes 15 --horizons 15m,1h,4h,24h \\
+        --output research_v1
+
+`--sample-interval-minutes` and every `--horizons` entry must be a
+multiple of 5 minutes (the 5m base timeframe); anything else is rejected
+up front, never rounded.
+
+Writes to `<Settings.research_data_dir>/<output>/` inside the container —
+durable only because `docker-compose.yml` bind-mounts that path to
+`research/oink_corp/data` on the host.
+"""
+
+import argparse
+import asyncio
+import logging
+import re
+import sys
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+from app.core.config import get_settings
+from app.db.session import get_session_factory
+from app.research.dataset import generate_dataset, validate_sample_interval
+from app.research.forward_returns import validate_horizons
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+_DEFAULT_HORIZONS = "15m,1h,4h,24h"
+
+_UNIT_MINUTES = {"m": 1, "h": 60, "d": 60 * 24}
+_LABEL_RE = re.compile(r"^(\d+)([mhd])$")
+
+
+def _parse_horizon(label: str) -> timedelta:
+    match = _LABEL_RE.match(label.strip())
+    if not match:
+        raise argparse.ArgumentTypeError(
+            f"invalid horizon label {label!r} — expected e.g. '15m', '1h', '4h', '24h'"
+        )
+    quantity, unit = match.groups()
+    return timedelta(minutes=int(quantity) * _UNIT_MINUTES[unit])
+
+
+def _parse_horizons(raw: str) -> dict[str, timedelta]:
+    labels = [label.strip() for label in raw.split(",") if label.strip()]
+    if not labels:
+        raise argparse.ArgumentTypeError("--horizons must list at least one label")
+    horizons = {label: _parse_horizon(label) for label in labels}
+    try:
+        validate_horizons(horizons)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    return horizons
+
+
+def _parse_sample_interval(raw: str) -> int:
+    try:
+        interval = int(raw)
+        validate_sample_interval(interval)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    return interval
+
+
+def _parse_timestamp(raw: str) -> datetime:
+    value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument(
+        "--start", required=True, type=_parse_timestamp, help="ISO 8601, e.g. 2026-09-01T00:00:00Z"
+    )
+    parser.add_argument("--end", required=True, type=_parse_timestamp, help="ISO 8601, exclusive")
+    parser.add_argument("--sample-interval-minutes", type=_parse_sample_interval, default=15)
+    parser.add_argument(
+        "--horizons", type=_parse_horizons, default=_parse_horizons(_DEFAULT_HORIZONS)
+    )
+    parser.add_argument("--output", required=True, help="dataset directory name, e.g. research_v1")
+    parser.add_argument(
+        "--force", action="store_true", help="overwrite --output if it already exists"
+    )
+    return parser
+
+
+async def _run(args: argparse.Namespace) -> None:
+    settings = get_settings()
+    output_dir = Path(settings.research_data_dir) / args.output
+
+    logger.info(
+        "research_dataset_starting",
+        extra={
+            "start": args.start.isoformat(),
+            "end": args.end.isoformat(),
+            "sample_interval_minutes": args.sample_interval_minutes,
+            "horizons": list(args.horizons),
+            "output_dir": str(output_dir),
+        },
+    )
+
+    def _on_progress(done: int, total: int) -> None:
+        if total == 0 or done % 20 == 0 or done == total:
+            logger.info("research_dataset_progress", extra={"done": done, "total": total})
+
+    manifest = await generate_dataset(
+        get_session_factory(),
+        start=args.start,
+        end=args.end,
+        interval_minutes=args.sample_interval_minutes,
+        horizons=args.horizons,
+        output_dir=output_dir,
+        force=args.force,
+        on_progress=_on_progress,
+    )
+
+    logger.info(
+        "research_dataset_complete",
+        extra={
+            "output_dir": str(output_dir),
+            "row_count": manifest["row_count"],
+            "frame_times_processed": manifest["frame_times_processed"],
+            "frame_times_missing": manifest["frame_times_missing"],
+        },
+    )
+
+
+def main() -> None:
+    args = _build_parser().parse_args()
+    if args.end <= args.start:
+        print("--end must be after --start", file=sys.stderr)
+        sys.exit(1)
+    try:
+        asyncio.run(_run(args))
+    except FileExistsError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

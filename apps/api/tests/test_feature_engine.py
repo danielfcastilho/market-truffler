@@ -35,14 +35,14 @@ ALL_FEATURE_NAMES = {
 }
 
 FRAME_TIME = datetime(2026, 1, 1, 14, 0, tzinfo=UTC)
-CURRENT_OPEN = FRAME_TIME - timedelta(minutes=1)
+CURRENT_OPEN = FRAME_TIME - timedelta(minutes=5)
 ANALYZED_AT = datetime(2026, 1, 1, 14, 0, 6, tzinfo=UTC)
 
 
 def _ctx(close: str) -> FrameCandleContext:
     return FrameCandleContext(
         open_time=CURRENT_OPEN,
-        close_time=CURRENT_OPEN + timedelta(minutes=1) - timedelta(microseconds=1),
+        close_time=CURRENT_OPEN + timedelta(minutes=5) - timedelta(microseconds=1),
         open=Decimal(close),
         high=Decimal(close),
         low=Decimal(close),
@@ -76,9 +76,9 @@ async def test_engine_assembles_named_feature_results_per_instrument(db_session)
         [
             {
                 "instrument_id": btc,
-                "timeframe": "1m",
+                "timeframe": "5m",
                 "open_time": CURRENT_OPEN - timedelta(minutes=5),
-                "close_time": CURRENT_OPEN - timedelta(minutes=4) - timedelta(microseconds=1),
+                "close_time": CURRENT_OPEN - timedelta(microseconds=1),
                 "open": Decimal("100"),
                 "high": Decimal("100"),
                 "low": Decimal("100"),
@@ -96,9 +96,7 @@ async def test_engine_assembles_named_feature_results_per_instrument(db_session)
         status=FrameStatus.COMPLETE,
         created_at=FRAME_TIME,
         finalized_at=FRAME_TIME,
-        members=[
-            MarketFrameMember(instrument_id=btc, symbol="BTCUSDT", m1=ctx, m5=ctx, m15=ctx, h1=ctx)
-        ],
+        members=[MarketFrameMember(instrument_id=btc, symbol="BTCUSDT", m5=ctx, m15=ctx, h1=ctx)],
     )
 
     oi_repo = OpenInterestRepository(db_session)
@@ -144,9 +142,9 @@ async def test_engine_only_analyzes_actual_frame_members(db_session):
         [
             {
                 "instrument_id": non_member_id,
-                "timeframe": "1m",
+                "timeframe": "5m",
                 "open_time": CURRENT_OPEN,
-                "close_time": CURRENT_OPEN + timedelta(minutes=1) - timedelta(microseconds=1),
+                "close_time": CURRENT_OPEN + timedelta(minutes=5) - timedelta(microseconds=1),
                 "open": Decimal("1"),
                 "high": Decimal("1"),
                 "low": Decimal("1"),
@@ -165,9 +163,7 @@ async def test_engine_only_analyzes_actual_frame_members(db_session):
         created_at=FRAME_TIME,
         finalized_at=FRAME_TIME,
         members=[
-            MarketFrameMember(
-                instrument_id=member_id, symbol="BTCUSDT", m1=ctx, m5=ctx, m15=ctx, h1=ctx
-            )
+            MarketFrameMember(instrument_id=member_id, symbol="BTCUSDT", m5=ctx, m15=ctx, h1=ctx)
         ],
     )
 

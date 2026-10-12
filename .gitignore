@@ -17,3 +17,7 @@ node_modules/
 
 # OS
 .DS_Store
+
+# OINK CORP generated research datasets (Parquet + manifest) — regenerable
+# output, never committed. See app/scripts/generate_research_dataset.py.
+research/oink_corp/data/

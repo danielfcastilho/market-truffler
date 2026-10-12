@@ -6,27 +6,60 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.domain.market import Instrument as DomainInstrument
+from app.domain.timeframes import floor_to_boundary
 from app.integrations.bybit.client import BybitApiError
 from app.models.candle import Candle
 from app.models.instrument import Instrument
 from app.repositories.candle_repository import CandleRepository
 from app.repositories.instrument_repository import InstrumentRepository
+from app.services import history_reconciler
+from app.services.candle_ingestion import CandleIngestionService
 from app.services.history_reconciler import HistoryReconciler
 from app.services.market_universe import MarketUniverseUnavailable
 
 RETENTION_DAYS = 365
+FIVE = timedelta(minutes=5)
 
 
-async def _stored_1m(session_factory, instrument_id: int) -> list[Candle]:
+def _ms(dt: datetime) -> int:
+    return int(dt.timestamp() * 1000)
+
+
+@pytest.fixture
+def now(monkeypatch) -> datetime:
+    """Freezes the reconciler's clock 3 minutes into a 5m bucket (e.g.
+    10:03), so the catch-up target — the last 5m boundary at or before
+    `now - catchup_buffer` (2 minutes: 10:01 -> 10:00) — is exactly
+    `floor5(now)`, never dependent on when the test happens to run.
+    Returns the frozen instant."""
+    frozen = floor_to_boundary(datetime.now(UTC), FIVE) + timedelta(minutes=3)
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            return frozen if tz is not None else frozen.replace(tzinfo=None)
+
+    monkeypatch.setattr(history_reconciler, "datetime", _FrozenDatetime)
+    return frozen
+
+
+@pytest.fixture
+def boundary(now) -> datetime:
+    """The last 5m boundary at or before the frozen `now` — also the
+    catch-up target with the default 2-minute buffer."""
+    return floor_to_boundary(now, FIVE)
+
+
+async def _stored_5m(session_factory, instrument_id: int) -> list[Candle]:
     async with session_factory() as session:
         result = await session.execute(
-            select(Candle).where(Candle.instrument_id == instrument_id, Candle.timeframe == "1m")
+            select(Candle).where(Candle.instrument_id == instrument_id, Candle.timeframe == "5m")
         )
         return list(result.scalars().all())
 
 
 def _raw_row(open_time: datetime, close: str = "100.0") -> list[str]:
-    start_ms = int(open_time.timestamp() * 1000)
+    start_ms = _ms(open_time)
     return [str(start_ms), "100.0", "101.0", "99.0", close, "10.0", "1000.0"]
 
 
@@ -41,7 +74,9 @@ class _FakeBybitClient:
         self.calls: list[dict] = []
 
     async def get_kline(self, category, symbol, interval, *, start=None, end=None, limit=1000):
-        self.calls.append({"symbol": symbol, "start": start, "end": end, "limit": limit})
+        self.calls.append(
+            {"symbol": symbol, "interval": interval, "start": start, "end": end, "limit": limit}
+        )
         if self._error is not None:
             raise self._error
         queue = self._queues.get(symbol, [])
@@ -95,6 +130,27 @@ async def _seed_instrument(
         return row.id
 
 
+async def _seed_5m(session_factory, instrument_id: int, open_times: list[datetime]) -> None:
+    async with session_factory() as session:
+        await CandleRepository(session).upsert_many(
+            [
+                {
+                    "instrument_id": instrument_id,
+                    "timeframe": "5m",
+                    "open_time": open_time,
+                    "close_time": open_time + FIVE - timedelta(milliseconds=1),
+                    "open": 100,
+                    "high": 101,
+                    "low": 99,
+                    "close": 100,
+                    "volume": 1,
+                    "turnover": 100,
+                }
+                for open_time in open_times
+            ]
+        )
+
+
 def _reconciler(session_factory, bybit_client, **overrides) -> HistoryReconciler:
     kwargs = {
         "retention_days": RETENTION_DAYS,
@@ -109,133 +165,121 @@ def _reconciler(session_factory, bybit_client, **overrides) -> HistoryReconciler
     return HistoryReconciler(session_factory, bybit_client, _FakeMarketUniverse(), **kwargs)
 
 
+async def _bootstrap(session_factory, reconciler: HistoryReconciler, instrument_id: int) -> None:
+    async with session_factory() as session:
+        instrument = await session.get(Instrument, instrument_id)
+        await reconciler._bootstrap_step(
+            session, instrument, CandleIngestionService(CandleRepository(session))
+        )
+
+
+async def _catchup(session_factory, reconciler: HistoryReconciler, instrument_id: int) -> None:
+    async with session_factory() as session:
+        instrument = await session.get(Instrument, instrument_id)
+        candle_repo = CandleRepository(session)
+        await reconciler._catchup_step(
+            session, candle_repo, instrument, CandleIngestionService(candle_repo)
+        )
+
+
+async def _watermarks(session_factory, instrument_id: int) -> Instrument:
+    async with session_factory() as session:
+        return await session.get(Instrument, instrument_id)
+
+
 # -- bootstrap -----------------------------------------------------------------
 
 
 async def test_bootstrap_step_completes_in_one_pass_when_bybit_covers_the_whole_range(
-    session_factory,
+    session_factory, boundary
 ):
-    now = datetime.now(UTC).replace(second=0, microsecond=0)
-    target_start = now - timedelta(minutes=5)
+    target_start = boundary - FIVE * 5
     instrument_id = await _seed_instrument(
-        session_factory, target_start=target_start, synced_from=now, synced_through=now
+        session_factory, target_start=target_start, synced_from=boundary, synced_through=boundary
     )
 
-    rows = [_raw_row(target_start + timedelta(minutes=i)) for i in range(5)]
+    rows = [_raw_row(target_start + FIVE * i) for i in range(5)]
     client = _FakeBybitClient({"BTCUSDT": [{"list": rows}]})
-    reconciler = _reconciler(session_factory, client)
+    await _bootstrap(session_factory, _reconciler(session_factory, client), instrument_id)
 
-    async with session_factory() as session:
-        instrument = await session.get(Instrument, instrument_id)
-        from app.services.candle_ingestion import CandleIngestionService
-
-        await reconciler._bootstrap_step(
-            session, instrument, CandleIngestionService(CandleRepository(session))
-        )
-
-    async with session_factory() as session:
-        refreshed = await session.get(Instrument, instrument_id)
-        assert refreshed.history_synced_from == target_start  # bootstrap complete
-
-    assert len(await _stored_1m(session_factory, instrument_id)) == 5
+    assert (await _watermarks(session_factory, instrument_id)).history_synced_from == target_start
+    assert len(await _stored_5m(session_factory, instrument_id)) == 5
 
 
-async def test_bootstrap_reaches_natural_floor_on_empty_page(session_factory):
+async def test_bootstrap_requests_native_5m_candles(session_factory, boundary):
+    instrument_id = await _seed_instrument(
+        session_factory,
+        target_start=boundary - FIVE * 5,
+        synced_from=boundary,
+        synced_through=boundary,
+    )
+    client = _FakeBybitClient()
+    await _bootstrap(session_factory, _reconciler(session_factory, client), instrument_id)
+
+    assert [call["interval"] for call in client.calls] == ["5"]
+    assert client.calls[0]["end"] == _ms(boundary) - 1
+
+
+async def test_bootstrap_reaches_natural_floor_on_empty_page(session_factory, boundary):
     """A newly listed instrument: Bybit has nothing before its listing time,
     so an empty page must be treated as the true start of history, not a
     failure — and never manufactures candles to fill it (M3 invariant D)."""
-    now = datetime.now(UTC).replace(second=0, microsecond=0)
-    target_start = now - timedelta(days=200)  # further back than the symbol's real listing
+    target_start = boundary - timedelta(days=200)  # further back than the symbol's real listing
     instrument_id = await _seed_instrument(
-        session_factory, target_start=target_start, synced_from=now, synced_through=now
+        session_factory, target_start=target_start, synced_from=boundary, synced_through=boundary
     )
 
     client = _FakeBybitClient({"BTCUSDT": [{"list": []}]})
-    reconciler = _reconciler(session_factory, client)
+    await _bootstrap(session_factory, _reconciler(session_factory, client), instrument_id)
 
-    async with session_factory() as session:
-        instrument = await session.get(Instrument, instrument_id)
-        from app.services.candle_ingestion import CandleIngestionService
-
-        await reconciler._bootstrap_step(
-            session, instrument, CandleIngestionService(CandleRepository(session))
-        )
-
-    async with session_factory() as session:
-        refreshed = await session.get(Instrument, instrument_id)
-        assert refreshed.history_synced_from == target_start  # accepted as the floor
-    assert await _stored_1m(session_factory, instrument_id) == []  # nothing fabricated
+    assert (await _watermarks(session_factory, instrument_id)).history_synced_from == target_start
+    assert await _stored_5m(session_factory, instrument_id) == []  # nothing fabricated
 
 
 async def test_bootstrap_resumes_incrementally_without_redownloading_covered_range(
-    session_factory,
+    session_factory, boundary
 ):
     """A short page (progress, not yet complete) must advance the frontier
     to exactly where real data stopped, and a follow-up step must request
     only what's still missing — proving resumability doesn't re-fetch
     already-covered history."""
-    now = datetime.now(UTC).replace(second=0, microsecond=0)
-    target_start = now - timedelta(minutes=20)
+    target_start = boundary - FIVE * 20
     instrument_id = await _seed_instrument(
-        session_factory, target_start=target_start, synced_from=now, synced_through=now
+        session_factory, target_start=target_start, synced_from=boundary, synced_through=boundary
     )
 
-    # First page only covers the most recent 5 of the 20 target minutes.
-    first_page_start = now - timedelta(minutes=5)
-    first_page = [_raw_row(first_page_start + timedelta(minutes=i)) for i in range(5)]
+    # First page only covers the most recent 5 of the 20 target candles.
+    first_page_start = boundary - FIVE * 5
+    first_page = [_raw_row(first_page_start + FIVE * i) for i in range(5)]
     client = _FakeBybitClient({"BTCUSDT": [{"list": first_page}]})
     reconciler = _reconciler(session_factory, client)
 
-    from app.services.candle_ingestion import CandleIngestionService
+    await _bootstrap(session_factory, reconciler, instrument_id)
 
-    async with session_factory() as session:
-        instrument = await session.get(Instrument, instrument_id)
-        await reconciler._bootstrap_step(
-            session, instrument, CandleIngestionService(CandleRepository(session))
-        )
-
-    async with session_factory() as session:
-        refreshed = await session.get(Instrument, instrument_id)
-        assert refreshed.history_synced_from == first_page_start  # progress, not complete
-        assert refreshed.history_synced_from > target_start
+    refreshed = await _watermarks(session_factory, instrument_id)
+    assert refreshed.history_synced_from == first_page_start  # progress, not complete
+    assert refreshed.history_synced_from > target_start
 
     # The next step's request must end just before the already-covered range.
     first_call_end_ms = client.calls[0]["end"]
-    assert first_call_end_ms < int(now.timestamp() * 1000)
+    assert first_call_end_ms < _ms(boundary)
 
-    second_page_start = target_start
-    second_page = [_raw_row(second_page_start + timedelta(minutes=i)) for i in range(15)]
+    second_page = [_raw_row(target_start + FIVE * i) for i in range(15)]
     client._queues["BTCUSDT"] = [{"list": second_page}]
 
-    async with session_factory() as session:
-        instrument = await session.get(Instrument, instrument_id)
-        await reconciler._bootstrap_step(
-            session, instrument, CandleIngestionService(CandleRepository(session))
-        )
+    await _bootstrap(session_factory, reconciler, instrument_id)
 
     second_call_end_ms = client.calls[1]["end"]
-    assert second_call_end_ms < first_call_end_ms  # walked strictly further back
-
-    async with session_factory() as session:
-        refreshed = await session.get(Instrument, instrument_id)
-        assert refreshed.history_synced_from == target_start  # now complete
+    assert second_call_end_ms == _ms(first_page_start) - 1  # walked strictly further back
+    assert (await _watermarks(session_factory, instrument_id)).history_synced_from == target_start
 
 
-async def test_bootstrap_already_complete_makes_no_rest_call(session_factory):
-    now = datetime.now(UTC).replace(second=0, microsecond=0)
+async def test_bootstrap_already_complete_makes_no_rest_call(session_factory, boundary):
     instrument_id = await _seed_instrument(
-        session_factory, target_start=now, synced_from=now, synced_through=now
+        session_factory, target_start=boundary, synced_from=boundary, synced_through=boundary
     )
     client = _FakeBybitClient()
-    reconciler = _reconciler(session_factory, client)
-
-    from app.services.candle_ingestion import CandleIngestionService
-
-    async with session_factory() as session:
-        instrument = await session.get(Instrument, instrument_id)
-        await reconciler._bootstrap_step(
-            session, instrument, CandleIngestionService(CandleRepository(session))
-        )
+    await _bootstrap(session_factory, _reconciler(session_factory, client), instrument_id)
 
     assert client.calls == []
 
@@ -244,42 +288,31 @@ async def test_bootstrap_already_complete_makes_no_rest_call(session_factory):
 
 
 async def test_bootstrap_never_requests_history_earlier_than_the_configured_horizon(
-    session_factory,
+    session_factory, now, boundary
 ):
     """A pre-existing instrument's own `history_target_start` may still
     reflect an older, larger retention policy (e.g. 365 days, persisted
     before the operator lowered `market_history_retention_days` to 30) —
     bootstrap must never request/dig earlier than the *current* configured
     horizon, no matter what that stale per-instrument watermark says."""
-    now = datetime.now(UTC).replace(second=0, microsecond=0)
-    stale_target = now - timedelta(days=365)  # set back when retention was 365 days
-    synced_from = now - timedelta(days=25)  # partway through the current 30-day window
+    stale_target = boundary - timedelta(days=365)  # set back when retention was 365 days
+    synced_from = boundary - timedelta(days=25)  # partway through the current 30-day window
     instrument_id = await _seed_instrument(
-        session_factory, target_start=stale_target, synced_from=synced_from, synced_through=now
+        session_factory, target_start=stale_target, synced_from=synced_from, synced_through=boundary
     )
 
-    rows = [_raw_row(now - timedelta(days=29) + timedelta(minutes=i)) for i in range(5)]
+    rows = [_raw_row(boundary - timedelta(days=29) + FIVE * i) for i in range(5)]
     client = _FakeBybitClient({"BTCUSDT": [{"list": rows}]})
-    reconciler = _reconciler(session_factory, client, retention_days=30)
+    await _bootstrap(
+        session_factory, _reconciler(session_factory, client, retention_days=30), instrument_id
+    )
 
-    from app.services.candle_ingestion import CandleIngestionService
-
-    async with session_factory() as session:
-        instrument = await session.get(Instrument, instrument_id)
-        await reconciler._bootstrap_step(
-            session, instrument, CandleIngestionService(CandleRepository(session))
-        )
-
-    # The requested start must sit right around "30 days ago" — nowhere
-    # near the stale 365-day target (which would fail the lower bound by
-    # over 300 days).
-    lower_bound_ms = int((now - timedelta(days=30)).timestamp() * 1000)
-    upper_bound_ms = int((datetime.now(UTC) - timedelta(days=30)).timestamp() * 1000)
-    assert lower_bound_ms <= client.calls[0]["start"] <= upper_bound_ms
+    # Exactly "30 days ago" — nowhere near the stale 365-day target.
+    assert client.calls[0]["start"] == _ms(now - timedelta(days=30))
 
 
 async def test_bootstrap_already_synced_past_the_current_horizon_makes_no_rest_call(
-    session_factory,
+    session_factory, boundary
 ):
     """An instrument already bootstrapped deep into history under an
     older, larger retention policy (its `history_synced_from` far older
@@ -288,34 +321,26 @@ async def test_bootstrap_already_synced_past_the_current_horizon_makes_no_rest_c
     still says 365 days — the effective floor caps how far back is
     'needed' under the current policy, and this instrument already
     exceeds it."""
-    now = datetime.now(UTC).replace(second=0, microsecond=0)
-    stale_target = now - timedelta(days=365)
-    deep_synced_from = now - timedelta(days=200)  # already synced far past the 30-day horizon
+    stale_target = boundary - timedelta(days=365)
+    deep_synced_from = boundary - timedelta(days=200)  # already far past the 30-day horizon
     instrument_id = await _seed_instrument(
         session_factory,
         target_start=stale_target,
         synced_from=deep_synced_from,
-        synced_through=now,
+        synced_through=boundary,
     )
     client = _FakeBybitClient()
-    reconciler = _reconciler(session_factory, client, retention_days=30)
-
-    from app.services.candle_ingestion import CandleIngestionService
-
-    async with session_factory() as session:
-        instrument = await session.get(Instrument, instrument_id)
-        await reconciler._bootstrap_step(
-            session, instrument, CandleIngestionService(CandleRepository(session))
-        )
+    await _bootstrap(
+        session_factory, _reconciler(session_factory, client, retention_days=30), instrument_id
+    )
 
     assert client.calls == []
-    async with session_factory() as session:
-        refreshed = await session.get(Instrument, instrument_id)
-        assert refreshed.history_synced_from == deep_synced_from  # untouched
+    refreshed = await _watermarks(session_factory, instrument_id)
+    assert refreshed.history_synced_from == deep_synced_from  # untouched
 
 
 async def test_bootstrap_reaching_the_floor_snaps_to_the_effective_horizon_not_the_stale_target(
-    session_factory,
+    session_factory, now, boundary
 ):
     """When bootstrap reaches the natural floor of available history
     (nothing left for Bybit to return), the frontier must snap to the
@@ -326,39 +351,30 @@ async def test_bootstrap_reaching_the_floor_snaps_to_the_effective_horizon_not_t
     `history_target_start` itself must stay untouched — it is never
     rewritten, truthfully recording what bootstrap was originally aimed
     at."""
-    now = datetime.now(UTC).replace(second=0, microsecond=0)
-    stale_target = now - timedelta(days=365)
-    synced_from = now - timedelta(days=25)
+    stale_target = boundary - timedelta(days=365)
+    synced_from = boundary - timedelta(days=25)
     instrument_id = await _seed_instrument(
-        session_factory, target_start=stale_target, synced_from=synced_from, synced_through=now
+        session_factory, target_start=stale_target, synced_from=synced_from, synced_through=boundary
     )
     client = _FakeBybitClient({"BTCUSDT": [{"list": []}]})  # nothing left -> natural floor
-    reconciler = _reconciler(session_factory, client, retention_days=30)
+    await _bootstrap(
+        session_factory, _reconciler(session_factory, client, retention_days=30), instrument_id
+    )
 
-    from app.services.candle_ingestion import CandleIngestionService
-
-    async with session_factory() as session:
-        instrument = await session.get(Instrument, instrument_id)
-        await reconciler._bootstrap_step(
-            session, instrument, CandleIngestionService(CandleRepository(session))
-        )
-
-    async with session_factory() as session:
-        refreshed = await session.get(Instrument, instrument_id)
-        assert refreshed.history_synced_from > now - timedelta(days=31)
-        assert refreshed.history_target_start == stale_target  # never rewritten
+    refreshed = await _watermarks(session_factory, instrument_id)
+    assert refreshed.history_synced_from == now - timedelta(days=30)
+    assert refreshed.history_target_start == stale_target  # never rewritten
 
 
 async def test_gap_recovery_inside_the_retained_window_is_unaffected_by_the_horizon(
-    session_factory,
+    session_factory, boundary
 ):
     """Catch-up/gap-repair (`_catchup_step`) walks `history_synced_through`
     forward within the retained window — it must keep working regardless of the configured
     retention horizon. Exercised here explicitly at the current 30-day
     policy value, mirroring
     `test_catchup_falls_back_to_rest_when_data_is_actually_missing`."""
-    now = datetime.now(UTC).replace(second=0, microsecond=0)
-    synced_through = now - timedelta(minutes=10)
+    synced_through = boundary - FIVE * 4
     instrument_id = await _seed_instrument(
         session_factory,
         target_start=synced_through,
@@ -366,82 +382,47 @@ async def test_gap_recovery_inside_the_retained_window_is_unaffected_by_the_hori
         synced_through=synced_through,
     )
 
-    gap_rows = [_raw_row(synced_through + timedelta(minutes=i + 1)) for i in range(5)]
+    gap_rows = [_raw_row(synced_through + FIVE * (i + 1)) for i in range(3)]
     client = _FakeBybitClient({"BTCUSDT": [{"list": gap_rows}]})
-    reconciler = _reconciler(session_factory, client, retention_days=30, catchup_buffer_minutes=2)
-
-    from app.services.candle_ingestion import CandleIngestionService
-
-    async with session_factory() as session:
-        instrument = await session.get(Instrument, instrument_id)
-        candle_repo = CandleRepository(session)
-        await reconciler._catchup_step(
-            session, candle_repo, instrument, CandleIngestionService(candle_repo)
-        )
+    await _catchup(
+        session_factory, _reconciler(session_factory, client, retention_days=30), instrument_id
+    )
 
     # The single queued page still leaves the window incomplete, so the
     # bounded one-retry path (see the gap-retry tests below) fires a
     # second, identically-shaped request before accepting the remainder
     # as a genuine gap.
     assert len(client.calls) == 2
-    assert len(await _stored_1m(session_factory, instrument_id)) == 5
+    assert len(await _stored_5m(session_factory, instrument_id)) == 3
 
 
 # -- catch-up / gap repair -------------------------------------------------------
 
 
-async def test_catchup_uses_cheap_path_when_live_ws_already_filled_the_gap(session_factory):
+async def test_catchup_uses_cheap_path_when_live_ws_already_filled_the_gap(
+    session_factory, boundary
+):
     """If the live collector has already persisted the candles, catch-up
     must advance the frontier without ever calling Bybit REST."""
-    now = datetime.now(UTC).replace(second=0, microsecond=0)
-    synced_through = now - timedelta(minutes=5)
+    synced_through = boundary - FIVE * 3
     instrument_id = await _seed_instrument(
         session_factory,
         target_start=synced_through,
         synced_from=synced_through,
         synced_through=synced_through,
     )
-
-    async with session_factory() as session:
-        repo = CandleRepository(session)
-        rows = [
-            {
-                "instrument_id": instrument_id,
-                "timeframe": "1m",
-                "open_time": synced_through + timedelta(minutes=i),
-                "close_time": synced_through + timedelta(minutes=i + 1) - timedelta(microseconds=1),
-                "open": 100,
-                "high": 101,
-                "low": 99,
-                "close": 100,
-                "volume": 1,
-                "turnover": 100,
-            }
-            for i in range(3)  # covers up to now - 2min, i.e. the catchup buffer edge
-        ]
-        await repo.upsert_many(rows)
+    # Covers up to the catch-up target (the last 5m boundary before the buffer).
+    await _seed_5m(session_factory, instrument_id, [synced_through + FIVE * i for i in range(3)])
 
     client = _FakeBybitClient()
-    reconciler = _reconciler(session_factory, client, catchup_buffer_minutes=2)
-
-    from app.services.candle_ingestion import CandleIngestionService
-
-    async with session_factory() as session:
-        instrument = await session.get(Instrument, instrument_id)
-        candle_repo = CandleRepository(session)
-        await reconciler._catchup_step(
-            session, candle_repo, instrument, CandleIngestionService(candle_repo)
-        )
+    await _catchup(session_factory, _reconciler(session_factory, client), instrument_id)
 
     assert client.calls == []  # never touched Bybit
-    async with session_factory() as session:
-        refreshed = await session.get(Instrument, instrument_id)
-        assert refreshed.history_synced_through > synced_through
+    assert (await _watermarks(session_factory, instrument_id)).history_synced_through == boundary
 
 
-async def test_catchup_falls_back_to_rest_when_data_is_actually_missing(session_factory):
-    now = datetime.now(UTC).replace(second=0, microsecond=0)
-    synced_through = now - timedelta(minutes=10)
+async def test_catchup_falls_back_to_rest_when_data_is_actually_missing(session_factory, boundary):
+    synced_through = boundary - FIVE * 4
     instrument_id = await _seed_instrument(
         session_factory,
         target_start=synced_through,
@@ -449,46 +430,106 @@ async def test_catchup_falls_back_to_rest_when_data_is_actually_missing(session_
         synced_through=synced_through,
     )
 
-    gap_rows = [_raw_row(synced_through + timedelta(minutes=i + 1)) for i in range(5)]
+    gap_rows = [_raw_row(synced_through + FIVE * (i + 1)) for i in range(3)]
     client = _FakeBybitClient({"BTCUSDT": [{"list": gap_rows}]})
-    reconciler = _reconciler(session_factory, client, catchup_buffer_minutes=2)
-
-    from app.services.candle_ingestion import CandleIngestionService
-
-    async with session_factory() as session:
-        instrument = await session.get(Instrument, instrument_id)
-        candle_repo = CandleRepository(session)
-        await reconciler._catchup_step(
-            session, candle_repo, instrument, CandleIngestionService(candle_repo)
-        )
+    await _catchup(session_factory, _reconciler(session_factory, client), instrument_id)
 
     # Had to ask Bybit for the missing range, and since the single queued
     # page still leaves it incomplete, once more for the bounded retry
     # (see the gap-retry tests below) — never a third time.
     assert len(client.calls) == 2
-    assert len(await _stored_1m(session_factory, instrument_id)) == 5
-    async with session_factory() as session:
-        refreshed = await session.get(Instrument, instrument_id)
-        # A genuinely-incomplete-after-retry chunk still isn't a reason to
-        # stall this instrument's catch-up forever.
-        assert refreshed.history_synced_through > synced_through
+    assert len(await _stored_5m(session_factory, instrument_id)) == 3
+    # A genuinely-incomplete-after-retry chunk still isn't a reason to
+    # stall this instrument's catch-up forever.
+    assert (await _watermarks(session_factory, instrument_id)).history_synced_through == boundary
 
 
-async def test_catchup_gap_retry_recovers_a_transient_exchange_indexing_lag(session_factory):
+async def test_catchup_requests_exactly_the_aligned_chunk_at_5m(session_factory, boundary):
+    """Bybit returns every candle *overlapping* [start, end], so the
+    request ends 1ms before the chunk end — otherwise the candle opening
+    at the chunk end (possibly still forming) would be fetched too."""
+    synced_through = boundary - FIVE * 4
+    instrument_id = await _seed_instrument(
+        session_factory,
+        target_start=synced_through,
+        synced_from=synced_through,
+        synced_through=synced_through,
+    )
+    client = _FakeBybitClient()
+    await _catchup(session_factory, _reconciler(session_factory, client), instrument_id)
+
+    assert client.calls[0]["interval"] == "5"
+    assert client.calls[0]["start"] == _ms(synced_through)
+    assert client.calls[0]["end"] == _ms(boundary) - 1
+
+
+async def test_catchup_floors_a_legacy_unaligned_watermark_to_a_5m_boundary(
+    session_factory, boundary
+):
+    """A `history_synced_through` written before 5m became the base
+    timeframe can sit mid-bucket (e.g. 10:02:24); catch-up must restart
+    from that bucket's own start so the candle containing it is covered."""
+    legacy = boundary - FIVE * 3 + timedelta(minutes=2, seconds=24)
+    instrument_id = await _seed_instrument(
+        session_factory, target_start=legacy, synced_from=legacy, synced_through=legacy
+    )
+    client = _FakeBybitClient()
+    await _catchup(session_factory, _reconciler(session_factory, client), instrument_id)
+
+    assert client.calls[0]["start"] == _ms(boundary - FIVE * 3)
+
+
+async def test_catchup_never_persists_a_still_forming_candle(session_factory, now, boundary):
+    """Even if Bybit hands back the candle that is still forming (it opened
+    at the last boundary and won't close until boundary + 5m, after the
+    frozen `now`), it must not be stored as if it were closed."""
+    synced_through = boundary - FIVE * 2
+    instrument_id = await _seed_instrument(
+        session_factory,
+        target_start=synced_through,
+        synced_from=synced_through,
+        synced_through=synced_through,
+    )
+    rows = [_raw_row(boundary), _raw_row(boundary - FIVE), _raw_row(boundary - FIVE * 2)]
+    client = _FakeBybitClient({"BTCUSDT": [{"list": rows}]})
+    await _catchup(session_factory, _reconciler(session_factory, client), instrument_id)
+
+    stored = {c.open_time for c in await _stored_5m(session_factory, instrument_id)}
+    assert boundary + FIVE > now  # the forming candle really hasn't closed
+    assert stored == {boundary - FIVE * 2, boundary - FIVE}
+
+
+async def test_bootstrap_never_persists_a_still_forming_candle(session_factory, boundary):
+    """Same guarantee on the bootstrap path, which advances its frontier
+    from the oldest row but must still drop an unclosed one."""
+    instrument_id = await _seed_instrument(
+        session_factory,
+        target_start=boundary - FIVE * 2,
+        synced_from=boundary + FIVE,
+        synced_through=boundary,
+    )
+    rows = [_raw_row(boundary), _raw_row(boundary - FIVE), _raw_row(boundary - FIVE * 2)]
+    client = _FakeBybitClient({"BTCUSDT": [{"list": rows}]})
+    await _bootstrap(session_factory, _reconciler(session_factory, client), instrument_id)
+
+    stored = {c.open_time for c in await _stored_5m(session_factory, instrument_id)}
+    assert stored == {boundary - FIVE * 2, boundary - FIVE}
+
+
+async def test_catchup_gap_retry_recovers_a_transient_exchange_indexing_lag(
+    session_factory, boundary
+):
     """Regression test for the actual production bug: every one of 771
-    instruments simultaneously lost the same live 1m minute (a WebSocket
+    instruments simultaneously lost the same live candle (a WebSocket
     hiccup), and the exchange's REST kline endpoint hadn't indexed that
-    very-recent minute yet on the first catch-up attempt either — but it
+    very-recent candle yet on the first catch-up attempt either — but it
     *was* available moments later. The old code accepted the first
     (incomplete) REST response as final and permanently advanced the
     watermark past the gap, so RSI's exact-window check failed for every
     instrument and every timeframe whose required window crossed that
-    minute (this is why rsi_14_1h was 0% across the entire universe: its
-    15-hour window is wide enough that the single missing minute's hour
-    was virtually always inside it). The fix must retry once and pick up
-    a page that arrives complete on the second attempt."""
-    now = datetime.now(UTC).replace(second=0, microsecond=0)
-    synced_through = now - timedelta(minutes=10)
+    candle. The fix must retry once and pick up a page that arrives
+    complete on the second attempt."""
+    synced_through = boundary - FIVE * 8
     instrument_id = await _seed_instrument(
         session_factory,
         target_start=synced_through,
@@ -496,51 +537,30 @@ async def test_catchup_gap_retry_recovers_a_transient_exchange_indexing_lag(sess
         synced_through=synced_through,
     )
 
-    # catchup_buffer_minutes=2 -> window is [synced_through, now-2min), 8
-    # expected minutes (offsets 0..7). First attempt: exchange only has
-    # offsets 1-5 indexed yet (offsets 0, 6, 7 still lagging). Second
-    # attempt (the retry): the lag has resolved and the exchange now
-    # returns the previously-missing offsets too.
-    first_attempt_rows = [_raw_row(synced_through + timedelta(minutes=i + 1)) for i in range(5)]
-    second_attempt_rows = [
-        _raw_row(synced_through + timedelta(minutes=offset)) for offset in (0, 6, 7)
-    ]
+    # Window is [synced_through, boundary): 8 expected candles (offsets
+    # 0..7). First attempt: exchange only has offsets 1-5 indexed yet
+    # (0, 6, 7 still lagging). Second attempt (the retry): the lag has
+    # resolved and the exchange now returns the previously-missing ones.
+    first_attempt_rows = [_raw_row(synced_through + FIVE * (i + 1)) for i in range(5)]
+    second_attempt_rows = [_raw_row(synced_through + FIVE * offset) for offset in (0, 6, 7)]
     client = _FakeBybitClient(
         {"BTCUSDT": [{"list": first_attempt_rows}, {"list": second_attempt_rows}]}
     )
-    reconciler = _reconciler(session_factory, client, catchup_buffer_minutes=2)
-
-    from app.services.candle_ingestion import CandleIngestionService
-
-    async with session_factory() as session:
-        instrument = await session.get(Instrument, instrument_id)
-        candle_repo = CandleRepository(session)
-        await reconciler._catchup_step(
-            session, candle_repo, instrument, CandleIngestionService(candle_repo)
-        )
+    await _catchup(session_factory, _reconciler(session_factory, client), instrument_id)
 
     assert len(client.calls) == 2
-    stored = await _stored_1m(session_factory, instrument_id)
-    assert len(stored) == 8  # the full window, gap included, is now present
-    assert {c.open_time for c in stored} == {
-        synced_through + timedelta(minutes=i) for i in range(8)
-    }
-    async with session_factory() as session:
-        refreshed = await session.get(Instrument, instrument_id)
-        # Advanced to the buffer edge (allow for the few ms of real time
-        # that elapse between the test's `now` snapshot and the code's own).
-        assert refreshed.history_synced_through >= now - timedelta(minutes=2)
-        assert refreshed.history_synced_through <= datetime.now(UTC) - timedelta(minutes=2)
+    stored = await _stored_5m(session_factory, instrument_id)
+    assert {c.open_time for c in stored} == {synced_through + FIVE * i for i in range(8)}
+    assert (await _watermarks(session_factory, instrument_id)).history_synced_through == boundary
 
 
-async def test_catchup_gap_retry_is_bounded_to_exactly_one_extra_attempt(session_factory):
-    """A genuinely permanent gap (no trade recorded that minute — REST
+async def test_catchup_gap_retry_is_bounded_to_exactly_one_extra_attempt(session_factory, boundary):
+    """A genuinely permanent gap (no trade recorded in that candle — REST
     will never return it, no matter how many times it's asked) must not
     stall an instrument's catch-up forever: the retry is bounded to
     exactly one extra attempt, then the remaining gap is accepted and the
     watermark advances. A third queued response must never be consumed."""
-    now = datetime.now(UTC).replace(second=0, microsecond=0)
-    synced_through = now - timedelta(minutes=10)
+    synced_through = boundary - FIVE * 8
     instrument_id = await _seed_instrument(
         session_factory,
         target_start=synced_through,
@@ -548,9 +568,9 @@ async def test_catchup_gap_retry_is_bounded_to_exactly_one_extra_attempt(session
         synced_through=synced_through,
     )
 
-    first_attempt_rows = [_raw_row(synced_through + timedelta(minutes=i + 1)) for i in range(5)]
-    second_attempt_rows = [_raw_row(synced_through + timedelta(minutes=6))]  # still short
-    third_attempt_rows = [_raw_row(synced_through + timedelta(minutes=7))]  # must never be used
+    first_attempt_rows = [_raw_row(synced_through + FIVE * (i + 1)) for i in range(5)]
+    second_attempt_rows = [_raw_row(synced_through + FIVE * 6)]  # still short
+    third_attempt_rows = [_raw_row(synced_through + FIVE * 7)]  # must never be used
     client = _FakeBybitClient(
         {
             "BTCUSDT": [
@@ -560,94 +580,47 @@ async def test_catchup_gap_retry_is_bounded_to_exactly_one_extra_attempt(session
             ]
         }
     )
-    reconciler = _reconciler(session_factory, client, catchup_buffer_minutes=2)
-
-    from app.services.candle_ingestion import CandleIngestionService
-
-    async with session_factory() as session:
-        instrument = await session.get(Instrument, instrument_id)
-        candle_repo = CandleRepository(session)
-        await reconciler._catchup_step(
-            session, candle_repo, instrument, CandleIngestionService(candle_repo)
-        )
+    await _catchup(session_factory, _reconciler(session_factory, client), instrument_id)
 
     assert len(client.calls) == 2  # never a third attempt
-    stored = await _stored_1m(session_factory, instrument_id)
+    stored = await _stored_5m(session_factory, instrument_id)
     assert len(stored) == 6  # offsets 0 and 7 remain genuinely missing
-    async with session_factory() as session:
-        refreshed = await session.get(Instrument, instrument_id)
-        # Still advances past the accepted, permanent-looking gap — a
-        # symbol with one bad minute must not block all future catch-up.
-        assert refreshed.history_synced_through >= now - timedelta(minutes=2)
-        assert refreshed.history_synced_through <= datetime.now(UTC) - timedelta(minutes=2)
+    # Still advances past the accepted, permanent-looking gap — a symbol
+    # with one bad candle must not block all future catch-up.
+    assert (await _watermarks(session_factory, instrument_id)).history_synced_through == boundary
 
 
-async def test_catchup_does_not_advance_past_the_buffer_near_now(session_factory):
-    now = datetime.now(UTC).replace(second=0, microsecond=0)
+async def test_catchup_does_not_advance_past_the_buffer_near_now(session_factory, boundary):
     instrument_id = await _seed_instrument(
-        session_factory, target_start=now, synced_from=now, synced_through=now
+        session_factory, target_start=boundary, synced_from=boundary, synced_through=boundary
     )
     client = _FakeBybitClient()
-    reconciler = _reconciler(session_factory, client, catchup_buffer_minutes=2)
-
-    from app.services.candle_ingestion import CandleIngestionService
-
-    async with session_factory() as session:
-        instrument = await session.get(Instrument, instrument_id)
-        candle_repo = CandleRepository(session)
-        await reconciler._catchup_step(
-            session, candle_repo, instrument, CandleIngestionService(candle_repo)
-        )
+    await _catchup(session_factory, _reconciler(session_factory, client), instrument_id)
 
     assert client.calls == []
-    async with session_factory() as session:
-        refreshed = await session.get(Instrument, instrument_id)
-        assert refreshed.history_synced_through == now  # nothing to do yet
+    # Nothing to do yet: the candle opened at `boundary` hasn't closed.
+    assert (await _watermarks(session_factory, instrument_id)).history_synced_through == boundary
 
 
 # -- live/bootstrap overlap is idempotent ---------------------------------------
 
 
-async def test_bootstrap_ingestion_overlapping_a_live_candle_is_idempotent(session_factory):
-    now = datetime.now(UTC).replace(second=0, microsecond=0)
-    target_start = now - timedelta(minutes=1)
+async def test_bootstrap_ingestion_overlapping_a_live_candle_is_idempotent(
+    session_factory, boundary
+):
+    target_start = boundary - FIVE
     instrument_id = await _seed_instrument(
-        session_factory, target_start=target_start, synced_from=now, synced_through=now
+        session_factory, target_start=target_start, synced_from=boundary, synced_through=boundary
     )
 
-    # The live WebSocket collector already persisted this exact minute.
-    async with session_factory() as session:
-        repo = CandleRepository(session)
-        await repo.upsert_many(
-            [
-                {
-                    "instrument_id": instrument_id,
-                    "timeframe": "1m",
-                    "open_time": target_start,
-                    "close_time": target_start + timedelta(minutes=1) - timedelta(microseconds=1),
-                    "open": 100,
-                    "high": 101,
-                    "low": 99,
-                    "close": 100,
-                    "volume": 1,
-                    "turnover": 100,
-                }
-            ]
-        )
+    # The live WebSocket collector already persisted this exact candle.
+    await _seed_5m(session_factory, instrument_id, [target_start])
 
-    # Bootstrap independently fetches the same minute via REST.
+    # Bootstrap independently fetches the same candle via REST.
     client = _FakeBybitClient({"BTCUSDT": [{"list": [_raw_row(target_start)]}]})
-    reconciler = _reconciler(session_factory, client)
+    await _bootstrap(session_factory, _reconciler(session_factory, client), instrument_id)
 
-    from app.services.candle_ingestion import CandleIngestionService
-
-    async with session_factory() as session:
-        instrument = await session.get(Instrument, instrument_id)
-        await reconciler._bootstrap_step(
-            session, instrument, CandleIngestionService(CandleRepository(session))
-        )
-
-    assert len(await _stored_1m(session_factory, instrument_id)) == 1  # no duplicate row
+    assert len(await _stored_5m(session_factory, instrument_id)) == 1  # no duplicate row
 
 
 # -- recovery failure must not crash ---------------------------------------------
@@ -752,32 +725,25 @@ async def test_start_and_stop_is_clean_with_an_empty_universe(session_factory):
     assert reconciler.running is False
 
 
-async def test_long_outage_catchup_skips_expired_history_without_rewriting_past(session_factory):
-    from app.services.candle_ingestion import CandleIngestionService
-
-    now = datetime.now(UTC)
+async def test_long_outage_catchup_skips_expired_history_without_rewriting_past(
+    session_factory, now
+):
     old = now - timedelta(days=200)
     instrument_id = await _seed_instrument(
         session_factory, target_start=old, synced_from=old, synced_through=old
     )
     client = _FakeBybitClient()
-    reconciler = _reconciler(session_factory, client, retention_days=30)
-    before = datetime.now(UTC) - timedelta(days=30)
-    async with session_factory() as session:
-        instrument = await session.get(Instrument, instrument_id)
-        repo = CandleRepository(session)
-        await reconciler._catchup_step(session, repo, instrument, CandleIngestionService(repo))
-    after = datetime.now(UTC) - timedelta(days=30)
-    assert (
-        int(before.timestamp() * 1000)
-        <= client.calls[0]["start"]
-        <= int(after.timestamp() * 1000) + 1
+    await _catchup(
+        session_factory, _reconciler(session_factory, client, retention_days=30), instrument_id
     )
-    async with session_factory() as session:
-        instrument = await session.get(Instrument, instrument_id)
-        assert instrument.history_target_start == old
-        assert instrument.history_synced_from == old
-        assert instrument.history_synced_through > before
+
+    # Resumes at the (5m-floored) retention floor, never 200 days back.
+    resume_at = floor_to_boundary(now - timedelta(days=30), FIVE)
+    assert client.calls[0]["start"] == _ms(resume_at)
+    instrument = await _watermarks(session_factory, instrument_id)
+    assert instrument.history_target_start == old
+    assert instrument.history_synced_from == old
+    assert instrument.history_synced_through == resume_at + FIVE * 1000  # one full page
 
 
 async def test_retention_prunes_members_before_candles_and_rolls_partitions(

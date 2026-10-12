@@ -92,12 +92,12 @@ def _member(
     instrument_id: int, symbol: str, timeframe: str, anchor_open_time: datetime
 ) -> MarketFrameMember:
     """A member whose *only* populated timeframe field is the one under
-    test — RsiFeature never looks at the others, so a placeholder m1
+    test — RsiFeature never looks at the others, so a placeholder
     context is enough to satisfy the dataclass."""
     duration = _TIMEFRAME_DURATIONS[timeframe]
     ctx = _ctx(anchor_open_time, "0", duration)
-    placeholder = _ctx(anchor_open_time, "0", timedelta(minutes=1))
-    fields = {"m1": placeholder, "m5": placeholder, "m15": placeholder, "h1": placeholder}
+    placeholder = _ctx(anchor_open_time, "0", timedelta(minutes=5))
+    fields = {"m5": placeholder, "m15": placeholder, "h1": placeholder}
     fields[_ANCHOR_FIELD[timeframe]] = ctx
     return MarketFrameMember(instrument_id=instrument_id, symbol=symbol, **fields)
 
@@ -274,11 +274,10 @@ async def test_missing_anchor_yields_none_without_querying():
     """When the frame itself has no h4 for an instrument (e.g. its first 4h
     bucket hasn't closed yet — see MarketFrameMember.h4), rsi_14_4h must be
     None without needing any candle to exist at all."""
-    placeholder = _ctx(FRAME_TIME, "0", timedelta(minutes=1))
+    placeholder = _ctx(FRAME_TIME, "0", timedelta(minutes=5))
     member = MarketFrameMember(
         instrument_id=1,
         symbol="BTCUSDT",
-        m1=placeholder,
         m5=placeholder,
         m15=placeholder,
         h1=placeholder,
@@ -341,7 +340,6 @@ async def test_full_feature_engine_query_count_does_not_scale_with_instrument_co
         f for f in FEATURES if f.name in {"return_5m", "return_1h"} or f.name.startswith("rsi_14_")
     ]
 
-    anchor_1m = FRAME_TIME - timedelta(minutes=1)
     anchors = {
         "5m": FRAME_TIME - timedelta(minutes=5),
         "15m": FRAME_TIME - timedelta(minutes=15),
@@ -354,12 +352,10 @@ async def test_full_feature_engine_query_count_does_not_scale_with_instrument_co
         iid = await _seed_instrument(db_session, f"SYM{i}USDT")
         for timeframe, anchor in anchors.items():
             await _seed_window(db_session, iid, timeframe, anchor, _HAND_VERIFIABLE_CLOSES)
-        ctx1m = _ctx(anchor_1m, "100", timedelta(minutes=1))
         members.append(
             MarketFrameMember(
                 instrument_id=iid,
                 symbol=f"SYM{i}USDT",
-                m1=ctx1m,
                 m5=_ctx(anchors["5m"], "0", _TIMEFRAME_DURATIONS["5m"]),
                 m15=_ctx(anchors["15m"], "0", _TIMEFRAME_DURATIONS["15m"]),
                 h1=_ctx(anchors["1h"], "0", _TIMEFRAME_DURATIONS["1h"]),

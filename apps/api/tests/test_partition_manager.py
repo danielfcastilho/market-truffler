@@ -62,7 +62,6 @@ async def test_candle_reference_guard_includes_cross_month_and_stale_context(db_
         MarketFrameMember(
             frame_time=september,
             instrument_id=1,
-            open_time_1m=august,
             open_time_5m=august,
             open_time_15m=august,
             open_time_1h=july,
@@ -91,11 +90,10 @@ async def test_candle_reference_guard_includes_4h_references(db_session):
         MarketFrameMember(
             frame_time=september,
             instrument_id=1,
-            open_time_1m=september,
             open_time_5m=september,
             open_time_15m=september,
             open_time_1h=september,
-            open_time_4h=march,  # far older than the other four — only 4h references this month
+            open_time_4h=march,  # far older than the other three — only 4h references this month
         )
     )
     await db_session.commit()
@@ -119,7 +117,6 @@ async def test_candle_reference_guard_tolerates_null_open_time_4h(db_session):
         MarketFrameMember(
             frame_time=june,
             instrument_id=1,
-            open_time_1m=datetime(2020, 1, 1, tzinfo=UTC),
             open_time_5m=datetime(2020, 1, 1, tzinfo=UTC),
             open_time_15m=datetime(2020, 1, 1, tzinfo=UTC),
             open_time_1h=datetime(2020, 1, 1, tzinfo=UTC),

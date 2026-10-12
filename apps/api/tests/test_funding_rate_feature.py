@@ -8,13 +8,13 @@ from app.repositories.candle_repository import CandleRepository
 from app.repositories.funding_rate_repository import FundingRateRepository
 
 FRAME_TIME = datetime(2026, 1, 1, 14, 0, tzinfo=UTC)
-CURRENT_OPEN = FRAME_TIME - timedelta(minutes=1)
+CURRENT_OPEN = FRAME_TIME - timedelta(minutes=5)
 
 
 def _ctx(open_time: datetime, close: str = "1") -> FrameCandleContext:
     return FrameCandleContext(
         open_time=open_time,
-        close_time=open_time + timedelta(minutes=1) - timedelta(microseconds=1),
+        close_time=open_time + timedelta(minutes=5) - timedelta(microseconds=1),
         open=Decimal(close),
         high=Decimal(close),
         low=Decimal(close),
@@ -26,9 +26,7 @@ def _ctx(open_time: datetime, close: str = "1") -> FrameCandleContext:
 
 def _member(instrument_id: int, symbol: str) -> MarketFrameMember:
     ctx = _ctx(CURRENT_OPEN)
-    return MarketFrameMember(
-        instrument_id=instrument_id, symbol=symbol, m1=ctx, m5=ctx, m15=ctx, h1=ctx
-    )
+    return MarketFrameMember(instrument_id=instrument_id, symbol=symbol, m5=ctx, m15=ctx, h1=ctx)
 
 
 def _frame(members: list[MarketFrameMember], frame_time: datetime = FRAME_TIME) -> MarketFrame:
