@@ -1,0 +1,37 @@
+{
+  "spec_version": 1,
+  "experiment_id": "oi-price-1h-h2-long-oi-up-v1",
+  "heuristic": {
+    "id": "price-decline-oi-increase-long",
+    "text": "A sharp decline with rising Open Interest means new positions opened into the fall \u2014 possibly a different dynamic."
+  },
+  "hypothesis": {
+    "statement": "H2: coins in the bottom 20% of 1h returns whose Open Interest rose over the same hour perform differently over the next hour from the price-only decline group (no direction assumed).",
+    "direction": "long",
+    "conditions": [
+      {
+        "feature": "return_1h",
+        "transform": "cs_percentile",
+        "op": "<=",
+        "value": 0.2
+      },
+      {
+        "feature": "oi_change_1h",
+        "transform": "raw",
+        "op": ">",
+        "value": 0.0
+      }
+    ]
+  },
+  "datasets": [
+    {
+      "name": "shard_s15m_20261012",
+      "data_sha256": "4f74a041b03445a2099de9dd52094bd9344ae46129c210c0900501e1f41c2f9a"
+    },
+    {
+      "name": "shard_s15m_20261013",
+      "data_sha256": "a69c1befb5e4c3da13c20f770d9c8f8a7ad25cba37b56aa5c2e50f646459ffcc"
+    }
+  ],
+  "label": "forward_relative_return_1h"
+}

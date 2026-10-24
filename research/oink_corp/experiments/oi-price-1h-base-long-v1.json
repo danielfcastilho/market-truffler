@@ -1,0 +1,31 @@
+{
+  "spec_version": 1,
+  "experiment_id": "oi-price-1h-base-long-v1",
+  "heuristic": {
+    "id": "price-decline-long",
+    "text": "Coins that just fell hard relative to the market may recover relative to it."
+  },
+  "hypothesis": {
+    "statement": "Price-only baseline (B, Long): coins in the bottom 20% of 1h returns within a frame; their next-hour market-relative return.",
+    "direction": "long",
+    "conditions": [
+      {
+        "feature": "return_1h",
+        "transform": "cs_percentile",
+        "op": "<=",
+        "value": 0.2
+      }
+    ]
+  },
+  "datasets": [
+    {
+      "name": "shard_s15m_20261012",
+      "data_sha256": "4f74a041b03445a2099de9dd52094bd9344ae46129c210c0900501e1f41c2f9a"
+    },
+    {
+      "name": "shard_s15m_20261013",
+      "data_sha256": "a69c1befb5e4c3da13c20f770d9c8f8a7ad25cba37b56aa5c2e50f646459ffcc"
+    }
+  ],
+  "label": "forward_relative_return_1h"
+}

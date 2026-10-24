@@ -20,6 +20,7 @@ _RESEARCH_SIDE = {
     APP_DIR / "research",
     APP_DIR / "scripts" / "generate_research_dataset.py",
     APP_DIR / "scripts" / "run_experiment.py",
+    APP_DIR / "scripts" / "run_campaign.py",
     APP_DIR / "scripts" / "research_continuity.py",
 }
 
@@ -29,7 +30,10 @@ _PARQUET_ONLY = [
     APP_DIR / "research" / "experiment.py",
     APP_DIR / "research" / "evaluation.py",
     APP_DIR / "research" / "runs.py",
+    APP_DIR / "research" / "comparison.py",
+    APP_DIR / "research" / "campaign.py",
     APP_DIR / "scripts" / "run_experiment.py",
+    APP_DIR / "scripts" / "run_campaign.py",
 ]
 _FORBIDDEN_FOR_EXPERIMENTS = (
     "sqlalchemy",

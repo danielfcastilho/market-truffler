@@ -1462,6 +1462,46 @@ the spec and its hashes, dataset names/hashes/versions/cadence, evaluator
 version, code fingerprint, git commit, seed, segment and its days,
 execution time, report, verdict and status.
 
+**Campaigns and incremental comparisons.** A *campaign*
+(`research/oink_corp/campaigns/<id>.json`, `app.research.campaign`) is a
+committed pre-registration grouping experiment specs around one research
+question. It holds:
+- the question and motivation;
+- the hypotheses and their predictions, made before outcomes are read;
+- the baselines and the parameter rationale;
+- the evaluation plan;
+- the *incremental comparisons*.
+
+It holds no results. `python -m app.scripts.run_campaign --campaign … --segment
+development` (or `--check`) runs every spec through the unchanged
+`run_experiment` path, then each comparison. Each comparison is an immutable
+run under `runs/<comparison_id>/`, carrying the campaign hash.
+
+A comparison (`app.research.comparison`, protocol v1) asks whether a
+candidate's extra conditions change outcomes relative to the simpler
+reference it strictly refines:
+- **Validity:** same datasets, label and direction (`check_nested`), so the
+  candidate is a subset of the reference.
+- **Statistic:** a per-timestamp spread, candidate mean minus reference
+  mean, over comparable rows only (every candidate feature and the label
+  present), each timestamp weighted equally.
+- **Rules:** the Evaluator's own split, purge, thresholds, day-block
+  bootstrap and verdict rules, imported rather than copied. Evaluator v1
+  itself is unchanged.
+
+The interpretation is a report next to the campaign file
+(`<id>.report.md`), which also records each hypothesis's knowledge status:
+- untested
+- tested — insufficient data
+- preliminary support or contradiction
+- failed
+- supported, needs replication
+- replicated
+
+First campaign: `oi-incremental-price-1h-v1`, on whether 1h Open Interest
+change adds information beyond the 1h price move. All runs are
+`insufficient_data`, with 1 qualifying day.
+
 ### OINK CORP: future design
 
 **Everything in this section is design intent, not implemented code.** The

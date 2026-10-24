@@ -1,0 +1,77 @@
+{
+  "campaign_version": 1,
+  "campaign_id": "oi-incremental-price-1h-v1",
+  "created": "2026-10-24",
+  "question": "Does Open Interest behaviour over the last hour provide incremental information about a coin's next-hour market-relative performance beyond what the coin's own last-hour price move already provides?",
+  "motivation": "Price and Open Interest move together for different reasons: a fall with shrinking OI suggests positions being closed (deleveraging, liquidations), a fall with growing OI suggests new positions opened into it; a rise without OI growth suggests short covering, a rise with OI growth new participation. If these mechanisms differ in how temporary the move is, conditioning on OI should separate future outcomes better than price alone. Both features are already observed point-in-time by Sniffer. None of these interpretations is assumed true.",
+  "hypotheses": [
+    {
+      "id": "H1",
+      "experiment_id": "oi-price-1h-h1-long-oi-down-v1",
+      "statement": "Among coins with a sharp relative 1h decline, those whose Open Interest also fell recover more over the next hour than the price-only decline group.",
+      "prediction": "Positive incremental spread versus the price-only Long baseline."
+    },
+    {
+      "id": "H2",
+      "experiment_id": "oi-price-1h-h2-long-oi-up-v1",
+      "statement": "Among coins with a sharp relative 1h decline, those whose Open Interest rose perform differently over the next hour from the price-only decline group.",
+      "prediction": "No direction assumed: either a positive or a negative incremental spread would be informative."
+    },
+    {
+      "id": "H3",
+      "experiment_id": "oi-price-1h-h3-short-oi-down-v1",
+      "statement": "Among coins with a sharp relative 1h rise, those whose Open Interest fell underperform over the next hour relative to the price-only rally group.",
+      "prediction": "Positive incremental spread (evaluated Short) versus the price-only Short baseline."
+    },
+    {
+      "id": "H4",
+      "experiment_id": "oi-price-1h-h4-short-oi-up-v1",
+      "statement": "Among coins with a sharp relative 1h rise, those whose Open Interest rose perform differently over the next hour from the price-only rally group.",
+      "prediction": "No direction assumed. Evaluated Short: a positive spread means more reversal than the rally group, a negative one more continuation."
+    }
+  ],
+  "baselines": [
+    {
+      "id": "eligible-universe",
+      "description": "Baseline A: the same-timestamp eligible universe \u2014 built into every Evaluator v1 run of every campaign experiment, so it needs no spec of its own."
+    },
+    {
+      "id": "price-only-long",
+      "experiment_id": "oi-price-1h-base-long-v1",
+      "description": "Baseline B (Long): bottom 20% of return_1h within the frame, no Open Interest condition. Reference for H1 and H2."
+    },
+    {
+      "id": "price-only-short",
+      "experiment_id": "oi-price-1h-base-short-v1",
+      "description": "Baseline B (Short): top 20% of return_1h within the frame, no Open Interest condition. Reference for H3 and H4."
+    }
+  ],
+  "comparisons": [
+    {
+      "comparison_id": "oi-price-1h-h1-vs-price-only-v1",
+      "hypothesis": "H1",
+      "candidate": "oi-price-1h-h1-long-oi-down-v1",
+      "reference": "oi-price-1h-base-long-v1"
+    },
+    {
+      "comparison_id": "oi-price-1h-h2-vs-price-only-v1",
+      "hypothesis": "H2",
+      "candidate": "oi-price-1h-h2-long-oi-up-v1",
+      "reference": "oi-price-1h-base-long-v1"
+    },
+    {
+      "comparison_id": "oi-price-1h-h3-vs-price-only-v1",
+      "hypothesis": "H3",
+      "candidate": "oi-price-1h-h3-short-oi-down-v1",
+      "reference": "oi-price-1h-base-short-v1"
+    },
+    {
+      "comparison_id": "oi-price-1h-h4-vs-price-only-v1",
+      "hypothesis": "H4",
+      "candidate": "oi-price-1h-h4-short-oi-up-v1",
+      "reference": "oi-price-1h-base-short-v1"
+    }
+  ],
+  "parameters_rationale": "Fixed before any outcome was examined (only feature/label availability was counted). Observation window: 1 hour for both return_1h and oi_change_1h \u2014 the same window for price and positioning so the two describe the same move; 1h OI change is built from 5-minute OI buckets, complete for every row of the continuity shards. 'Significant move': the bottom / top 20% of return_1h within each frame (cs_percentile, a quintile) \u2014 relative to that moment's market, so a market-wide move doesn't make every coin 'significant', and with ~795 coins per frame each tail holds ~160 coins, enough to split by OI sign. OI condition: the sign of oi_change_1h (raw < 0 / > 0) \u2014 the natural, untuned boundary between positions closing and opening; exactly-zero changes fall in neither group. Outcome: forward_relative_return_1h (next-hour return minus the frame's cross-sectional median) \u2014 market-relative, so the common market move is removed; one horizon only (1h, matching the observation window) to avoid choosing a horizon after the fact. Direction: H1/H2 Long, H3/H4 Short, as registered; H2 and H4 state no expected sign. No other thresholds, windows or horizons are part of this campaign; changing any requires a new campaign version.",
+  "evaluation_plan": "Data: the 15-minute daily continuity shards (shard_s15m_*), the only series with complete 1h Open Interest; mixing with the earlier 5-minute dataset is refused by the loader. v1 experiment specs pin the shards available at registration (2026-10-12, 2026-10-13); later runs on more shards use new experiment ids (v2, v3, \u2026) with byte-identical hypotheses, so their hypothesis_hash is unchanged and results accumulate per hypothesis. Primary evidence: the four incremental comparisons (comparison protocol v1, candidate vs price-only reference on comparable rows). Secondary context: each experiment's Evaluator v1 result versus the eligible universe. Thresholds are the Evaluator v1 ones, unchanged. Segments: development only until a validation segment with enough days exists; validation is run once per hypothesis version, never while adjusting anything. Data needed: development inference requires >= 10 development days, i.e. >= 14 qualifying shard days; validation inference requires >= 10 validation days, i.e. >= 30 qualifying days. Multiplicity: four primary comparisons, each with a 90% day-block interval, so roughly one in five campaigns would show at least one spurious directional result by chance alone; therefore no single development result counts as support \u2014 a hypothesis is 'preliminarily supported' only with a directional development verdict and 'supported' only if its validation verdict agrees, and a result for H1 and H2 (or H3 and H4) is never counted as two independent confirmations, since both are compared with the same reference group."
+}

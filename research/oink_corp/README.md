@@ -66,8 +66,12 @@ Research rules on the 5m base timeframe:
   rather than mixing them.
 
 Also implemented: manually written experiment specs
-(`experiments/`), the independent Evaluator, immutable run records, and
-automatic daily research shards (the `research` worker). Still not
+(`experiments/`), the independent Evaluator, immutable run records,
+automatic daily research shards (the `research` worker), and pre-registered
+research campaigns (`campaigns/`: a campaign file, its incremental
+comparisons against simpler baselines, and a report). The first,
+`oi-incremental-price-1h-v1`, is waiting for more data: see its report.
+Still not
 implemented: a heuristic library, autonomous hypothesis generation,
 ranking models, Champion/Challenger promotion, Score, Rank or Truffles. No
 notebooks exist yet — none should be added merely to look implemented.
