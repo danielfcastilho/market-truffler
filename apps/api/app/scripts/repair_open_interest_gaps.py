@@ -108,8 +108,11 @@ async def repair(dry_run: bool) -> dict[str, int]:
                     totals["windows_empty"] += 1
                     continue
                 async with session_factory() as session:
+                    # Repaired buckets were not available when their frames
+                    # were measured: `ingested_at` is now, so replay of those
+                    # frames still excludes them (app.domain.temporal).
                     await OpenInterestRepository(session).upsert_many(
-                        _to_rows(instrument_id, result)
+                        _to_rows(instrument_id, result, datetime.now(UTC))
                     )
                 totals["buckets_recovered"] += len(result.list)
 

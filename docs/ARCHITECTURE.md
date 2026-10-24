@@ -492,8 +492,11 @@ app.integrations.bybit.client.BybitClient.get_open_interest
         │
         ▼
 app.services.open_interest_reconciler.OpenInterestReconciler
-   Polls every `poll_interval_seconds` (default 300s = 5 minutes, matching
-   Bybit's own bucket granularity). Each round, per active instrument:
+   Runs one round per 5-minute boundary, 15s after it (Bybit publishes
+   bucket T 10-20s after T), plus one retry of symbols still missing bucket
+   T, so the bucket is stored before frame T's decision time (see
+   [TEMPORAL_CONTRACT.md](TEMPORAL_CONTRACT.md)); every row records
+   `ingested_at`, its first-stored instant. Each round, per active instrument:
    `_bootstrap_step` walks `Instrument.oi_synced_from` backward toward
    `now - REQUIRED_WARMUP` (one bounded page per round, same "accept an
    empty page as the natural floor" convention `HistoryReconciler.
@@ -565,9 +568,10 @@ app.integrations.bybit.client.BybitClient.get_funding_rate_history
         │
         ▼
 app.services.funding_rate_reconciler.FundingRateReconciler
-   Polls every `poll_interval_seconds` (default 300s, same as OI — cheap
-   headroom, not a claim that funding settles that often). Each round,
-   per active instrument: `_bootstrap_step` walks
+   Runs one round per 5-minute boundary, 2s after it (settlements fall on
+   hour boundaries and are listed by T+0s), so a settlement at T is stored
+   before frame T's decision time; rows record `ingested_at` like OI's. Each round, per
+   active instrument: `_bootstrap_step` walks
    `Instrument.funding_synced_from` backward toward
    `now - REQUIRED_WARMUP` (same empty-page-is-the-natural-floor
    convention); `_catchup_step` fetches forward from
@@ -1202,7 +1206,7 @@ indefinitely regenerable**:
 | Layer | Lifetime | Rebuildable later? |
 |---|---|---|
 | Raw market data (`market_candles`, `open_interest_observations`, `funding_rate_observations`) | candles: ~30 days, dropped by monthly partition; Open Interest / Funding: rolling `market_oi_funding_retention_days` (30) | only within Bybit's own history limits |
-| Persisted Sniffer frames (`market_frames`, `market_frame_members`, `sniffer_results`) | headers forever; members/results ~30-61 days (monthly partitions) | **no** — frames exist only for times the app was running, never backfilled |
+| Persisted Sniffer frames (`market_frames`, `market_frame_members`, `sniffer_results`) | headers forever; members/results ~30-61 days (monthly partitions) | **no** — frames exist only for times the app was running, never backfilled (a finalized frame whose Sniffer analysis was lost is re-analyzed on the next startup, within 24h, labelled `recovery`) |
 | Materialized research datasets (`research/oink_corp/data/<name>/`) | permanent research records | **no**, once the two layers above expire |
 
 A frame whose header survives but whose members were pruned replays as
@@ -1900,6 +1904,32 @@ already true for manual experiments (see "experiments and the Evaluator"
 above). Repeated experimentation against the same validation data
 overfits even without ML: validation reuse is disclosed today; protected
 holdout periods and enforced evaluation budgets are future work.
+
+**Temporal correctness** is defined once, in
+[TEMPORAL_CONTRACT.md](TEMPORAL_CONTRACT.md): an OI or funding input counts
+for frame T only if observed by T and stored by T's decision time (T+60s),
+live and in replay alike.
+
+**Multiple testing — requirements (not yet implemented).** Every
+experiment, comparison and ranking study run against the same development
+days is another draw from the same data, and today each is judged alone.
+Before any result is promoted beyond "exploratory":
+
+1. Count the family: every run touching the same days and label is
+   recorded already (`data/runs`); a report must state how many related
+   hypotheses/specs/studies were evaluated on those days, including the
+   abandoned ones.
+2. Control the family: a promoted claim needs either a pre-registered,
+   single primary test (the prospective protocol), or an explicit
+   correction across the counted family (e.g. Holm, or a false-discovery
+   rate for screening). Bootstrap intervals per run are not a correction.
+3. Ranking studies and parameter variants count individually: two weight
+   settings of one candidate are two tests.
+4. Validation days used by more than one evaluation are not independent
+   evidence (already enforced by `validation_reuse`); only the first use
+   counts as independent.
+5. The ledger must not derive "independently supported" from a family
+   whose size it does not know.
 
 #### Outcomes are strategy-agnostic
 

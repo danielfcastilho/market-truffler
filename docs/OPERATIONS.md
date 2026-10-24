@@ -85,6 +85,25 @@ All four services use `restart: unless-stopped`.
 | Mac restarts | **Nothing runs until Docker Desktop is opened** — its "Start Docker Desktop when you sign in" is off (`AutoStart: false`), and a login is required first. Enable it in Docker Desktop → Settings → General if you want the stack back after a reboot (your call; it's a host setting). `keep-awake.sh` must be started again. |
 | Research worker stopped mid-shard | The child is terminated, nothing is published, no failure is counted; the next pass regenerates the day (see `ARCHITECTURE.md`). |
 
+**Restarting `api` deliberately.** Wait until about 2.5 minutes after a
+5-minute boundary (frames finalize about T+30s and Sniffer measures them
+at T+60s, finishing about T+100s), then verify the *next* frame has
+Sniffer results, not only that it finalized. An analysis interrupted
+anyway is no longer lost: on startup Sniffer recovers finalized frames of
+the last 24h without results (at most 24, oldest first, labelled
+`analysis = 'recovery'`). Vitals shows "Unanalyzed frames (24h)" for any
+still missing.
+
+**Ports.** `api` and `web` publish on `127.0.0.1` by default
+(`API_BIND`/`WEB_BIND` in `.env`); set them to `0.0.0.0` only to reach the
+app from another machine on purpose. Interactive API docs (`/docs`) are
+served only with `APP_ENV=development`.
+
+**Live/replay parity.** `docker compose exec api python -m
+app.scripts.parity_diagnostic --frames 12` compares the latest live
+Sniffer results with a replay of the same frames (read-only, features
+only); see [TEMPORAL_CONTRACT.md](TEMPORAL_CONTRACT.md).
+
 `docker compose ps` shows `research` as healthy only while its minute
 heartbeat is fresh (a healthcheck — visibility only; Docker does not
 restart unhealthy containers). `api` is healthy when `/health` answers;

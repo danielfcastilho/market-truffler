@@ -37,7 +37,10 @@ services:
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
     ports:
-      - "${API_PORT:-8000}:8000"
+      # Loopback only by default (audit F-09): the web container reaches
+      # the API over the compose network, not this port. Set API_BIND=0.0.0.0
+      # to expose it on the LAN deliberately.
+      - "${API_BIND:-127.0.0.1}:${API_PORT:-8000}:8000"
     volumes:
       # OINK CORP's app/scripts/generate_research_dataset.py writes here.
       # Without this mount, output written inside the container is lost on
@@ -126,7 +129,8 @@ services:
       NODE_ENV: production
       API_INTERNAL_URL: http://api:8000
     ports:
-      - "${WEB_PORT:-3000}:3000"
+      # Loopback only by default; WEB_BIND=0.0.0.0 exposes it on the LAN.
+      - "${WEB_BIND:-127.0.0.1}:${WEB_PORT:-3000}:3000"
     networks:
       - market-truffler
 

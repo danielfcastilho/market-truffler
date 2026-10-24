@@ -47,6 +47,7 @@ from app.db.session import get_engine, get_session_factory
 from app.research.continuity import GenerationLock
 from app.research.dataset import generate_dataset, read_dataset, validate_sample_interval
 from app.research.forward_returns import validate_horizons
+from app.research.reservations import ReservedDataError, check_generation_window
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -115,6 +116,11 @@ def _build_parser() -> argparse.ArgumentParser:
 async def _run(args: argparse.Namespace) -> None:
     settings = get_settings()
     output_dir = Path(settings.research_data_dir) / args.output
+    # Before touching any data: generating labels over reserved days would
+    # read protected outcomes.
+    check_generation_window(
+        Path(settings.research_data_dir), args.start, args.end + max(args.horizons.values())
+    )
 
     logger.info(
         "research_dataset_starting",
@@ -185,7 +191,7 @@ def main() -> None:
         sys.exit(1)
     try:
         asyncio.run(_run(args))
-    except (FileExistsError, RuntimeError) as exc:
+    except (FileExistsError, RuntimeError, ReservedDataError) as exc:
         print(str(exc), file=sys.stderr)
         sys.exit(1)
 

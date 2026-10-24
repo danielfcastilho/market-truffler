@@ -158,3 +158,19 @@ def check_access(
                         f"({r.start.date()} to {r.end.date()}, exclusive); it can only be read "
                         "by that evaluation (python -m app.scripts.prospective_evaluation)"
                     )
+
+
+def check_generation_window(data_dir: Path, start: datetime, outcome_end: datetime) -> None:
+    """Refuse (`ReservedDataError`) an ad-hoc dataset generation whose
+    outcome window `[start, outcome_end]` touches reserved data — computing
+    the labels is itself reading the protected outcomes (audit F-04). Only
+    the continuity worker produces reserved days' shards, the preservation
+    path a registration's dataset rule names; it does not call this."""
+    for r in reservations(data_dir):
+        if start < r.end and r.start <= outcome_end:
+            raise ReservedDataError(
+                f"[{start.isoformat()}, {outcome_end.isoformat()}] reaches into data reserved "
+                f"for the {r.role} of prospective evaluation {r.registration_id} "
+                f"({r.start.date()} to {r.end.date()}, exclusive); its datasets are produced "
+                "only by the continuity worker and read only by that evaluation"
+            )

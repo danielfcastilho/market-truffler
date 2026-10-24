@@ -62,6 +62,7 @@ export function RankingBoard({
       <div className="flex flex-wrap items-center justify-between gap-3 font-mono text-sm text-muted-foreground">
         <span>
           Frame {formatFrameTimeUtc(frame.frame_time)} · {frame.analyzed_instruments} instruments
+          {frame.analysis === "recovery" && " · analysis recovered after a restart"}
         </span>
         <span
           className={cn(

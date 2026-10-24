@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +17,17 @@ from sqlalchemy.orm import aliased
 from app.models.open_interest import OpenInterestObservation
 
 _CONFLICT_COLUMNS = ("instrument_id", "observed_at")
+
+
+def _available_by(available_by: datetime | None) -> list[Any]:
+    """The temporal contract's availability condition (see
+    `app.domain.temporal`): stored no later than `available_by`, or a legacy
+    row whose availability was never recorded. No condition when
+    `available_by` is None."""
+    if available_by is None:
+        return []
+    column = OpenInterestObservation.ingested_at
+    return [or_(column.is_(None), column <= available_by)]
 
 
 class OpenInterestRepository:
@@ -34,23 +45,41 @@ class OpenInterestRepository:
         insert_fn = pg_insert if dialect_name == "postgresql" else sqlite_insert
 
         stmt = insert_fn(OpenInterestObservation).values(list(rows))
+        # `ingested_at` is first-seen availability evidence: a re-fetch of
+        # the same value keeps the original instant (including a legacy
+        # NULL); only an exchange-side change of the value records when the
+        # new value became available.
         stmt = stmt.on_conflict_do_update(
             index_elements=list(_CONFLICT_COLUMNS),
-            set_={"open_interest": stmt.excluded.open_interest},
+            set_={
+                "open_interest": stmt.excluded.open_interest,
+                "ingested_at": case(
+                    (
+                        OpenInterestObservation.open_interest == stmt.excluded.open_interest,
+                        OpenInterestObservation.ingested_at,
+                    ),
+                    else_=stmt.excluded.ingested_at,
+                ),
+            },
         )
         await self._session.execute(stmt)
         await self._session.commit()
         self._session.expire_all()
 
     async def fetch_exact_observed_at(
-        self, instrument_ids: Sequence[int], observed_at: datetime
+        self,
+        instrument_ids: Sequence[int],
+        observed_at: datetime,
+        *,
+        available_by: datetime | None = None,
     ) -> dict[int, OpenInterestObservation]:
         """The observation at exactly `observed_at`, for each of
         `instrument_ids` that has one — one set-oriented query, never a
         per-instrument loop. Mirrors `CandleRepository.fetch_exact_open_time`:
         an instrument absent from the result genuinely has no observation
         at that exact instant — callers must treat that as unavailable,
-        never substitute the nearest one."""
+        never substitute the nearest one. `available_by` applies the
+        temporal contract's availability condition."""
         if not instrument_ids:
             return {}
 
@@ -58,18 +87,25 @@ class OpenInterestRepository:
             select(OpenInterestObservation).where(
                 OpenInterestObservation.instrument_id.in_(instrument_ids),
                 OpenInterestObservation.observed_at == observed_at,
+                *_available_by(available_by),
             )
         )
         return {obs.instrument_id: obs for obs in result.scalars()}
 
     async def fetch_latest_at_or_before_per_instrument(
-        self, instrument_ids: Sequence[int], max_observed_at: datetime
+        self,
+        instrument_ids: Sequence[int],
+        max_observed_at: datetime,
+        *,
+        available_by: datetime | None = None,
     ) -> dict[int, OpenInterestObservation]:
         """The single latest observation per instrument, at or before
         `max_observed_at` — the OI equivalent of
         `CandleRepository.fetch_latest_closed_per_instrument`, used to
         pick a frame-legal "current OI" anchor (no-lookahead: never an
-        observation from after `max_observed_at`)."""
+        observation from after `max_observed_at`). With `available_by`,
+        only observations available by then count (an observation stored
+        later is skipped, never waited for)."""
         if not instrument_ids:
             return {}
 
@@ -86,6 +122,7 @@ class OpenInterestRepository:
             .where(
                 OpenInterestObservation.instrument_id.in_(instrument_ids),
                 OpenInterestObservation.observed_at <= max_observed_at,
+                *_available_by(available_by),
             )
             .subquery()
         )

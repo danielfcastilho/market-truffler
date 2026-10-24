@@ -25,6 +25,7 @@ _RESEARCH_SIDE = {
     APP_DIR / "scripts" / "prospective_evaluation.py",
     APP_DIR / "scripts" / "run_ranking_study.py",
     APP_DIR / "scripts" / "research_continuity.py",
+    APP_DIR / "scripts" / "parity_diagnostic.py",
 }
 
 # Experiments run on materialized Parquet only — never the database, never

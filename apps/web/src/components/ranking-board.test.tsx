@@ -84,6 +84,11 @@ describe("RankingBoard", () => {
     expect(screen.getByRole("button", { name: "🟢 LONG" })).toHaveAttribute("aria-pressed", "true");
   });
 
+  it("says when the frame's analysis was recovered after a restart", () => {
+    render(<RankingBoard result={{ status: "ok", data: { ...DATA, frame: { ...DATA.frame!, analysis: "recovery" } } }} />);
+    expect(screen.getByText(/analysis recovered after a restart/)).toBeInTheDocument();
+  });
+
   it("switches between Long and Short rankings of the same frame", () => {
     render(<RankingBoard result={OK} />);
     fireEvent.click(screen.getByRole("button", { name: "🔴 SHORT" }));

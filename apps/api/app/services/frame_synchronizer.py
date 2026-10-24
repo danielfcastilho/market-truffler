@@ -137,6 +137,11 @@ class FrameSynchronizer:
         Downtime itself is never backfilled — this only ever resolves the
         single interrupted frame, never fabricates the missed frames in
         between (M4 section 19).
+
+        The `on_frame_finalized` hook is not called here: startup must not
+        wait on an analysis. Sniffer's startup recovery
+        (`Sniffer.recover_missing`) analyzes this frame like any other
+        finalized frame without a result.
         """
         async with self._session_factory() as session:
             building = await FrameRepository(session).find_building()
@@ -147,7 +152,7 @@ class FrameSynchronizer:
             "frame_synchronizer_resolving_interrupted_build",
             extra={"frame_time": building.frame_time.isoformat()},
         )
-        await self._finalize_frame(building.frame_time)
+        await self._finalize_frame(building.frame_time, notify=False)
 
     # -- steady-state per-boundary loop ---------------------------------------------
 
@@ -239,7 +244,7 @@ class FrameSynchronizer:
         except TimeoutError:
             return False
 
-    async def _finalize_frame(self, frame_time: datetime) -> None:
+    async def _finalize_frame(self, frame_time: datetime, *, notify: bool = True) -> None:
         async with self._session_factory() as session:
             frame_repo = FrameRepository(session)
             # Always the snapshot taken when this frame entered BUILDING —
@@ -296,7 +301,7 @@ class FrameSynchronizer:
                     "available": len(member_rows),
                 },
             )
-            if self._on_frame_finalized is not None:
+            if notify and self._on_frame_finalized is not None:
                 # Belt and suspenders: the hook (Sniffer's) is documented to
                 # swallow its own errors, but MARKET's own lifecycle must
                 # stay safe even if some future hook doesn't (M5 section 14).

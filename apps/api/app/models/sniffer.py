@@ -50,3 +50,8 @@ class SnifferResult(Base):
 
     value: Mapped[Decimal | None] = mapped_column(_VALUE)
     calculated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    #: How the frame was analyzed: "live" (right after it finalized) or
+    #: "recovery" (on a later startup, after the live analysis was lost —
+    #: see `Sniffer.recover_missing`). NULL on results stored before this
+    #: was recorded.
+    analysis: Mapped[str | None] = mapped_column(String(16))

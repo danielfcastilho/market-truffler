@@ -59,6 +59,8 @@ export interface LiveRankings {
     available_instruments: number;
     analyzed_instruments: number;
     analyzed_at: string;
+    /** "live" | "recovery" | null (before analysis provenance was recorded). */
+    analysis?: string | null;
     age_seconds: number;
     stale: boolean;
     stale_reason: string | null;

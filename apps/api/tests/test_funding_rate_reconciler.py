@@ -104,7 +104,6 @@ def _reconciler(session_factory, bybit_client, **overrides) -> FundingRateReconc
     kwargs = {
         "required_warmup": REQUIRED_WARMUP,
         "retention": timedelta(days=2),
-        "poll_interval_seconds": 300,
         "max_concurrent_instruments": 5,
         "request_delay_seconds": 0,
     }
@@ -383,7 +382,7 @@ async def test_poll_once_updates_status(session_factory):
 
 async def test_start_and_stop_is_clean_with_an_empty_universe(session_factory):
     client = _FakeBybitClient()
-    reconciler = _reconciler(session_factory, client, poll_interval_seconds=3600)
+    reconciler = _reconciler(session_factory, client)
 
     await reconciler.start()
     assert reconciler.running

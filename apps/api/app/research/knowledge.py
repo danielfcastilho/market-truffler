@@ -23,11 +23,14 @@ listed, flagged `current: false`, and must agree with the current verdict).
 The hypothesis' own experiment-vs-universe runs are listed as context and
 never decide its status.
 
-PREDICTION SIGN. Campaign v1 registers predictions as text. Exactly these
-forms are recognized: text starting "Positive" -> a positive spread is
-predicted, "Negative" -> negative, containing "No direction assumed" ->
-no sign. Anything else is "unspecified" and treated like no sign: evidence
-in either direction can then only show *a difference*, never support.
+PREDICTION SIGN. Campaign v2 registers it as structured data
+(`CampaignHypothesis.prediction_direction`: positive / negative / none),
+used as is. Campaign v1 registered predictions as text only; for those,
+exactly these forms are recognized: text starting "Positive" -> a positive
+spread is predicted, "Negative" -> negative, containing "No direction
+assumed" -> no sign. Anything else is "unspecified" and treated like no
+sign: evidence in either direction can then only show *a difference*,
+never support.
 
 STATUS (KNOWLEDGE_RULES_VERSION 1), weakest justified state:
 
@@ -59,7 +62,7 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
-from app.research.campaign import Campaign, campaign_hash
+from app.research.campaign import Campaign, CampaignHypothesis, campaign_hash
 from app.research.experiment import ExperimentSpec
 
 LEDGER_SCHEMA_VERSION = 1
@@ -105,6 +108,13 @@ def prediction_sign(prediction: str) -> PredictionSign:
     if "No direction assumed" in text:
         return "none"
     return "unspecified"
+
+
+def hypothesis_sign(hypothesis: CampaignHypothesis) -> PredictionSign:
+    """The registered sign: structured (campaign v2), else parsed (v1)."""
+    if hypothesis.prediction_direction is not None:
+        return hypothesis.prediction_direction
+    return prediction_sign(hypothesis.prediction)
 
 
 def classify(
@@ -360,7 +370,7 @@ def derive_hypothesis(
 ) -> dict[str, Any]:
     hypothesis = next(h for h in campaign.hypotheses if h.id == hypothesis_id)
     spec = specs[hypothesis.experiment_id]
-    sign = prediction_sign(hypothesis.prediction)
+    sign = hypothesis_sign(hypothesis)
     evidence = collect_evidence(campaign, hypothesis_id, records, rules_version)
     if rules_version >= 2:
         knowledge, validation = classify_v2(sign, evidence)

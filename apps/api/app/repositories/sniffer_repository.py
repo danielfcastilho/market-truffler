@@ -6,12 +6,14 @@ shapes this returns and `app.services.sniffer` for orchestration.
 
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import Select, exists, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.frame import FrameStatus
 from app.domain.sniffer import SnifferFrameResult, SnifferInstrumentResult
+from app.models.frame import MarketFrame
 from app.models.instrument import Instrument
 from app.models.sniffer import SnifferResult
 
@@ -41,6 +43,7 @@ class SnifferRepository:
                 "metric": metric,
                 "value": value,
                 "calculated_at": result.analyzed_at,
+                "analysis": result.analysis,
             }
             for instrument in result.instruments
             for metric, value in instrument.features.items()
@@ -56,7 +59,11 @@ class SnifferRepository:
             stmt = insert_fn(SnifferResult).values(chunk)
             stmt = stmt.on_conflict_do_update(
                 index_elements=["frame_time", "instrument_id", "metric"],
-                set_={"value": stmt.excluded.value, "calculated_at": stmt.excluded.calculated_at},
+                set_={
+                    "value": stmt.excluded.value,
+                    "calculated_at": stmt.excluded.calculated_at,
+                    "analysis": stmt.excluded.analysis,
+                },
             )
             await self._session.execute(stmt)
         await self._session.commit()
@@ -76,6 +83,34 @@ class SnifferRepository:
             return None
         return await self._load(latest_frame_time)
 
+    def _unanalyzed(self, since: datetime, until: datetime) -> Select[tuple[datetime]]:
+        """Finalized frames in `[since, until]` with members but no Sniffer
+        result at all — an analysis that was lost (e.g. a restart while it
+        ran). A frame with no members legitimately has no result."""
+        return (
+            select(MarketFrame.frame_time)
+            .where(
+                MarketFrame.frame_time >= since,
+                MarketFrame.frame_time <= until,
+                MarketFrame.status != FrameStatus.BUILDING.value,
+                MarketFrame.available_instruments > 0,
+                ~exists().where(SnifferResult.frame_time == MarketFrame.frame_time),
+            )
+            .order_by(MarketFrame.frame_time)
+        )
+
+    async def find_unanalyzed_frames(
+        self, since: datetime, until: datetime, *, limit: int
+    ) -> list[datetime]:
+        """Up to `limit` unanalyzed frame times in `[since, until]`, oldest
+        first."""
+        stmt = self._unanalyzed(since, until).limit(limit)
+        return list((await self._session.execute(stmt)).scalars())
+
+    async def count_unanalyzed_frames(self, since: datetime, until: datetime) -> int:
+        stmt = select(func.count()).select_from(self._unanalyzed(since, until).subquery())
+        return int((await self._session.execute(stmt)).scalar_one())
+
     async def _load(self, frame_time: datetime) -> SnifferFrameResult | None:
         stmt = (
             select(SnifferResult, Instrument.symbol)
@@ -89,6 +124,7 @@ class SnifferRepository:
 
         by_instrument: dict[int, SnifferInstrumentResult] = {}
         analyzed_at: datetime = rows[0][0].calculated_at
+        analysis: str | None = rows[0][0].analysis
         for row, symbol in rows:
             existing = by_instrument.get(row.instrument_id)
             if existing is None:
@@ -102,4 +138,5 @@ class SnifferRepository:
             frame_time=frame_time,
             analyzed_at=analyzed_at,
             instruments=list(by_instrument.values()),
+            analysis=analysis,
         )

@@ -57,6 +57,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.frame import MarketFrameMember
 from app.domain.sniffer import SnifferInstrumentResult
+from app.domain.temporal import DECISION_DELAY, TEMPORAL_CONTRACT_VERSION
 from app.domain.timeframes import BASE_DURATION, BASE_TIMEFRAME
 from app.features.engine import FEATURES
 from app.repositories.candle_repository import CandleRepository
@@ -385,6 +386,14 @@ async def generate_dataset(
             "Each row's cross-sectional universe is exactly that frame's own "
             "persisted market_frame_members — never the currently-active "
             "instrument set."
+        ),
+        "temporal_contract_version": TEMPORAL_CONTRACT_VERSION,
+        "temporal_note": (
+            "Open Interest and funding inputs are limited to rows observed by "
+            "frame_time and stored by its decision time (frame_time + "
+            f"{int(DECISION_DELAY.total_seconds())}s); rows stored before "
+            "ingestion times were recorded are accepted with unverified "
+            "availability. See docs/TEMPORAL_CONTRACT.md."
         ),
         "replay_note": (
             "Sniffs are recomputed with today's FeatureEngine/FEATURES against "

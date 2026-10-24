@@ -90,7 +90,30 @@ RANKING_DISCLOSURES = (
     "Development-segment results only: exploratory, never independent validation.",
     "Coins ranked at the same timestamp move together; timestamps within a day are "
     "dependent (handled by one value per timestamp and day-block resampling only).",
+    "Top-ranked coins whose forward outcome is missing (e.g. delistings, data gaps) are "
+    "dropped after ranking — a survivorship risk that is counted (top_k_missing_outcome), "
+    "not corrected. The universe is each frame's own members, so coins listed later or "
+    "delisted earlier are absent by construction.",
 )
+
+
+def universe_disclosure(candidate: RankingCandidate, reference: RankingCandidate | None) -> str:
+    """How this study's eligible universe relates to the candidate's live
+    ranking (audit F-06): live ranks a candidate over the coins with its own
+    features; a paired study ranks both models over the coins with every
+    feature of either, so the universes differ exactly when the reference
+    needs features the candidate does not."""
+    extra = [f for f in (reference.features if reference else []) if f not in candidate.features]
+    if not extra:
+        return (
+            "The evaluated universe matches the candidate's live ranking universe (coins with "
+            "every candidate feature)."
+        )
+    return (
+        "The evaluated universe is narrower than the candidate's live ranking universe: it "
+        f"also requires the reference's {', '.join(extra)}, so the paired comparison shares "
+        "one universe; live ranks every coin with the candidate's own features."
+    )
 
 
 class RankingStudy(_Frozen):
@@ -441,7 +464,7 @@ def evaluate_study(
             "distinct_days": len(days),
         },
         "candidate": _model_summary(cand_series),
-        "disclosures": list(RANKING_DISCLOSURES),
+        "disclosures": [*RANKING_DISCLOSURES, universe_disclosure(candidate, reference)],
     }
     if reference is None:
         primary_values = cand_series.q

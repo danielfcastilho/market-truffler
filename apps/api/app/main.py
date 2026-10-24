@@ -30,6 +30,10 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("startup", extra={"environment": settings.app_env, "version": __version__})
+    if settings.is_production and ":truffler@" in settings.database_url:
+        # Never rotated automatically (that needs the Postgres role changed
+        # too) — only made visible.
+        logger.warning("default_database_credentials_in_production")
 
     session_factory = get_session_factory()
 
@@ -90,9 +94,11 @@ async def lifespan(app: FastAPI):
     )
     app.state.funding_rate_reconciler = funding_rate_reconciler
 
-    # Sniffer has no lifecycle of its own — it's invoked reactively via the
-    # hook below, once per finalized frame, never polling and never
-    # triggered by a request. A Sniffer failure is isolated inside
+    # Sniffer is invoked reactively via the hook below, once per finalized
+    # frame, never polling and never triggered by a request; its only
+    # background work is the bounded startup recovery of frames whose
+    # analysis was lost (started after the synchronizer, which may finalize
+    # an interrupted frame first). A Sniffer failure is isolated inside
     # FrameSynchronizer itself (see its `on_frame_finalized` handling), so
     # it can never take MARKET down.
     sniffer_service = Sniffer(session_factory)
@@ -115,9 +121,11 @@ async def lifespan(app: FastAPI):
     await open_interest_reconciler.start()
     await funding_rate_reconciler.start()
     await frame_synchronizer.start()
+    await sniffer_service.start_recovery()
 
     yield
 
+    await sniffer_service.stop()
     await frame_synchronizer.stop()
     await funding_rate_reconciler.stop()
     await open_interest_reconciler.stop()
@@ -126,7 +134,17 @@ async def lifespan(app: FastAPI):
     logger.info("shutdown")
 
 
-app = FastAPI(title="Market Truffler API", version=__version__, lifespan=lifespan)
+# Interactive API docs only in development (audit F-09); the API itself is
+# unchanged.
+_docs = settings.app_env == "development"
+app = FastAPI(
+    title="Market Truffler API",
+    version=__version__,
+    lifespan=lifespan,
+    docs_url="/docs" if _docs else None,
+    redoc_url="/redoc" if _docs else None,
+    openapi_url="/openapi.json" if _docs else None,
+)
 
 app.add_middleware(
     CORSMiddleware,

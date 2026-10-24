@@ -11,7 +11,11 @@ export default async function SnifferSymbolPage({
 }) {
   const [{ symbol }, { direction }] = await Promise.all([params, searchParams]);
   const upper = symbol.toUpperCase();
-  const [frame, rankings] = await Promise.all([getLatestSnifferFrame(), getLiveRankings()]);
+  // Only this coin's slice of the latest frame and of both rankings.
+  const [frame, rankings] = await Promise.all([
+    getLatestSnifferFrame(upper),
+    getLiveRankings(upper),
+  ]);
   return (
     <div className="max-w-3xl space-y-10">
       <SnifferSymbolDetail symbol={upper} frame={frame} />

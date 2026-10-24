@@ -7,12 +7,20 @@ retention) and has no WebSocket source of its own.
 
 Bybit's public WebSocket does carry a live `openInterest` field on its
 `tickers` topic, but the REST history endpoint already buckets OI at a
-fixed 5-minute granularity — polling it every 5 minutes is exactly as
-fresh as that native granularity allows, so a second, WS-based live path
+fixed 5-minute granularity — polling it once per 5-minute boundary is
+exactly as fresh as that native granularity allows, so a second, WS-based live path
 would add real complexity (another connection type, another reconnect/
 backoff policy, another sink) for freshness this app would never actually
 observe. One REST endpoint, one poll loop, covers both backfill and
 "live" updates.
+
+Rounds are aligned to the frame boundaries (`app.services.boundary_schedule`):
+Bybit publishes bucket T about 10-20s after T (measured 2026-10-24: every
+symbol by T+20s, never revised afterwards), so a round starts
+`ROUND_OFFSET` after each boundary, and the few symbols still without
+bucket T are retried once. Both finish well before frame T's decision time
+(`app.domain.temporal`). Each row records `ingested_at`, the instant it was
+first stored — the availability evidence Sniffer and replay filter on.
 
 Like `MarketCollector`/`HistoryReconciler`, this is started once from the
 FastAPI lifespan and runs for the life of the process; nothing here is
@@ -34,6 +42,7 @@ from app.integrations.bybit.schemas import OpenInterestHistoryResult
 from app.models.instrument import Instrument
 from app.repositories.instrument_repository import InstrumentRepository
 from app.repositories.open_interest_repository import OpenInterestRepository
+from app.services.boundary_schedule import wait_for_round
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +61,12 @@ CATCHUP_WINDOW = _BUCKET * (_PAGE_SIZE - 1)
 #: (4 x ~16.6h); a multi-day outage is recovered over a few rounds, oldest
 #: first, without one round's work growing unboundedly.
 MAX_CATCHUP_WINDOWS_PER_ROUND = 4
+#: How long after each 5-minute boundary a round starts (bucket T is
+#: published 10-20s after T).
+ROUND_OFFSET = timedelta(seconds=15)
+#: Pause before the single retry of symbols whose bucket T was not
+#: published yet when the round reached them.
+RETRY_DELAY_SECONDS = 5.0
 
 SessionFactory = Callable[[], AsyncSession]
 
@@ -64,12 +79,15 @@ class OpenInterestReconcilerStatus:
     last_poll_ok: bool | None = None
 
 
-def _to_rows(instrument_id: int, result: OpenInterestHistoryResult) -> list[dict[str, object]]:
+def _to_rows(
+    instrument_id: int, result: OpenInterestHistoryResult, ingested_at: datetime
+) -> list[dict[str, object]]:
     return [
         {
             "instrument_id": instrument_id,
             "observed_at": datetime.fromtimestamp(int(entry.timestamp) / 1000, tz=UTC),
             "open_interest": Decimal(entry.openInterest),
+            "ingested_at": ingested_at,
         }
         for entry in result.list
     ]
@@ -116,9 +134,11 @@ class OpenInterestReconciler:
         *,
         required_warmup: timedelta,
         retention: timedelta | None = None,
-        poll_interval_seconds: float = 300.0,
-        max_concurrent_instruments: int = 5,
-        request_delay_seconds: float = 0.2,
+        round_offset: timedelta = ROUND_OFFSET,
+        # 25 concurrent requests cover ~800 symbols in ~15s (~55 req/s,
+        # well under Bybit's 600 requests / 5s per IP).
+        max_concurrent_instruments: int = 25,
+        request_delay_seconds: float = 0.0,
     ) -> None:
         self._session_factory = session_factory
         self._bybit_client = bybit_client
@@ -135,7 +155,7 @@ class OpenInterestReconciler:
         self._retention = (
             retention if retention is not None else required_warmup + timedelta(days=1)
         )
-        self._poll_interval = poll_interval_seconds
+        self._round_offset = round_offset
         self._max_concurrent = max_concurrent_instruments
         self._request_delay = request_delay_seconds
 
@@ -171,18 +191,42 @@ class OpenInterestReconciler:
 
     async def _run_loop(self) -> None:
         assert self._stop_event is not None
+        # One immediate round (bootstrap progress on startup), then one per
+        # boundary.
+        await self._poll_once()
         while not self._stop_event.is_set():
-            await self._poll_once()
-            if await self._wait_or_stop(self._poll_interval):
+            boundary = await wait_for_round(self._stop_event, self._round_offset)
+            if boundary is None:
                 break
+            await self._poll_once()
+            await self._retry_missing_bucket(boundary)
 
-    async def _wait_or_stop(self, seconds: float) -> bool:
+    async def _retry_missing_bucket(self, boundary: datetime) -> None:
+        """Retry, once, the bootstrapped symbols whose newest stored bucket
+        is still older than `boundary` — normally the few Bybit published
+        after the round reached them. Anything still missing simply has no
+        current OI for that frame (never waited for past its decision
+        time)."""
         assert self._stop_event is not None
+        async with self._session_factory() as session:
+            ids = [i.id for i in await InstrumentRepository(session).list_active()]
+            latest = await OpenInterestRepository(session).fetch_latest_observed_at_per_instrument(
+                ids
+            )
+        missing = [i for i in ids if i in latest and latest[i] < boundary]
+        if not missing:
+            return
         try:
-            await asyncio.wait_for(self._stop_event.wait(), timeout=seconds)
-            return True
+            await asyncio.wait_for(self._stop_event.wait(), timeout=RETRY_DELAY_SECONDS)
+            return  # stopping
         except TimeoutError:
-            return False
+            pass
+        semaphore = asyncio.Semaphore(self._max_concurrent)
+        await asyncio.gather(*(self._process_instrument(i, semaphore) for i in missing))
+        logger.info(
+            "open_interest_bucket_retry",
+            extra={"boundary": boundary.isoformat(), "retried": len(missing)},
+        )
 
     async def _poll_once(self) -> None:
         async with self._session_factory() as session:
@@ -273,7 +317,7 @@ class OpenInterestReconciler:
             await session.commit()
             return
 
-        await repo.upsert_many(_to_rows(instrument.id, result))
+        await repo.upsert_many(_to_rows(instrument.id, result, datetime.now(UTC)))
 
         oldest_ms = min(int(entry.timestamp) for entry in result.list)
         instrument.oi_synced_from = datetime.fromtimestamp(oldest_ms / 1000, tz=UTC)
@@ -327,7 +371,7 @@ class OpenInterestReconciler:
                 )
                 return  # retried from the same stored maximum next round
             if result.list:
-                await repo.upsert_many(_to_rows(instrument_id, result))
+                await repo.upsert_many(_to_rows(instrument_id, result, datetime.now(UTC)))
                 since = max(
                     datetime.fromtimestamp(int(e.timestamp) / 1000, tz=UTC) for e in result.list
                 )

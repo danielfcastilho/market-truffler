@@ -18,9 +18,16 @@ exact pre-registration it answers.
 import json
 from datetime import date
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import (
+    Field,
+    SerializationInfo,
+    SerializerFunctionWrapHandler,
+    ValidationError,
+    model_serializer,
+    model_validator,
+)
 
 from app.research.comparison import check_nested
 from app.research.experiment import (
@@ -32,7 +39,10 @@ from app.research.experiment import (
     spec_hash,
 )
 
-CAMPAIGN_VERSION = 1
+#: Campaign v2 adds `CampaignHypothesis.prediction_direction`, the
+#: structured sign of the prediction (audit F-07); v1 campaigns keep the
+#: sign parsed from the prediction's text (`app.research.knowledge`).
+CAMPAIGN_VERSION = 2
 _SLUG = r"^[a-z0-9][a-z0-9-]{0,79}$"
 
 
@@ -43,6 +53,21 @@ class CampaignHypothesis(_Frozen):
     #: assumed" where that is the honest prior.
     prediction: str = Field(min_length=1, max_length=2000)
     experiment_id: str = Field(pattern=_SLUG)
+    #: Campaign v2: the registered sign of the prediction — "positive" /
+    #: "negative" spread, or "none" (no direction assumed). Required in v2,
+    #: absent in v1.
+    prediction_direction: Literal["positive", "negative", "none"] | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_direction(
+        self, handler: SerializerFunctionWrapHandler, info: SerializationInfo
+    ) -> Any:
+        # A v1 hypothesis serializes exactly as before the field existed, so
+        # registered campaign hashes and ledger snapshots are unchanged.
+        data = handler(self)
+        if isinstance(data, dict) and data.get("prediction_direction") is None:
+            data.pop("prediction_direction", None)
+        return data
 
 
 class Baseline(_Frozen):
@@ -60,7 +85,7 @@ class Comparison(_Frozen):
 
 
 class Campaign(_Frozen):
-    campaign_version: Literal[1]
+    campaign_version: Literal[1, 2]
     campaign_id: str = Field(pattern=_SLUG)
     created: date
     question: str = Field(min_length=1, max_length=4000)
@@ -73,6 +98,11 @@ class Campaign(_Frozen):
 
     @model_validator(mode="after")
     def _check_references(self) -> "Campaign":
+        for h in self.hypotheses:
+            if self.campaign_version == 1 and h.prediction_direction is not None:
+                raise ValueError(f"{h.id}: prediction_direction needs campaign_version 2")
+            if self.campaign_version >= 2 and h.prediction_direction is None:
+                raise ValueError(f"{h.id}: campaign_version 2 requires prediction_direction")
         hypothesis_ids = [h.id for h in self.hypotheses]
         if len(hypothesis_ids) != len(set(hypothesis_ids)):
             raise ValueError("hypothesis ids must be unique")

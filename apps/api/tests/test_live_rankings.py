@@ -199,6 +199,31 @@ async def test_the_endpoint_requires_authentication_and_serves_one_snapshot(
     assert body["long"]["rows"][0]["rank"] == 1 and body["short"]["model"]["candidate_id"] == SHORT
 
 
+async def test_a_symbol_slice_keeps_the_full_boards_rank_and_counts(
+    client, test_user, db_session, monkeypatch
+):
+    """F-08: a symbol page fetches one coin's slice, ranked over the whole
+    frame — identical rank, score and eligible count to the full board."""
+    await _seed(db_session)
+    monkeypatch.setattr(get_settings(), "research_ranking_dir", str(CANDIDATES.parent))
+    await client.post(
+        "/api/auth/login", json={"email": test_user.email, "password": "correct-horse-battery"}
+    )
+    full = (await client.get("/api/sniffer/rankings")).json()
+    one = (await client.get("/api/sniffer/rankings", params={"symbol": "c007usdt"})).json()
+    for direction in ("long", "short"):
+        [row] = one[direction]["rows"]
+        assert row == next(r for r in full[direction]["rows"] if r["symbol"] == "C007USDT")
+        assert one[direction]["eligible"] == full[direction]["eligible"] == 59
+        assert one[direction]["excluded"] == []
+    missing = (await client.get("/api/sniffer/rankings", params={"symbol": "C000USDT"})).json()
+    assert missing["long"]["rows"] == []
+    assert missing["long"]["excluded"] == [{"symbol": "C000USDT", "missing": ["oi_change_1h"]}]
+    latest = (await client.get("/api/sniffer/latest", params={"symbol": "C007USDT"})).json()
+    assert [i["symbol"] for i in latest["instruments"]] == ["C007USDT"]
+    assert latest["instruments_analyzed"] == 60
+
+
 # -- historical/live parity ------------------------------------------------------------------------
 
 

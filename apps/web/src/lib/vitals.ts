@@ -139,6 +139,17 @@ function missedFramesRow(market: MarketStatus | null): VitalRow {
 }
 
 /**
+ * Finalized frames of the last 24h with no Sniffer analysis — an analysis
+ * lost to a restart that startup recovery has not (yet) reached.
+ */
+function unanalyzedFramesRow(sniffer: SnifferStatus | null): VitalRow {
+  const label = "Unanalyzed frames (24h)";
+  const count = sniffer?.frames_unanalyzed_24h;
+  if (sniffer === null || count == null) return unavailableRow(label);
+  return { label, value: String(count), status: count > 0 ? "down" : "ok" };
+}
+
+/**
  * Pure transform from raw probe results into the sections rendered by the
  * Vitals page. Kept separate from presentation (like `route-guard.ts`) so
  * the "what does the app honestly know about its own health" logic can be
@@ -306,6 +317,7 @@ export function buildVitalsSections({
           value: sniffer?.coins_analyzed != null ? String(sniffer.coins_analyzed) : NOT_AVAILABLE,
           status: sniffer?.coins_analyzed != null ? "ok" : "unavailable",
         },
+        unanalyzedFramesRow(sniffer),
       ],
     },
     {

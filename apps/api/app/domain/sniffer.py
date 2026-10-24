@@ -42,3 +42,6 @@ class SnifferFrameResult:
     frame_time: datetime
     analyzed_at: datetime
     instruments: list[SnifferInstrumentResult]
+    #: "live", "recovery" (see `app.services.sniffer`), or None for results
+    #: stored before analysis provenance was recorded.
+    analysis: str | None = None

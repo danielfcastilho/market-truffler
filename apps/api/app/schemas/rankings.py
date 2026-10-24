@@ -14,6 +14,8 @@ class RankingFrame(BaseModel):
     available_instruments: int
     analyzed_instruments: int
     analyzed_at: datetime
+    # "live" | "recovery" | None (before analysis provenance was recorded).
+    analysis: str | None = None
     age_seconds: float
     stale: bool
     stale_reason: str | None

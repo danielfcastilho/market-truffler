@@ -44,3 +44,5 @@ class FundingRateObservation(Base):
     funding_time: Mapped[datetime] = mapped_column(UTCDateTime(), primary_key=True, nullable=False)
 
     funding_rate: Mapped[Decimal] = mapped_column(_RATE, nullable=False)
+    #: Same availability evidence as `OpenInterestObservation.ingested_at`.
+    ingested_at: Mapped[datetime | None] = mapped_column(UTCDateTime())

@@ -173,6 +173,7 @@ async def live_rankings(
     long_candidate: str,
     short_candidate: str,
     now: datetime,
+    symbol: str | None = None,
 ) -> dict[str, Any]:
     sniffer = await SnifferRepository(session).get_latest()
     if sniffer is None:
@@ -217,10 +218,28 @@ async def live_rankings(
             "available_instruments": frame.available_instruments,
             "analyzed_instruments": len(instruments),
             "analyzed_at": sniffer.analyzed_at,
+            "analysis": sniffer.analysis,
             "age_seconds": (now - sniffer.frame_time).total_seconds(),
             "stale": stale_reason is not None,
             "stale_reason": stale_reason,
         },
-        "long": rank_direction(long_candidate, "long", candidates_dir, symbols, features),
-        "short": rank_direction(short_candidate, "short", candidates_dir, symbols, features),
+        "long": _only(
+            rank_direction(long_candidate, "long", candidates_dir, symbols, features), symbol
+        ),
+        "short": _only(
+            rank_direction(short_candidate, "short", candidates_dir, symbols, features), symbol
+        ),
+    }
+
+
+def _only(ranking: dict[str, Any], symbol: str | None) -> dict[str, Any]:
+    """One coin's row/exclusion of a full ranking (audit F-08: a symbol page
+    needs ~1KB, not the whole ~1.4MB board). Ranked over the whole frame
+    first, so rank and `eligible` are exactly the full board's."""
+    if symbol is None:
+        return ranking
+    return {
+        **ranking,
+        "rows": [r for r in ranking.get("rows", []) if r["symbol"] == symbol],
+        "excluded": [e for e in ranking.get("excluded", []) if e["symbol"] == symbol],
     }

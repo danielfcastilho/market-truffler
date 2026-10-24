@@ -84,3 +84,9 @@ class SnifferStatus(BaseModel):
     status: Literal["ok"] | None
     last_scan: datetime | None
     coins_analyzed: int | None
+    # Finalized frames of the last 24h that Sniffer never analyzed (a lost
+    # analysis that startup recovery has not reached), excluding frames
+    # still inside their normal analysis window.
+    frames_unanalyzed_24h: int = 0
+    # "live" | "recovery" | None (before provenance was recorded).
+    last_analysis: str | None = None

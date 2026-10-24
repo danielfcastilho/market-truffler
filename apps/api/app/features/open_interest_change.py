@@ -14,11 +14,17 @@ percentage-space, just realized here in the codebase's existing
 fraction convention rather than a second, parallel one.
 
 "Current OI" is the latest Open Interest observation at or before
-`frame.frame_time` (`OpenInterestRepository.
-fetch_latest_at_or_before_per_instrument`) — the OI equivalent of a
-frame's already-selected candle anchor, so this inherits the frame's
-no-look-ahead guarantee exactly like every other feature. "Previous OI"
-is the observation at exactly `current.observed_at - lookback` — a
+`frame.frame_time` that was also *available* by the frame's decision time
+(`OpenInterestRepository.fetch_latest_at_or_before_per_instrument` with
+`available_by=decision_time(frame_time)` — see `app.domain.temporal`).
+Bounding `observed_at` alone is not enough: Bybit publishes bucket T
+10-20s after T, so whether bucket T was stored when a frame was measured
+depends on ingestion, and a replay that only bounds `observed_at` would see
+buckets a live analysis could not. With both bounds, live and replay select
+the same anchor. Rows stored before `ingested_at` was recorded (NULL) are
+accepted unverified, so pre-contract history replays as before. "Previous OI"
+is the observation at exactly `current.observed_at - lookback` (under the
+same availability bound) — a
 precise time offset from that anchor (never "now - lookback", and never
 "the Nth previous row"), mirroring `ReturnFeature`'s own anchor-then-
 exact-offset pattern. Missing either observation (a gap, insufficient
@@ -30,6 +36,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 
 from app.domain.frame import MarketFrame
+from app.domain.temporal import decision_time
 from app.features.base import Feature
 from app.models.open_interest import OpenInterestObservation
 from app.repositories.candle_repository import CandleRepository
@@ -56,8 +63,9 @@ class OpenInterestChangeFeature(Feature):
             raise ValueError(f"{self.name} requires oi_repo, none was given")
 
         instrument_ids = [member.instrument_id for member in frame.members]
+        available_by = decision_time(frame.frame_time)
         current = await oi_repo.fetch_latest_at_or_before_per_instrument(
-            instrument_ids, frame.frame_time
+            instrument_ids, frame.frame_time, available_by=available_by
         )
 
         # Group by each instrument's own current-anchor time minus the
@@ -71,7 +79,9 @@ class OpenInterestChangeFeature(Feature):
 
         previous: dict[int, OpenInterestObservation] = {}
         for target_time, ids in targets_by_time.items():
-            previous.update(await oi_repo.fetch_exact_observed_at(ids, target_time))
+            previous.update(
+                await oi_repo.fetch_exact_observed_at(ids, target_time, available_by=available_by)
+            )
 
         results: dict[int, Decimal | None] = {}
         for member in frame.members:

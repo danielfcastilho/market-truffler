@@ -40,6 +40,7 @@ const healthySniffer: SnifferStatus = {
   status: "ok",
   last_scan: "2026-09-19T16:37:06.000Z",
   coins_analyzed: 771,
+  frames_unanalyzed_24h: 0,
 };
 
 const noSnifferScanYet: SnifferStatus = {
@@ -448,6 +449,23 @@ describe("buildVitalsSections", () => {
     });
   });
 
+  it("keeps frames whose Sniffer analysis was lost visible", () => {
+    const rows = (unanalyzed: number) =>
+      buildVitalsSections({
+        health: "ok",
+        ready: "ok",
+        system: healthySystem,
+        market: healthyMarket,
+        sniffer: { ...healthySniffer, frames_unanalyzed_24h: unanalyzed },
+      }).find((s) => s.title === "🐽 SNIFFER")?.rows;
+    expect(rows(0)?.find((r) => r.label === "Unanalyzed frames (24h)")).toEqual({
+      label: "Unanalyzed frames (24h)",
+      value: "0",
+      status: "ok",
+    });
+    expect(rows(3)?.find((r) => r.label === "Unanalyzed frames (24h)")?.status).toBe("down");
+  });
+
   it("has no placeholder rows for capabilities that do not exist yet", () => {
     const sections = buildVitalsSections({
       health: "ok",
@@ -459,7 +477,12 @@ describe("buildVitalsSections", () => {
     const sniffer = sections.find((s) => s.title === "🐽 SNIFFER");
     const oinkCorp = sections.find((s) => s.title === "🧬 OINK CORP");
 
-    expect(sniffer?.rows.map((r) => r.label)).toEqual(["Status", "Last scan", "Coins analyzed"]);
+    expect(sniffer?.rows.map((r) => r.label)).toEqual([
+      "Status",
+      "Last scan",
+      "Coins analyzed",
+      "Unanalyzed frames (24h)",
+    ]);
     // OINK CORP shows only its real research-data signal — no ranking,
     // Truffle, or experiment rows until those capabilities exist.
     expect(oinkCorp?.rows.map((r) => r.label)).toEqual(RESEARCH_LABELS);

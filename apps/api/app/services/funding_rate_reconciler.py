@@ -12,6 +12,13 @@ whatever interval that instrument's contract really uses (commonly
 MARKET never assumes or hardcodes an interval per symbol: it just walks
 Bybit's own reported settlement timestamps, exactly as they come back.
 
+Rounds are aligned to the frame boundaries exactly like
+`OpenInterestReconciler`'s (`app.services.boundary_schedule`): settlements
+fall on hour boundaries, so a round shortly after each boundary stores a
+settlement at T before frame T's decision time (`app.domain.temporal`)
+instead of up to five minutes later (audit F-03). Each row records
+`ingested_at`, the instant it was first stored.
+
 Like `OpenInterestReconciler`, this is started once from the FastAPI
 lifespan and runs for the life of the process; nothing here is triggered
 by a request.
@@ -32,11 +39,19 @@ from app.integrations.bybit.schemas import FundingRateHistoryResult
 from app.models.instrument import Instrument
 from app.repositories.funding_rate_repository import FundingRateRepository
 from app.repositories.instrument_repository import InstrumentRepository
+from app.services.boundary_schedule import wait_for_round
 
 logger = logging.getLogger(__name__)
 
 _CATEGORY = "linear"
 _PAGE_SIZE = 200  # Bybit's own cap for this endpoint
+#: How long after each 5-minute boundary a round starts. Bybit lists a
+#: settlement at T by T+0s (measured 2026-10-24), and a round takes ~20s at
+#: 25 concurrent requests, so starting at T+2s stores it well before the
+#: decision time (T+60s); a T+20s start at 15 concurrent requests stored the
+#: last 23:00 settlements at T+64s. Overlaps the OI round (T+15s) only
+#: briefly, well under Bybit's 600 requests / 5s per IP.
+ROUND_OFFSET = timedelta(seconds=2)
 
 SessionFactory = Callable[[], AsyncSession]
 
@@ -49,12 +64,15 @@ class FundingRateReconcilerStatus:
     last_poll_ok: bool | None = None
 
 
-def _to_rows(instrument_id: int, result: FundingRateHistoryResult) -> list[dict[str, object]]:
+def _to_rows(
+    instrument_id: int, result: FundingRateHistoryResult, ingested_at: datetime
+) -> list[dict[str, object]]:
     return [
         {
             "instrument_id": instrument_id,
             "funding_time": datetime.fromtimestamp(int(entry.fundingRateTimestamp) / 1000, tz=UTC),
             "funding_rate": Decimal(entry.fundingRate),
+            "ingested_at": ingested_at,
         }
         for entry in result.list
     ]
@@ -68,9 +86,10 @@ class FundingRateReconciler:
         *,
         required_warmup: timedelta,
         retention: timedelta | None = None,
-        poll_interval_seconds: float = 300.0,
-        max_concurrent_instruments: int = 5,
-        request_delay_seconds: float = 0.2,
+        round_offset: timedelta = ROUND_OFFSET,
+        # ~800 symbols in ~20s, finishing before the decision time.
+        max_concurrent_instruments: int = 25,
+        request_delay_seconds: float = 0.0,
     ) -> None:
         self._session_factory = session_factory
         self._bybit_client = bybit_client
@@ -85,7 +104,7 @@ class FundingRateReconciler:
         self._retention = (
             retention if retention is not None else required_warmup + timedelta(days=1)
         )
-        self._poll_interval = poll_interval_seconds
+        self._round_offset = round_offset
         self._max_concurrent = max_concurrent_instruments
         self._request_delay = request_delay_seconds
 
@@ -121,18 +140,13 @@ class FundingRateReconciler:
 
     async def _run_loop(self) -> None:
         assert self._stop_event is not None
+        # One immediate round (bootstrap progress on startup), then one per
+        # boundary.
+        await self._poll_once()
         while not self._stop_event.is_set():
-            await self._poll_once()
-            if await self._wait_or_stop(self._poll_interval):
+            if await wait_for_round(self._stop_event, self._round_offset) is None:
                 break
-
-    async def _wait_or_stop(self, seconds: float) -> bool:
-        assert self._stop_event is not None
-        try:
-            await asyncio.wait_for(self._stop_event.wait(), timeout=seconds)
-            return True
-        except TimeoutError:
-            return False
+            await self._poll_once()
 
     async def _poll_once(self) -> None:
         async with self._session_factory() as session:
@@ -223,7 +237,7 @@ class FundingRateReconciler:
             await session.commit()
             return
 
-        await repo.upsert_many(_to_rows(instrument.id, result))
+        await repo.upsert_many(_to_rows(instrument.id, result, datetime.now(UTC)))
 
         oldest_ms = min(int(entry.fundingRateTimestamp) for entry in result.list)
         instrument.funding_synced_from = datetime.fromtimestamp(oldest_ms / 1000, tz=UTC)
@@ -265,4 +279,4 @@ class FundingRateReconciler:
         if not result.list:
             return  # no new settlement has occurred since `since` yet — fine, retried next round
 
-        await repo.upsert_many(_to_rows(instrument.id, result))
+        await repo.upsert_many(_to_rows(instrument.id, result, datetime.now(UTC)))

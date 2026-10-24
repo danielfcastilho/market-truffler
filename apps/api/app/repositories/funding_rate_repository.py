@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +17,17 @@ from sqlalchemy.orm import aliased
 from app.models.funding_rate import FundingRateObservation
 
 _CONFLICT_COLUMNS = ("instrument_id", "funding_time")
+
+
+def _available_by(available_by: datetime | None) -> list[Any]:
+    """The temporal contract's availability condition (see
+    `app.domain.temporal`): stored no later than `available_by`, or a legacy
+    row whose availability was never recorded. No condition when
+    `available_by` is None."""
+    if available_by is None:
+        return []
+    column = FundingRateObservation.ingested_at
+    return [or_(column.is_(None), column <= available_by)]
 
 
 class FundingRateRepository:
@@ -34,21 +45,40 @@ class FundingRateRepository:
         insert_fn = pg_insert if dialect_name == "postgresql" else sqlite_insert
 
         stmt = insert_fn(FundingRateObservation).values(list(rows))
+        # `ingested_at` is first-seen availability evidence: a re-fetch of
+        # the same value keeps the original instant (including a legacy
+        # NULL); only an exchange-side change of the value records when the
+        # new value became available.
         stmt = stmt.on_conflict_do_update(
             index_elements=list(_CONFLICT_COLUMNS),
-            set_={"funding_rate": stmt.excluded.funding_rate},
+            set_={
+                "funding_rate": stmt.excluded.funding_rate,
+                "ingested_at": case(
+                    (
+                        FundingRateObservation.funding_rate == stmt.excluded.funding_rate,
+                        FundingRateObservation.ingested_at,
+                    ),
+                    else_=stmt.excluded.ingested_at,
+                ),
+            },
         )
         await self._session.execute(stmt)
         await self._session.commit()
         self._session.expire_all()
 
     async def fetch_latest_at_or_before_per_instrument(
-        self, instrument_ids: Sequence[int], max_funding_time: datetime
+        self,
+        instrument_ids: Sequence[int],
+        max_funding_time: datetime,
+        *,
+        available_by: datetime | None = None,
     ) -> dict[int, FundingRateObservation]:
         """The single latest funding observation per instrument, at or
         before `max_funding_time` — the funding-rate equivalent of
         `OpenInterestRepository.fetch_latest_at_or_before_per_instrument`,
-        used as `funding_rate_current`'s no-look-ahead-safe anchor."""
+        used as `funding_rate_current`'s no-look-ahead-safe anchor.
+        `available_by` applies the temporal contract's availability
+        condition."""
         if not instrument_ids:
             return {}
 
@@ -65,6 +95,7 @@ class FundingRateRepository:
             .where(
                 FundingRateObservation.instrument_id.in_(instrument_ids),
                 FundingRateObservation.funding_time <= max_funding_time,
+                *_available_by(available_by),
             )
             .subquery()
         )
@@ -75,13 +106,19 @@ class FundingRateRepository:
         return {obs.instrument_id: obs for obs in result.scalars()}
 
     async def fetch_since_per_instrument(
-        self, instrument_ids: Sequence[int], since: datetime, until: datetime
+        self,
+        instrument_ids: Sequence[int],
+        since: datetime,
+        until: datetime,
+        *,
+        available_by: datetime | None = None,
     ) -> dict[int, list[FundingRateObservation]]:
         """Every observation with `since <= funding_time <= until`, per
         instrument — the trailing window `funding_rate_24h_avg` averages
         over. One set-oriented query for the whole member list, never a
         per-instrument loop. An instrument with no observations in the
-        window is simply absent from the result."""
+        window is simply absent from the result. `available_by` applies the
+        temporal contract's availability condition."""
         if not instrument_ids:
             return {}
 
@@ -91,6 +128,7 @@ class FundingRateRepository:
                 FundingRateObservation.instrument_id.in_(instrument_ids),
                 FundingRateObservation.funding_time >= since,
                 FundingRateObservation.funding_time <= until,
+                *_available_by(available_by),
             )
             .order_by(FundingRateObservation.funding_time)
         )

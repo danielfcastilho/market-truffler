@@ -39,3 +39,9 @@ class OpenInterestObservation(Base):
     observed_at: Mapped[datetime] = mapped_column(UTCDateTime(), primary_key=True, nullable=False)
 
     open_interest: Mapped[Decimal] = mapped_column(_AMOUNT, nullable=False)
+    #: When MARKET first stored this value — its availability evidence under
+    #: the temporal contract (`app.domain.temporal`). Kept on a re-fetch of
+    #: the same value, reset only if the exchange's value changes. NULL on
+    #: rows stored before it was recorded (availability unknown), never
+    #: backfilled.
+    ingested_at: Mapped[datetime | None] = mapped_column(UTCDateTime())

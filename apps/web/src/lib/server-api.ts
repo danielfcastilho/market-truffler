@@ -114,6 +114,10 @@ export interface SnifferStatus {
   status: "ok" | null;
   last_scan: string | null;
   coins_analyzed: number | null;
+  /** Finalized frames of the last 24h Sniffer never analyzed (lost analyses). */
+  frames_unanalyzed_24h?: number;
+  /** "live" | "recovery" | null (before provenance was recorded). */
+  last_analysis?: string | null;
 }
 
 /** OINK CORP research data continuity, as last reported by the backend's
@@ -243,9 +247,11 @@ export interface SnifferFrame {
   instruments: SnifferInstrument[];
 }
 
-export async function getLatestSnifferFrame(): Promise<SnifferFrame | null> {
+/** `symbol` narrows `instruments` to that coin (frame counts stay whole). */
+export async function getLatestSnifferFrame(symbol?: string): Promise<SnifferFrame | null> {
   try {
-    const response = await serverFetch("/api/sniffer/latest");
+    const query = symbol ? `?symbol=${encodeURIComponent(symbol)}` : "";
+    const response = await serverFetch(`/api/sniffer/latest${query}`);
     if (!response.ok) return null;
     return (await response.json()) as SnifferFrame;
   } catch {
@@ -300,9 +306,11 @@ export type LiveRankingsResult =
   | { status: "error"; message: string };
 
 /** Experimental live Long/Short rankings — one snapshot, one frame. */
-export async function getLiveRankings(): Promise<LiveRankingsResult> {
+/** `symbol` keeps only that coin's row/exclusion, ranked over the whole frame. */
+export async function getLiveRankings(symbol?: string): Promise<LiveRankingsResult> {
   try {
-    const response = await serverFetch("/api/sniffer/rankings");
+    const query = symbol ? `?symbol=${encodeURIComponent(symbol)}` : "";
+    const response = await serverFetch(`/api/sniffer/rankings${query}`);
     if (!response.ok) return { status: "error", message: `HTTP ${response.status}` };
     return { status: "ok", data: (await response.json()) as LiveRankingsData };
   } catch {

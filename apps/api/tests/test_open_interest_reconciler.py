@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -103,7 +104,6 @@ def _reconciler(session_factory, bybit_client, **overrides) -> OpenInterestRecon
     kwargs = {
         "required_warmup": REQUIRED_WARMUP,
         "retention": timedelta(days=2),
-        "poll_interval_seconds": 300,
         "max_concurrent_instruments": 5,
         "request_delay_seconds": 0,
     }
@@ -370,7 +370,7 @@ async def test_poll_once_updates_status(session_factory):
 
 async def test_start_and_stop_is_clean_with_an_empty_universe(session_factory):
     client = _FakeBybitClient()
-    reconciler = _reconciler(session_factory, client, poll_interval_seconds=3600)
+    reconciler = _reconciler(session_factory, client)
 
     await reconciler.start()
     assert reconciler.running
@@ -576,3 +576,46 @@ async def test_repair_script_refills_sealed_gaps_idempotently(session_factory, m
 
     again = await repair_module.repair(dry_run=False)
     assert again["gaps"] == 0 and again["buckets_recovered"] == 0
+
+
+# -- temporal contract: ingestion provenance and boundary-aligned rounds --------
+
+
+async def test_stored_buckets_record_when_they_were_ingested(session_factory):
+    now = datetime.now(UTC).replace(second=0, microsecond=0)
+    iid = await _seed_instrument(session_factory, first_seen_at=now)
+    await _seed_observation(session_factory, iid, now - timedelta(minutes=10))
+    client = _FakeBybitClient({"BTCUSDT": [_page([_entry(now - timedelta(minutes=5))])]})
+
+    before = datetime.now(UTC)
+    async with session_factory() as session:
+        instrument = await session.get(Instrument, iid)
+        await _reconciler(session_factory, client)._catchup_step(
+            session, OpenInterestRepository(session), instrument, "BTCUSDT"
+        )
+
+    by_time = {o.observed_at: o.ingested_at for o in await _stored(session_factory, iid)}
+    assert by_time[now - timedelta(minutes=10)] is None  # pre-existing: never backfilled
+    assert before <= by_time[now - timedelta(minutes=5)] <= datetime.now(UTC)
+
+
+async def test_symbols_still_missing_the_boundary_bucket_are_retried_once(
+    session_factory, monkeypatch
+):
+    monkeypatch.setattr("app.services.open_interest_reconciler.RETRY_DELAY_SECONDS", 0)
+    boundary = datetime.now(UTC).replace(second=0, microsecond=0)
+    current = await _seed_instrument(session_factory, symbol="BTCUSDT", first_seen_at=boundary)
+    behind = await _seed_instrument(session_factory, symbol="ETHUSDT", first_seen_at=boundary)
+    await _seed_instrument(session_factory, symbol="NEWUSDT", first_seen_at=boundary)
+    await _seed_observation(session_factory, current, boundary)
+    await _seed_observation(session_factory, behind, boundary - timedelta(minutes=5))
+    client = _FakeBybitClient({"ETHUSDT": [_page([_entry(boundary)], symbol="ETHUSDT")]})
+    reconciler = _reconciler(session_factory, client)
+    reconciler._stop_event = asyncio.Event()
+
+    await reconciler._retry_missing_bucket(boundary)
+
+    # Only the bootstrapped symbol behind the boundary is retried (bootstrap
+    # step + catch-up); the current one and the never-bootstrapped one not.
+    assert {c["symbol"] for c in client.calls} == {"ETHUSDT"}
+    assert boundary in {o.observed_at for o in await _stored(session_factory, behind)}

@@ -14,8 +14,12 @@ Both features read `funding_rate_observations` directly against
 `frame.frame_time`, the same way `OpenInterestChangeFeature` reads
 `open_interest_observations` against it — never a frame member's own
 m5/m15/... candle anchor (funding is not a candle-derived measurement),
-but still fully no-look-ahead-safe: every query below is bounded to
-"at or before" / "no later than" `frame.frame_time`.
+and bounded the same two ways: `funding_time` at or before
+`frame.frame_time`, and `ingested_at` by the frame's decision time
+(`app.domain.temporal`). The second bound matters at settlement
+boundaries: a settlement at exactly T is only knowable once Bybit publishes
+it and MARKET stores it, so without it a replay of frame T would use a
+settlement the live analysis of T could not yet have had.
 
 `funding_rate_current` = the latest funding observation at or before
 `frame.frame_time` — the current funding pressure/cost. `None` when no
@@ -37,6 +41,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from app.domain.frame import MarketFrame
+from app.domain.temporal import decision_time
 from app.features.base import Feature
 from app.repositories.candle_repository import CandleRepository
 from app.repositories.funding_rate_repository import FundingRateRepository
@@ -68,7 +73,7 @@ class FundingRateCurrentFeature(Feature):
 
         instrument_ids = [member.instrument_id for member in frame.members]
         current = await funding_repo.fetch_latest_at_or_before_per_instrument(
-            instrument_ids, frame.frame_time
+            instrument_ids, frame.frame_time, available_by=decision_time(frame.frame_time)
         )
 
         return {
@@ -100,7 +105,7 @@ class FundingRate24hAvgFeature(Feature):
         instrument_ids = [member.instrument_id for member in frame.members]
         since = frame.frame_time - _AVG_WINDOW
         observations = await funding_repo.fetch_since_per_instrument(
-            instrument_ids, since, frame.frame_time
+            instrument_ids, since, frame.frame_time, available_by=decision_time(frame.frame_time)
         )
 
         results: dict[int, Decimal | None] = {}
