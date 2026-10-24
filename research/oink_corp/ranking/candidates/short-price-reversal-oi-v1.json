@@ -1,0 +1,21 @@
+{
+  "spec_version": 1,
+  "candidate_id": "short-price-reversal-oi-v1",
+  "name": "Short \u2014 price reversal + falling Open Interest",
+  "model_family": "linear_weighted_v1",
+  "direction": "short",
+  "objective": "Rank coins by how attractive a Short is over the next hour, relative to the market.",
+  "terms": [
+    {
+      "feature": "return_1h",
+      "transform": "cs_percentile",
+      "weight": 1.0
+    },
+    {
+      "feature": "oi_change_1h",
+      "transform": "cs_percentile",
+      "weight": -0.5
+    }
+  ],
+  "missing_policy": "exclude"
+}

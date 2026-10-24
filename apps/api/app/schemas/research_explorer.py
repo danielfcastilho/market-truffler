@@ -60,7 +60,7 @@ class CampaignSummary(BaseModel):
 class RunSummary(BaseModel):
     experiment_id: str
     run_id: str
-    kind: Literal["experiment", "incremental_comparison", "prospective_evaluation"]
+    kind: Literal["experiment", "incremental_comparison", "prospective_evaluation", "ranking_study"]
     campaign_id: str | None
     direction: str | None
     segment: str | None
@@ -77,6 +77,15 @@ class ResearchOverview(BaseModel):
     campaigns: list[CampaignSummary]
     #: The latest research events (see `ResearchHistory.events`).
     activity: list[dict[str, Any]]
+    issues: list[dict[str, str]]
+
+
+class RankingResearch(BaseModel):
+    """Ranking candidates and studies as committed, with each study's runs."""
+
+    candidates: list[dict[str, Any]]
+    #: {study, candidate, reference, runs} per registered study
+    studies: list[dict[str, Any]]
     issues: list[dict[str, str]]
 
 

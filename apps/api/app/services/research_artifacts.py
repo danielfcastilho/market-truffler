@@ -39,6 +39,7 @@ class ResearchArtifacts:
     experiments_dir: Path
     data_dir: Path
     knowledge_dir: Path | None = None
+    ranking_dir: Path | None = None
     issues: list[dict[str, str]] = field(default_factory=list)
 
     # -- safe paths --------------------------------------------------------------------------
@@ -64,7 +65,13 @@ class ResearchArtifacts:
 
     def _label(self, path: Path) -> str:
         """A path relative to its artifact directory — never an absolute path."""
-        bases = (self.campaigns_dir, self.experiments_dir, self.data_dir, self.knowledge_dir)
+        bases = (
+            self.campaigns_dir,
+            self.experiments_dir,
+            self.data_dir,
+            self.knowledge_dir,
+            self.ranking_dir,
+        )
         for base in (b for b in bases if b is not None):
             try:
                 return str(path.resolve().relative_to(base.resolve()))
@@ -225,6 +232,25 @@ class ResearchArtifacts:
                 }
             )
         return found
+
+    def ranking_specs(self, kind: str) -> dict[str, dict[str, Any]]:
+        """Ranking `candidates` or `studies`, keyed by their id; a file whose
+        id differs from its name is reported, not used."""
+        if self.ranking_dir is None or not (self.ranking_dir / kind).is_dir():
+            return {}
+        key = "candidate_id" if kind == "candidates" else "study_id"
+        specs = {}
+        for path in sorted((self.ranking_dir / kind).glob("*.json")):
+            if not SLUG.match(path.stem):
+                continue
+            spec = self._read_json(path)
+            if spec is None:
+                continue
+            if spec.get(key) != path.stem:
+                self.issues.append({"artifact": self._label(path), "problem": f"{key} differs"})
+                continue
+            specs[path.stem] = spec
+        return specs
 
     def run(self, experiment_id: str, run_id: str) -> dict[str, Any] | None:
         if not SLUG.match(experiment_id) or not RUN_ID.match(run_id):

@@ -88,6 +88,7 @@ class Settings(BaseSettings):
     research_experiments_dir: str = "/app/research_experiments"
     research_campaigns_dir: str = "/app/research_campaigns"
     research_knowledge_dir: str = "/app/research_knowledge"
+    research_ranking_dir: str = "/app/research_ranking"
 
     @property
     def allowed_origins_list(self) -> list[str]:

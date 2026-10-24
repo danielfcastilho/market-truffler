@@ -236,6 +236,17 @@ export type ResearchEvent =
       partitions: { role: string; start: string; end: string }[];
     }
   | {
+      type: "ranking_evaluation";
+      at: string;
+      campaign_id: null;
+      experiment_ids: string[];
+      runs: number;
+      repeat_runs: number;
+      failed_runs: number;
+      segments: string[];
+      verdicts: Partial<Record<Verdict, number>>;
+    }
+  | {
       type: "knowledge_revision";
       at: string;
       campaign_id: string;
@@ -246,7 +257,7 @@ export type ResearchEvent =
 export interface RunSummary {
   experiment_id: string;
   run_id: string;
-  kind: "experiment" | "incremental_comparison" | "prospective_evaluation";
+  kind: "experiment" | "incremental_comparison" | "prospective_evaluation" | "ranking_study";
   campaign_id: string | null;
   direction: Direction | null;
   segment: string | null;
@@ -327,6 +338,106 @@ export interface ExperimentDetail {
     runs: RunRecord[];
   }[];
   issues: ArtifactIssue[];
+}
+
+// -- ranking research ---------------------------------------------------------------------
+
+export interface RankingTerm {
+  feature: string;
+  transform: "identity" | "cs_percentile" | "cs_robust_z";
+  weight: number;
+}
+
+export interface RankingCandidate {
+  candidate_id: string;
+  name: string;
+  model_family: string;
+  direction: Direction;
+  objective: string;
+  terms: RankingTerm[];
+  missing_policy: string;
+}
+
+export interface RankingModelSummary {
+  mean_top_k_excess_utility: number | null;
+  timestamps: number;
+  distinct_top_symbols: number;
+  top_k_missing_outcome: number;
+  diagnostics: {
+    mean_top_k_utility: number | null;
+    mean_top_bottom_separation: number | null;
+    mean_spearman: number | null;
+    daily_mean_excess_utility: Record<string, number>;
+  };
+}
+
+export interface RankingRun {
+  run_id: string;
+  experiment_id: string;
+  executed_at: string;
+  status: string;
+  error?: string | null;
+  spec_hash: string;
+  repeat_of: string[];
+  ranking_evaluator_version: number;
+  candidate: { candidate_id: string; spec_hash: string };
+  reference: { candidate_id: string; spec_hash: string } | null;
+  datasets?: { name: string; data_sha256: string }[];
+  report?: {
+    segment: string;
+    primary_metric: string;
+    top_k: number;
+    horizon_minutes: number;
+    days: string[];
+    coverage: { timestamps: number; timestamps_universe_too_small: number; mean_universe: number | null; distinct_days: number };
+    candidate: RankingModelSummary;
+    reference?: RankingModelSummary;
+    primary: {
+      estimand: string;
+      mean: number | null;
+      matched_timestamps?: number;
+      uncertainty: Uncertainty;
+      verdict: Verdict;
+      verdict_reasons: string[];
+    };
+    verdict: Verdict;
+    verdict_reasons: string[];
+    disclosures: string[];
+  };
+}
+
+export interface RankingStudyView {
+  study: {
+    study_id: string;
+    name: string;
+    question: string;
+    candidate: string;
+    reference: string | null;
+    datasets: { name: string; data_sha256: string }[];
+    label: string;
+    top_k: number;
+  };
+  candidate: RankingCandidate | null;
+  reference: RankingCandidate | null;
+  runs: RankingRun[];
+}
+
+export interface RankingResearch {
+  candidates: RankingCandidate[];
+  studies: RankingStudyView[];
+  issues: ArtifactIssue[];
+}
+
+const TRANSFORM_WORDS: Record<RankingTerm["transform"], string> = {
+  identity: "raw value",
+  cs_percentile: "percentile rank within the frame",
+  cs_robust_z: "robust z-score within the frame",
+};
+
+/** One scoring term in words, e.g. "−1 × percentile rank within the frame of 1-hour return". */
+export function describeTerm(term: RankingTerm): string {
+  const sign = term.weight < 0 ? "−" : "+";
+  return `${sign}${Math.abs(term.weight)} × ${TRANSFORM_WORDS[term.transform]} of ${describeFeature(term.feature).toLowerCase()}`;
 }
 
 // -- knowledge --------------------------------------------------------------------------------

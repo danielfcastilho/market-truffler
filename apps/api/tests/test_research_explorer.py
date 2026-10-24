@@ -479,3 +479,61 @@ async def test_a_malformed_registration_is_reported(client, test_user, artifacts
     assert {"artifact": "evaluations/bad-v1", "problem": "registration id differs"} in overview[
         "issues"
     ]
+
+
+def _write_ranking(root: Path, data: Path) -> None:
+    (root / "candidates").mkdir(parents=True)
+    (root / "studies").mkdir()
+    for cid in ("long-price-v1", "long-price-oi-v1"):
+        (root / "candidates" / f"{cid}.json").write_text(
+            json.dumps({"candidate_id": cid, "name": cid, "direction": "long", "terms": []})
+        )
+    (root / "candidates" / "renamed-v1.json").write_text(json.dumps({"candidate_id": "other-v1"}))
+    (root / "studies" / "long-study-v1.json").write_text(
+        json.dumps(
+            {
+                "study_id": "long-study-v1",
+                "candidate": "long-price-oi-v1",
+                "reference": "long-price-v1",
+            }
+        )
+    )
+    _write_run(
+        data,
+        _record(
+            "long-study-v1",
+            "20261024T140000000000Z-eeeeee",
+            "insufficient_data",
+            kind="ranking_study",
+        ),
+    )
+
+
+async def test_ranking_research_is_served_apart_from_feature_research(
+    client, test_user, artifacts, monkeypatch
+):
+    _write_ranking(artifacts / "r", artifacts / "d")
+    monkeypatch.setattr(get_settings(), "research_ranking_dir", str(artifacts / "r"))
+    assert (await client.get("/api/research/ranking")).status_code == 401
+    await _login(client, test_user)
+    body = (await client.get("/api/research/ranking")).json()
+    [study] = body["studies"]
+    assert study["candidate"]["candidate_id"] == "long-price-oi-v1"
+    assert study["reference"]["candidate_id"] == "long-price-v1"
+    assert [r["run_id"] for r in study["runs"]] == ["20261024T140000000000Z-eeeeee"]
+    assert {i["problem"] for i in body["issues"]} == {"candidate_id differs"}
+    history = (await client.get("/api/research/history")).json()
+    [run] = [r for r in history["runs"] if r["kind"] == "ranking_study"]
+    assert run["link_experiment_id"] is None  # not an experiment page
+    assert any(e["type"] == "ranking_evaluation" for e in history["events"])
+    assert not any(
+        e["type"] == "evaluation" and "long-study-v1" in e["experiment_ids"]
+        for e in history["events"]
+    )
+
+
+async def test_no_ranking_research_is_an_empty_list(client, test_user, artifacts, monkeypatch):
+    monkeypatch.setattr(get_settings(), "research_ranking_dir", str(artifacts / "missing"))
+    await _login(client, test_user)
+    body = (await client.get("/api/research/ranking")).json()
+    assert body == {"candidates": [], "studies": [], "issues": []}

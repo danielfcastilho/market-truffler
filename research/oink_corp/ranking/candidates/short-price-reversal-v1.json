@@ -1,0 +1,16 @@
+{
+  "spec_version": 1,
+  "candidate_id": "short-price-reversal-v1",
+  "name": "Short \u2014 price reversal (price only)",
+  "model_family": "linear_weighted_v1",
+  "direction": "short",
+  "objective": "Rank coins by how attractive a Short is over the next hour, relative to the market.",
+  "terms": [
+    {
+      "feature": "return_1h",
+      "transform": "cs_percentile",
+      "weight": 1.0
+    }
+  ],
+  "missing_policy": "exclude"
+}

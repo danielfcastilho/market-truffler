@@ -23,6 +23,7 @@ from app.schemas.research_explorer import (
     ExperimentDetail,
     HypothesisSummary,
     KnowledgeCounts,
+    RankingResearch,
     ResearchCounts,
     ResearchHistory,
     ResearchOverview,
@@ -50,6 +51,7 @@ def _artifacts() -> ResearchArtifacts:
         experiments_dir=Path(settings.research_experiments_dir),
         data_dir=Path(settings.research_data_dir),
         knowledge_dir=Path(settings.research_knowledge_dir),
+        ranking_dir=Path(settings.research_ranking_dir),
     )
 
 
@@ -124,11 +126,15 @@ def _run_summary(
     kind = record.get("kind")
     is_comparison = kind in ("incremental_comparison", "prospective_evaluation")
     subject = (record.get("candidate") or {}).get("experiment_id") if is_comparison else run_id
+    if kind == "ranking_study":
+        subject = None  # explained on the ranking research page, not an experiment page
     spec = specs.get(subject) if subject else None
     return RunSummary(
         experiment_id=run_id,
         run_id=str(record.get("run_id")),
-        kind=kind if kind in ("incremental_comparison", "prospective_evaluation") else "experiment",
+        kind=kind
+        if kind in ("incremental_comparison", "prospective_evaluation", "ranking_study")
+        else "experiment",
         campaign_id=record.get("campaign_id") or owner.get(run_id),
         direction=(spec or {}).get("hypothesis", {}).get("direction"),
         segment=record.get("segment"),
@@ -166,10 +172,11 @@ def _events(
         experiment_id = str(record.get("experiment_id"))
         campaign_id = record.get("campaign_id") or owner.get(experiment_id)
         day = str(record.get("executed_at", ""))[:10]
+        ranking = record.get("kind") == "ranking_study"
         group = groups.setdefault(
-            (campaign_id or f"experiment:{experiment_id}", day),
+            ("ranking" if ranking else campaign_id or f"experiment:{experiment_id}", day),
             {
-                "type": "evaluation",
+                "type": "ranking_evaluation" if ranking else "evaluation",
                 "campaign_id": campaign_id,
                 "experiment_ids": set(),
                 "runs": 0,
@@ -342,6 +349,32 @@ async def research_history(current_user: CurrentUserDep) -> ResearchHistory:
     return ResearchHistory(
         events=_events(campaigns, records, ledgers, owner, _evaluation_summaries(artifacts)),
         runs=[_run_summary(r, owner, specs) for r in records],
+        issues=artifacts.issues,
+    )
+
+
+@router.get("/ranking", response_model=RankingResearch)
+async def research_ranking(current_user: CurrentUserDep) -> RankingResearch:
+    """Ranking research: candidate models, the studies comparing them, and
+    every immutable run of each study (newest first). Model-level,
+    development-only evidence — kept apart from the feature-level ledger."""
+    artifacts = _artifacts()
+    candidates = artifacts.ranking_specs("candidates")
+    studies = artifacts.ranking_specs("studies")
+    by_id = _runs_by_id(artifacts.runs())
+    return RankingResearch(
+        candidates=list(candidates.values()),
+        studies=[
+            {
+                "study": study,
+                "candidate": candidates.get(str(study.get("candidate"))),
+                "reference": candidates.get(str(study.get("reference")))
+                if study.get("reference")
+                else None,
+                "runs": [r for r in by_id.get(study_id, []) if r.get("kind") == "ranking_study"],
+            }
+            for study_id, study in studies.items()
+        ],
         issues=artifacts.issues,
     )
 

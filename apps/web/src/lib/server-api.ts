@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import type {
   CampaignDetail as CampaignDetailData,
   ExperimentDetail as ExperimentDetailData,
+  RankingResearch as RankingResearchData,
   ResearchHistory as ResearchHistoryData,
   ResearchOverview as ResearchOverviewData,
 } from "@/lib/research";
@@ -287,4 +288,8 @@ export function getResearchExperiment(id: string): Promise<ResearchResult<Experi
 
 export function getResearchHistory(): Promise<ResearchResult<ResearchHistoryData>> {
   return researchFetch("/api/research/history");
+}
+
+export function getRankingResearch(): Promise<ResearchResult<RankingResearchData>> {
+  return researchFetch("/api/research/ranking");
 }

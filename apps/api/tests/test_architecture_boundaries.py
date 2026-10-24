@@ -23,6 +23,7 @@ _RESEARCH_SIDE = {
     APP_DIR / "scripts" / "run_campaign.py",
     APP_DIR / "scripts" / "knowledge_ledger.py",
     APP_DIR / "scripts" / "prospective_evaluation.py",
+    APP_DIR / "scripts" / "run_ranking_study.py",
     APP_DIR / "scripts" / "research_continuity.py",
 }
 
@@ -37,10 +38,12 @@ _PARQUET_ONLY = [
     APP_DIR / "research" / "knowledge.py",
     APP_DIR / "research" / "reservations.py",
     APP_DIR / "research" / "prospective.py",
+    APP_DIR / "research" / "ranking.py",
     APP_DIR / "scripts" / "run_experiment.py",
     APP_DIR / "scripts" / "run_campaign.py",
     APP_DIR / "scripts" / "knowledge_ledger.py",
     APP_DIR / "scripts" / "prospective_evaluation.py",
+    APP_DIR / "scripts" / "run_ranking_study.py",
 ]
 _FORBIDDEN_FOR_EXPERIMENTS = (
     "sqlalchemy",

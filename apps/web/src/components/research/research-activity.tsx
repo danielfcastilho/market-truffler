@@ -67,6 +67,23 @@ function EventBody({ event }: { event: ResearchEvent }) {
       </div>
     );
   }
+  if (event.type === "ranking_evaluation") {
+    return (
+      <div className="text-sm">
+        <p>
+          Ranking research evaluated:{" "}
+          <Link href="/oink-corp/ranking" className="font-medium underline-offset-4 hover:underline">
+            {event.experiment_ids.join(", ")}
+          </Link>
+        </p>
+        <p className="text-muted-foreground">
+          {event.runs} run{event.runs === 1 ? "" : "s"}
+          {event.repeat_runs > 0 && ` (${event.repeat_runs} repeat${event.repeat_runs === 1 ? "" : "s"} — not new evidence)`}{" "}
+          · development only · {Object.entries(event.verdicts).filter(([v]) => isVerdict(v)).map(([v, n]) => `${VERDICT_META[v as keyof typeof VERDICT_META].label} × ${n}`).join(", ") || "no verdicts"}
+        </p>
+      </div>
+    );
+  }
   if (event.type === "knowledge_revision") {
     return (
       <div className="text-sm">

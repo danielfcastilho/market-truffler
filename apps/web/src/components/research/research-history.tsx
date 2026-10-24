@@ -39,7 +39,11 @@ export function ResearchHistory({ history }: { history: History }) {
                   <tr key={`${run.experiment_id}/${run.run_id}`}>
                     <td className="px-3 py-2 whitespace-nowrap">{formatTimestamp(run.executed_at)}</td>
                     <td className="px-3 py-2">
-                      {run.link_experiment_id ? (
+                      {run.kind === "ranking_study" ? (
+                        <Link href={`/oink-corp/ranking#${run.experiment_id}`} className="underline-offset-4 hover:underline">
+                          {run.experiment_id}
+                        </Link>
+                      ) : run.link_experiment_id ? (
                         <Link href={`/oink-corp/experiments/${run.link_experiment_id}`} className="underline-offset-4 hover:underline">
                           {run.experiment_id}
                         </Link>
@@ -48,7 +52,11 @@ export function ResearchHistory({ history }: { history: History }) {
                       )}
                       {run.kind !== "experiment" && (
                         <span className="ml-2 text-muted-foreground">
-                          {run.kind === "prospective_evaluation" ? "prospective" : "comparison"}
+                          {run.kind === "prospective_evaluation"
+                            ? "prospective"
+                            : run.kind === "ranking_study"
+                              ? "ranking"
+                              : "comparison"}
                         </span>
                       )}
                     </td>

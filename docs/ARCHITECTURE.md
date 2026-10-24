@@ -1715,6 +1715,88 @@ Nothing runs automatically.
   choices, it no longer is for those choices. The protocol records that,
   but cannot prevent it.
 
+### OINK CORP: ranking research (development only)
+
+Feature research asks whether a market condition carries information.
+Ranking research asks a model-level question: does an explicitly specified
+scoring model put better opportunities at the top, and better than a
+simpler model? (`app.research.ranking`, `app.scripts.run_ranking_study`,
+specs under `research/oink_corp/ranking/`.)
+
+The responsibilities stay separate:
+
+| Responsibility | Where |
+|---|---|
+| Facts | Sniffer features |
+| How features become a score | ranking candidate |
+| Historical ranking quality | ranking evaluation |
+| Whether an improvement is supported | the ranking evaluator's verdict |
+| Feature-level conclusions | the knowledge ledger (untouched) |
+| Promotion | future model selection (not built) |
+
+**Candidates.** A candidate (model family `linear_weighted_v1`, replaceable
+later) is defined by:
+
+- **Score:** `S_i(t) = Σ w_j · T_j(f_j(i,t))`.
+- **Direction:** `direction` is explicit; a higher score is always more
+  attractive in that direction, and Short weights are never derived from
+  Long ones.
+- **Transforms:** `identity`, `cs_percentile` (ties share a value) and
+  `cs_robust_z` (median/MAD; a zero-MAD feature contributes 0 and is
+  counted). Each is computed over the decision universe at that timestamp
+  only.
+- **Missing values:** coins missing any required feature are excluded.
+- **No free-form code:** there is no expression language.
+
+**Ranking construction** uses features only. The label column is never
+passed to scoring.
+- **Decision universe:** coins with every feature of *both* models finite,
+  so candidate and reference rank the same coins.
+- **Minimum size:** at least 50 coins, or the timestamp is skipped.
+- **Order:** score descending, ties broken by symbol.
+
+**Studies** register in advance: the candidate, an optional reference, the
+datasets, a market-relative label and K. The primary metric is fixed by the
+protocol:
+
+- **Utility:** `U = R_rel` for Long and `−R_rel` for Short.
+- **Per-timestamp excess:** `Q_K(t)` = the top-K mean minus the decision
+  universe's mean, at the same timestamp.
+- **Comparison:** with a reference, the primary result is the paired
+  `ΔQ_K(t)` on identical timestamps and universes.
+- **Diagnostics:** top-K utility, top-minus-bottom separation, Spearman, and
+  per-day means. They are exploratory and never decide a result.
+
+**Ranking evaluator v1** reuses Evaluator v1's machinery and thresholds:
+- the dataset-level day split and purge;
+- one value per timestamp;
+- at least 10 days and 200 timestamps;
+- a day-block bootstrap with the seed derived from the study hash;
+- the interval, day-consistency and concentration verdict rules.
+
+It applies them to a different estimand, so it carries its own version.
+Only the development segment is evaluated, so every result is exploratory.
+
+**Runs and boundaries.**
+- **Runs:** each is an immutable run (`data/runs/<study_id>/`, kind
+  `ranking_study`). Re-running an unchanged study lists the earlier runs in
+  `repeat_of`, and changing a study's meaning requires a new id.
+- **Reserved data:** labels come only through `experiment.load_columns`, the
+  same guarded loader experiments use, so reserved validation and holdout
+  periods are refused.
+
+**Model-level knowledge.** Ranking results never enter the feature-level
+ledger. A future model-level layer could cite `ranking_study` runs by
+study id, run id and spec hash, as the feature ledger cites experiment
+runs. It would add its own independence rules: prospective registration of
+the *model* and comparison against a Champion. None of this exists yet: no
+model registry, no Champion/Challenger, no promotion, no live ranking.
+
+First studies (`long-oi-vs-price-v1`, `short-oi-vs-price-v1`) compare a
+price-reversal ranking with the same ranking plus falling Open Interest
+(weight 0.5, mirroring campaign hypotheses H1/H3, not tuned). On the only
+unreserved 15-minute data (2026-10-12/13) both are `insufficient_data`.
+
 ### OINK CORP: future design
 
 **Everything in this section is design intent, not implemented code.** The

@@ -171,7 +171,29 @@ class LoadedDatasets:
 def load_datasets(
     spec: ExperimentSpec, data_dir: Path, *, access: Access | None = None
 ) -> LoadedDatasets:
-    """Load and validate every dataset the spec names: content hash (both
+    """Load the spec's datasets with exactly its features and label (see
+    `load_columns`)."""
+    return load_columns(spec.datasets, spec.features, spec.label, data_dir, access=access)
+
+
+def label_horizon(label: str) -> str:
+    match = _LABEL_RE.match(label)
+    if not match:
+        raise ExperimentSpecError(f"{label!r} is not a forward-return label")
+    return match.group(1)
+
+
+def load_columns(
+    datasets: list[DatasetRef],
+    features: list[str],
+    label: str,
+    data_dir: Path,
+    *,
+    access: Access | None = None,
+) -> LoadedDatasets:
+    """The one guarded path from research code to outcome labels.
+
+    Load and validate every named dataset: content hash (both
     the manifest's own record and the spec's pin), schema version, feature
     and label availability, one shared sampling cadence (mixing cadences
     would silently change observation weighting), one shared label
@@ -182,40 +204,41 @@ def load_datasets(
     datasets reaching into data reserved for a prospective evaluation
     (`app.research.reservations`) unless `access` is that evaluation's
     live grant."""
+    horizon_label = label_horizon(label)
     manifests_by_name = {
         ref.name: json.loads((data_dir / ref.name / "manifest.json").read_text())
-        for ref in spec.datasets
+        for ref in datasets
     }
     try:
         check_access(data_dir, list(manifests_by_name.items()), access)
     except ReservedDataError as exc:
         raise ExperimentSpecError(str(exc)) from exc
     loaded: list[tuple[dict[str, Any], pa.Table]] = []
-    for ref in spec.datasets:
+    for ref in datasets:
         manifest = manifests_by_name[ref.name]
         if manifest.get("data_sha256") != ref.data_sha256:
             raise ExperimentSpecError(
                 f"dataset {ref.name}: spec pins data_sha256 {ref.data_sha256}, "
                 f"manifest records {manifest.get('data_sha256')!r}"
             )
-        unknown = [f for f in spec.features if f not in manifest["feature_names"]]
+        unknown = [f for f in features if f not in manifest["feature_names"]]
         if unknown:
             raise ExperimentSpecError(f"dataset {ref.name}: unknown features {unknown}")
-        if spec.horizon_label not in manifest["horizons_minutes"]:
+        if horizon_label not in manifest["horizons_minutes"]:
             raise ExperimentSpecError(
-                f"dataset {ref.name}: no {spec.horizon_label} horizon "
+                f"dataset {ref.name}: no {horizon_label} horizon "
                 f"(has {sorted(manifest['horizons_minutes'])})"
             )
-        columns = ["frame_time", "instrument_id", "symbol", *spec.features, spec.label]
+        columns = ["frame_time", "instrument_id", "symbol", *features, label]
         loaded.append(read_dataset(data_dir / ref.name, columns=columns))  # verifies the hash
 
     manifests = [manifest for manifest, _ in loaded]
     cadences = {m["sample_interval_minutes"] for m in manifests}
     if len(cadences) != 1:
         raise ExperimentSpecError(f"datasets mix sampling cadences {sorted(cadences)}")
-    horizons = {m["horizons_minutes"][spec.horizon_label] for m in manifests}
+    horizons = {m["horizons_minutes"][horizon_label] for m in manifests}
     if len(horizons) != 1:
-        raise ExperimentSpecError(f"datasets disagree on the {spec.horizon_label} horizon")
+        raise ExperimentSpecError(f"datasets disagree on the {horizon_label} horizon")
 
     ordered = sorted(
         (pair for pair in loaded if pair[1].num_rows > 0),
