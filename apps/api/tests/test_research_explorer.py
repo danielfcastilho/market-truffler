@@ -410,3 +410,72 @@ async def test_a_malformed_or_misplaced_ledger_revision_is_reported(client, test
     assert problems[f"{CAMPAIGN}/0002.json"] == "revision ids differ from its file"
     overview = (await client.get("/api/research/overview")).json()
     assert overview["knowledge"]["hypotheses_without_ledger"] == 1
+
+
+def _write_evaluation(data: Path, *, events=(), validation=("2026-11-01", "2026-11-03")):
+    directory = data / "evaluations" / "reg-v1"
+    (directory / "registration").mkdir(parents=True)
+    (directory / "events").mkdir()
+    registration = {
+        "protocol_version": 1,
+        "registration_id": "reg-v1",
+        "registered_at": "2026-10-24T20:00:00+00:00",
+        "campaign_id": CAMPAIGN,
+        "claims": [{"hypothesis_id": "H1"}],
+        "plan": {"embargo_minutes": 240},
+        "partitions": [{"role": "validation", "start": validation[0], "end": validation[1]}],
+        "timestamp_trust": "local clock",
+    }
+    (directory / "registration" / "registration.json").write_text(
+        json.dumps({"registration": registration, "registration_hash": "r" * 64})
+    )
+    for seq, event in enumerate(events, start=1):
+        (directory / "events" / f"{seq:06d}").mkdir()
+        (directory / "events" / f"{seq:06d}" / "event.json").write_text(
+            json.dumps({"seq": seq, "role": "validation", "attempt_id": "a", **event})
+        )
+
+
+async def test_a_registered_prospective_evaluation_is_pending_until_its_data_exists(
+    client, test_user, artifacts
+):
+    _write_evaluation(artifacts / "d", validation=("2099-01-01", "2099-01-31"))
+    await _login(client, test_user)
+    overview = (await client.get("/api/research/overview")).json()
+    [evaluation] = overview["campaigns"][0]["evaluations"]
+    [partition] = evaluation["partitions"]
+    assert (partition["state"], partition["exposed"], partition["days"]) == (
+        "awaiting_data",
+        False,
+        30,
+    )
+    assert partition["eligible_from"].startswith("2099-02-02")  # no shards: end + 2 days
+    assert any(e["type"] == "evaluation_registered" for e in overview["activity"])
+    detail = (await client.get(f"/api/research/campaigns/{CAMPAIGN}")).json()
+    assert detail["evaluations"][0]["events"] == []
+
+
+async def test_exposure_is_reported_from_the_event_log(client, test_user, artifacts):
+    _write_evaluation(artifacts / "d", events=[{"type": "authorized"}, {"type": "started"}])
+    await _login(client, test_user)
+    detail = (await client.get(f"/api/research/campaigns/{CAMPAIGN}")).json()
+    [partition] = detail["evaluations"][0]["partitions"]
+    assert (partition["state"], partition["exposed"], partition["attempts"]) == (
+        "exposure_uncertain",
+        True,
+        1,
+    )
+    assert [e["type"] for e in detail["evaluations"][0]["events"]] == ["authorized", "started"]
+
+
+async def test_a_malformed_registration_is_reported(client, test_user, artifacts):
+    directory = artifacts / "d" / "evaluations" / "bad-v1" / "registration"
+    directory.mkdir(parents=True)
+    (directory / "registration.json").write_text(
+        json.dumps({"registration": {"registration_id": "x"}})
+    )
+    await _login(client, test_user)
+    overview = (await client.get("/api/research/overview")).json()
+    assert {"artifact": "evaluations/bad-v1", "problem": "registration id differs"} in overview[
+        "issues"
+    ]

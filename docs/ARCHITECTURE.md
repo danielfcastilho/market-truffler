@@ -1599,6 +1599,122 @@ The Research Explorer (`/oink-corp`) is hypothesis-first:
   against the run records and flags mismatches and newer uncited runs. Full
   verification is the CLI's job.
 
+### OINK CORP: prospective evaluation (protocol v1)
+
+Three evaluation roles, enforced rather than labelled:
+
+- **Development:** all data outside a registration's partitions, including
+  everything that existed when it was registered. Reusable, and never
+  independent confirmation. The Evaluator's internal development/validation
+  day split is a *retrospective* split of historical data, so it counts as
+  development under this protocol.
+- **Validation:** a registered future partition, evaluated against frozen
+  claims. Only its first exposure can be independent.
+- **Protected holdout:** a later future partition, evaluated only by an
+  explicit `--protected-holdout` invocation, at most once, and only if
+  nothing has ever been exposed over its period.
+
+**Registration** (`app.research.prospective`,
+`<data_dir>/evaluations/<id>/registration/registration.json`) freezes:
+- the campaign hash;
+- per claim: its comparison, candidate and reference spec hashes and
+  hypothesis hashes, prediction and label;
+- the Evaluator and comparison protocol versions, plus a snapshot of
+  Evaluator v1's minimum-evidence constants;
+- the dataset rule (the continuity worker's daily shards for each partition
+  day), the sample rule, the embargo (the 4h longest label horizon) and the
+  partitions.
+
+Any meaningful change makes `--verify` fail, and evaluation is then refused.
+A new registration (optionally `supersedes` the old, for lineage) inherits
+nothing.
+
+Partitions:
+- are whole UTC days, in order, without overlap;
+- start at the first UTC midnight at least the embargo after registration;
+- are separated by at least the embargo, rounded up to whole days.
+
+Registration is refused if any existing dataset's outcome window (first
+frame time to last frame time plus its longest horizon) already reaches into
+a partition. Within a partition a row counts only if `frame_time >= start`
+and `frame_time + label horizon <= end`.
+
+**Reservation boundary** (`app.research.reservations`). Until a partition's
+evaluation completes, `load_datasets` refuses any dataset whose outcome
+window touches it. That loader is the only research path that reads labels,
+so the default workflow (`run_experiment`, `run_campaign`) cannot read
+reserved outcomes, whatever the dataset is named. The check runs before any
+Parquet is read and fails closed: an unreadable registration blocks every
+load. The protected evaluation itself holds a grant tied to a *started*
+attempt.
+
+The policy lives with the data, in `data_dir/evaluations/`, so it can't be
+lost by pointing a command elsewhere. Registrations and exposure events are
+immutable directories, and backup covers them.
+
+**Exposure log.** Each attempt appends `authorized`, then `started`
+(fsynced *before* any label is read), then `completed` (with run
+references) or `failed`.
+- A `started` with no outcome means exposure is uncertain and counts as
+  exposure.
+- A validation re-run needs `--acknowledge-prior-exposure` and is recorded
+  as a `repeat_exposure`.
+- The holdout is never re-run.
+
+**Independence** of each completed evaluation is recorded on its runs and
+in the log, judged on periods, never on names or hashes:
+- `independent_prospective`: the first exposure of the partition, no
+  earlier overlapping exposure of the same claim (hypothesis hash) or its
+  lineage, and every shard generated after registration;
+- `repeat_exposure`;
+- `claim_previously_exposed`;
+- `undetermined`.
+
+Overlapping exposures of *other* claims are disclosed as a multiple-testing
+concern.
+
+**Evaluator integration.** The registered specs are evaluated on the
+partition's shards with the unchanged comparison protocol v1 and Evaluator
+v1 rules. All qualifying partition days form the evaluated segment. The
+protocol decides eligibility and independence; the Evaluator alone decides
+verdicts. So a run can be `positive_evidence` and still not independent.
+
+**Knowledge ledger (rules v2).**
+- **Evidence classes:** every cited run is classed development,
+  retrospective validation, prospective validation, protected holdout,
+  reused, or independence undetermined.
+- **Independence:** only current `independent_prospective` evidence can
+  produce `independently_*` statuses (validation status
+  `prospectively_validated`). A directional disagreement with development
+  is `conflicting_evidence`.
+- **Verification:** prospective runs must match their registration's
+  exposure log, or they're rejected.
+- **History:** revisions written under rules v1 are still verified with v1.
+
+**Operation.** `python -m app.scripts.prospective_evaluation --campaign …`
+with `--register`, `--status`, `--verify`, `--exposure` or `--evaluate`.
+Nothing runs automatically.
+
+**What this does not guarantee.**
+- **Local trust:** times come from the local clock and files are
+  append-only by convention. Edits are detectable (hashes), not impossible,
+  and there's no external timestamp. Committing a registration to a remote
+  Git repository is the only outside witness.
+- **Bypass:** the boundary binds research code, not people. Calling
+  `read_dataset` or pyarrow directly, or editing files, bypasses it.
+  Integrity tooling (hash verification, backup, `--verify-all`) reads
+  reserved bytes without evaluating them.
+- **Dependence:** separate timestamps aren't independent observations, and
+  coins at the same timestamp aren't independent periods. Overlapping
+  horizons and regimes remain, and are handled only by the Evaluator's
+  per-timestamp aggregation and day-block bootstrap.
+- **Selection and multiple testing:** choosing hypotheses after seeing
+  outcomes, or testing many, inflates apparent success. Exposures of other
+  claims are disclosed, but no correction is implemented.
+- **A once-used holdout isn't pristine:** once its result influences later
+  choices, it no longer is for those choices. The protocol records that,
+  but cannot prevent it.
+
 ### OINK CORP: future design
 
 **Everything in this section is design intent, not implemented code.** The

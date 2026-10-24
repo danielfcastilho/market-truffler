@@ -9,6 +9,7 @@ Nothing here runs research, derives knowledge, reads datasets, or writes.
 """
 
 from collections import Counter
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,7 @@ from app.services.research_artifacts import (
     InvalidIdentifier,
     ResearchArtifacts,
     check_ledger,
+    evaluation_states,
     latest_per_segment,
     verdict_of,
 )
@@ -87,17 +89,46 @@ def _campaign_of(campaigns: list[dict[str, Any]]) -> dict[str, str]:
     return owner
 
 
+def _evaluation_summaries(
+    artifacts: ResearchArtifacts, campaign_id: str | None = None, *, events: bool = False
+) -> list[dict[str, Any]]:
+    """Prospective evaluation registrations with each partition's state."""
+    now = datetime.now(UTC)
+    summaries = []
+    for e in artifacts.evaluations():
+        registration = e["registration"]
+        if campaign_id is not None and registration.get("campaign_id") != campaign_id:
+            continue
+        summary = {
+            "registration_id": registration.get("registration_id"),
+            "registration_hash": e["registration_hash"],
+            "registered_at": registration.get("registered_at"),
+            "campaign_id": registration.get("campaign_id"),
+            "supersedes": registration.get("supersedes"),
+            "protocol_version": registration.get("protocol_version"),
+            "hypotheses": [c.get("hypothesis_id") for c in registration.get("claims", [])],
+            "embargo_minutes": (registration.get("plan") or {}).get("embargo_minutes"),
+            "timestamp_trust": registration.get("timestamp_trust"),
+            "partitions": evaluation_states(registration, e["events"], artifacts.data_dir, now),
+        }
+        if events:
+            summary["events"] = e["events"]
+        summaries.append(summary)
+    return summaries
+
+
 def _run_summary(
     record: dict[str, Any], owner: dict[str, str], specs: dict[str, dict[str, Any] | None]
 ) -> RunSummary:
     run_id = str(record.get("experiment_id"))
-    is_comparison = record.get("kind") == "incremental_comparison"
+    kind = record.get("kind")
+    is_comparison = kind in ("incremental_comparison", "prospective_evaluation")
     subject = (record.get("candidate") or {}).get("experiment_id") if is_comparison else run_id
     spec = specs.get(subject) if subject else None
     return RunSummary(
         experiment_id=run_id,
         run_id=str(record.get("run_id")),
-        kind="incremental_comparison" if is_comparison else "experiment",
+        kind=kind if kind in ("incremental_comparison", "prospective_evaluation") else "experiment",
         campaign_id=record.get("campaign_id") or owner.get(run_id),
         direction=(spec or {}).get("hypothesis", {}).get("direction"),
         segment=record.get("segment"),
@@ -113,6 +144,7 @@ def _events(
     records: list[dict[str, Any]],
     ledgers: dict[str, list[dict[str, Any]]],
     owner: dict[str, str],
+    evaluations: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Research activity supported by artifacts, newest first: campaign
     registrations (their registered date), evaluations (runs grouped by
@@ -185,6 +217,20 @@ def _events(
                 }
             )
             previous = statuses
+    for e in evaluations or []:
+        events.append(
+            {
+                "type": "evaluation_registered",
+                "at": str(e.get("registered_at")),
+                "campaign_id": e.get("campaign_id"),
+                "registration_id": e.get("registration_id"),
+                "hypotheses": e.get("hypotheses", []),
+                "partitions": [
+                    {"role": p["role"], "start": p["start"], "end": p["end"]}
+                    for p in e.get("partitions", [])
+                ],
+            }
+        )
     events.sort(key=lambda e: e["at"], reverse=True)
     return events
 
@@ -199,6 +245,7 @@ async def research_overview(current_user: CurrentUserDep) -> ResearchOverview:
     specs = {i: artifacts.spec(i) for i in experiment_ids}
     owner = _campaign_of(campaigns)
     ledgers = {c["campaign_id"]: artifacts.ledger_revisions(c["campaign_id"]) for c in campaigns}
+    evaluations = _evaluation_summaries(artifacts)
 
     # One verdict per experiment/comparison and segment — the latest run.
     verdicts: dict[str, Counter[str]] = {"development": Counter(), "validation": Counter()}
@@ -254,6 +301,7 @@ async def research_overview(current_user: CurrentUserDep) -> ResearchOverview:
                 ledger_revision=latest.get("revision") if latest else None,
                 ledger_derived_at=latest.get("derived_at") if latest else None,
                 ledger_problems=len(check_ledger(latest, records)["problems"]) if latest else 0,
+                evaluations=[e for e in evaluations if e["campaign_id"] == campaign["campaign_id"]],
                 latest_activity=str(involved[0]["executed_at"]) if involved else None,
             )
         )
@@ -278,7 +326,7 @@ async def research_overview(current_user: CurrentUserDep) -> ResearchOverview:
             by_status=dict(statuses), hypotheses_without_ledger=without_ledger
         ),
         campaigns=summaries,
-        activity=_events(campaigns, records, ledgers, owner)[:OVERVIEW_EVENTS],
+        activity=_events(campaigns, records, ledgers, owner, evaluations)[:OVERVIEW_EVENTS],
         issues=artifacts.issues,
     )
 
@@ -292,7 +340,7 @@ async def research_history(current_user: CurrentUserDep) -> ResearchHistory:
     specs = {i: artifacts.spec(i) for i in artifacts.experiment_ids()}
     ledgers = {c["campaign_id"]: artifacts.ledger_revisions(c["campaign_id"]) for c in campaigns}
     return ResearchHistory(
-        events=_events(campaigns, records, ledgers, owner),
+        events=_events(campaigns, records, ledgers, owner, _evaluation_summaries(artifacts)),
         runs=[_run_summary(r, owner, specs) for r in records],
         issues=artifacts.issues,
     )
@@ -334,6 +382,7 @@ async def research_campaign(campaign_id: str, current_user: CurrentUserDep) -> C
         report=report,
         knowledge_revisions=revisions,
         knowledge_check=check_ledger(revisions[-1], records) if revisions else None,
+        evaluations=_evaluation_summaries(artifacts, campaign_id, events=True),
         issues=artifacts.issues,
     )
 

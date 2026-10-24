@@ -5,6 +5,7 @@ import { DirectionTag, KnowledgeBadge } from "@/components/research/knowledge-ba
 import { ResearchActivity } from "@/components/research/research-activity";
 import {
   KNOWLEDGE_META,
+  PARTITION_STATE_LABEL,
   hypothesisTitle,
   isKnowledgeStatus,
   type KnowledgeStatus,
@@ -135,6 +136,7 @@ function InvestigationCard({ campaign }: { campaign: Overview["campaigns"][numbe
           </ul>
         )}
       </div>
+      <EvaluationLine campaign={campaign} />
       <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4 text-sm">
         <span className="text-muted-foreground">
           {campaign.ledger_revision === null
@@ -155,6 +157,22 @@ function InvestigationCard({ campaign }: { campaign: Overview["campaigns"][numbe
         </Link>
       </footer>
     </article>
+  );
+}
+
+function EvaluationLine({ campaign }: { campaign: Overview["campaigns"][number] }) {
+  const validation = campaign.evaluations
+    .flatMap((e) => e.partitions)
+    .find((p) => p.role === "validation");
+  return (
+    <p className="text-sm text-muted-foreground">
+      <span className="font-medium text-foreground">Independent test: </span>
+      {!validation
+        ? "none registered — all evidence is historical."
+        : validation.state === "awaiting_data"
+          ? `prospective validation registered (${validation.start} → ${validation.end}), awaiting data until ${validation.eligible_from.slice(0, 10)}.`
+          : `prospective validation ${PARTITION_STATE_LABEL[validation.state].toLowerCase()}.`}
+    </p>
   );
 }
 

@@ -52,13 +52,15 @@ class CampaignSummary(BaseModel):
     ledger_derived_at: str | None
     #: Cited runs that don't match their records (see `check_ledger`).
     ledger_problems: int
+    #: Prospective evaluation registrations and their partition states.
+    evaluations: list[dict[str, Any]]
     latest_activity: str | None
 
 
 class RunSummary(BaseModel):
     experiment_id: str
     run_id: str
-    kind: Literal["experiment", "incremental_comparison"]
+    kind: Literal["experiment", "incremental_comparison", "prospective_evaluation"]
     campaign_id: str | None
     direction: str | None
     segment: str | None
@@ -79,7 +81,8 @@ class ResearchOverview(BaseModel):
 
 
 class ResearchHistory(BaseModel):
-    #: campaign_registered | evaluation | knowledge_revision, newest first.
+    #: campaign_registered | evaluation_registered | evaluation |
+    #: knowledge_revision, newest first.
     events: list[dict[str, Any]]
     #: Every immutable run, newest first.
     runs: list[RunSummary]
@@ -101,6 +104,8 @@ class CampaignDetail(BaseModel):
     knowledge_revisions: list[dict[str, Any]]
     #: The latest revision checked against the run records it cites.
     knowledge_check: dict[str, list[str]] | None
+    #: Prospective evaluation registrations, partition states, exposure events.
+    evaluations: list[dict[str, Any]]
     issues: list[dict[str, str]]
 
 

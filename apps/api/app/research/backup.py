@@ -44,6 +44,7 @@ from uuid import uuid4
 
 from app.research.continuity import CONTINUITY_DIRNAME, _write_json_atomic
 from app.research.dataset import file_sha256, read_dataset
+from app.research.reservations import EVALUATIONS_DIRNAME
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +70,9 @@ class BackupIntegrityError(ValueError):
 def research_items(data_dir: Path) -> Iterator[Path]:
     """Every immutable research record, as a path relative to `data_dir`:
     top-level dataset directories (those with a `manifest.json`) and run
-    record directories under `runs/<experiment>/`. Temporary (`.`-prefixed)
+    record directories under `runs/<experiment>/`, and prospective
+    evaluation registrations and exposure events under `evaluations/`.
+    Temporary (`.`-prefixed)
     directories and the operational `continuity/` state are never items."""
     if not data_dir.exists():
         return
@@ -81,6 +84,18 @@ def research_items(data_dir: Path) -> Iterator[Path]:
                 for run in sorted(p for p in experiment.iterdir() if p.is_dir()):
                     if not run.name.startswith("."):
                         yield run.relative_to(data_dir)
+        elif path.name == EVALUATIONS_DIRNAME:
+            # Prospective registrations and their exposure events: each an
+            # immutable directory of its own (see app.research.prospective).
+            for registration in sorted(p for p in path.iterdir() if p.is_dir()):
+                if registration.name.startswith("."):
+                    continue
+                if (registration / "registration").is_dir():
+                    yield (registration / "registration").relative_to(data_dir)
+                events = registration / "events"
+                for event in sorted(events.iterdir()) if events.is_dir() else []:
+                    if event.is_dir() and not event.name.startswith("."):
+                        yield event.relative_to(data_dir)
         elif (path / "manifest.json").exists():
             yield path.relative_to(data_dir)
 

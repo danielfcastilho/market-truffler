@@ -1,5 +1,6 @@
 import type {
   CampaignDetail,
+  EvaluationSummary,
   Condition,
   LedgerRevision,
   ResearchHistory,
@@ -170,6 +171,43 @@ export const LEDGER: LedgerRevision = {
   ],
 };
 
+export const PENDING_EVALUATION: EvaluationSummary = {
+  registration_id: "oi-price-1h-prospective-v1",
+  registration_hash: "9".repeat(64),
+  registered_at: "2026-10-24T20:13:10+00:00",
+  campaign_id: CAMPAIGN,
+  supersedes: null,
+  protocol_version: 1,
+  hypotheses: ["H1"],
+  embargo_minutes: 240,
+  timestamp_trust: "Local clock only.",
+  partitions: [
+    {
+      role: "validation",
+      start: "2026-10-26",
+      end: "2026-11-25",
+      state: "awaiting_data",
+      eligible_from: "2026-11-27T00:00:00+00:00",
+      days: 30,
+      days_with_shard: 0,
+      attempts: 0,
+      exposed: false,
+    },
+    {
+      role: "holdout",
+      start: "2026-11-26",
+      end: "2026-12-26",
+      state: "awaiting_data",
+      eligible_from: "2026-12-28T00:00:00+00:00",
+      days: 30,
+      days_with_shard: 0,
+      attempts: 0,
+      exposed: false,
+    },
+  ],
+  events: [],
+};
+
 export const CAMPAIGN_DETAIL: CampaignDetail = {
   campaign: {
     campaign_id: CAMPAIGN,
@@ -203,6 +241,7 @@ export const CAMPAIGN_DETAIL: CampaignDetail = {
   ],
   knowledge_revisions: [LEDGER],
   knowledge_check: { problems: [], uncited_runs: [] },
+  evaluations: [PENDING_EVALUATION],
   issues: [],
 };
 
@@ -277,6 +316,7 @@ export const OVERVIEW: ResearchOverview = {
       ledger_revision: 1,
       ledger_derived_at: "2026-10-24T17:57:37+00:00",
       ledger_problems: 0,
+      evaluations: [PENDING_EVALUATION],
       latest_activity: "2026-10-24T16:49:38+00:00",
     },
   ],

@@ -1,0 +1,236 @@
+{
+  "campaign_hash": "cabb95a03cc401c8e41d44bccf0b577a91d572ebd0d3feb97690766506739456",
+  "campaign_id": "oi-incremental-price-1h-v1",
+  "content_hash": "64af1a3464a2f2fb544433f34aaabaa99fc93200551eb08f106b656b0461f9bf",
+  "derived_at": "2026-10-24T20:13:21.447577+00:00",
+  "hypotheses": [
+    {
+      "direction": "long",
+      "evidence": [
+        {
+          "current": true,
+          "dataset_sha256": [
+            "4f74a041b03445a2099de9dd52094bd9344ae46129c210c0900501e1f41c2f9a",
+            "a69c1befb5e4c3da13c20f770d9c8f8a7ad25cba37b56aa5c2e50f646459ffcc"
+          ],
+          "evidence_class": "development",
+          "executed_at": "2026-10-24T16:49:38.145671+00:00",
+          "experiment_id": "oi-price-1h-h1-vs-price-only-v1",
+          "independent": true,
+          "protocol": "comparison-v1",
+          "role": "primary",
+          "run_id": "20261024T164938145671Z-73f37b",
+          "segment": "development",
+          "spec_hash": "56a43dc0d36704f99d97c5acd1ed1be36d59545bdbd611eec913905804cf7d1d",
+          "verdict": "insufficient_data"
+        },
+        {
+          "current": true,
+          "dataset_sha256": [
+            "4f74a041b03445a2099de9dd52094bd9344ae46129c210c0900501e1f41c2f9a",
+            "a69c1befb5e4c3da13c20f770d9c8f8a7ad25cba37b56aa5c2e50f646459ffcc"
+          ],
+          "evidence_class": "development",
+          "executed_at": "2026-10-24T16:49:37.721709+00:00",
+          "experiment_id": "oi-price-1h-h1-long-oi-down-v1",
+          "independent": true,
+          "protocol": "evaluator-v1",
+          "role": "context",
+          "run_id": "20261024T164937721709Z-535331",
+          "segment": "development",
+          "spec_hash": "5b43cb266b9d42c80ad907e4014f340990a48b2559864012334be6cb97fa0a9c",
+          "verdict": "insufficient_data"
+        }
+      ],
+      "experiment_id": "oi-price-1h-h1-long-oi-down-v1",
+      "hypothesis_id": "H1",
+      "knowledge_status": "insufficient_evidence",
+      "limitations": [
+        "development: 1 qualifying days in segment (< 10)",
+        "development: 24 timestamps with selections (< 200)",
+        "No validation run: nothing is independently confirmed.",
+        "No prospective evaluation yet: no evidence comes from data that was unseen when the claim was frozen."
+      ],
+      "prediction": "Positive incremental spread versus the price-only Long baseline.",
+      "prediction_sign": "positive",
+      "primary_evidence_ids": [
+        "oi-price-1h-h1-vs-price-only-v1"
+      ],
+      "statement": "Among coins with a sharp relative 1h decline, those whose Open Interest also fell recover more over the next hour than the price-only decline group.",
+      "validation_status": "not_validated"
+    },
+    {
+      "direction": "long",
+      "evidence": [
+        {
+          "current": true,
+          "dataset_sha256": [
+            "4f74a041b03445a2099de9dd52094bd9344ae46129c210c0900501e1f41c2f9a",
+            "a69c1befb5e4c3da13c20f770d9c8f8a7ad25cba37b56aa5c2e50f646459ffcc"
+          ],
+          "evidence_class": "development",
+          "executed_at": "2026-10-24T16:49:38.254498+00:00",
+          "experiment_id": "oi-price-1h-h2-vs-price-only-v1",
+          "independent": true,
+          "protocol": "comparison-v1",
+          "role": "primary",
+          "run_id": "20261024T164938254498Z-46ea43",
+          "segment": "development",
+          "spec_hash": "f3519514afd7587709945be38e0a6a9a02b7e89c19628e2d6d9979810c03ef11",
+          "verdict": "insufficient_data"
+        },
+        {
+          "current": true,
+          "dataset_sha256": [
+            "4f74a041b03445a2099de9dd52094bd9344ae46129c210c0900501e1f41c2f9a",
+            "a69c1befb5e4c3da13c20f770d9c8f8a7ad25cba37b56aa5c2e50f646459ffcc"
+          ],
+          "evidence_class": "development",
+          "executed_at": "2026-10-24T16:49:37.827125+00:00",
+          "experiment_id": "oi-price-1h-h2-long-oi-up-v1",
+          "independent": true,
+          "protocol": "evaluator-v1",
+          "role": "context",
+          "run_id": "20261024T164937827125Z-2c5ddc",
+          "segment": "development",
+          "spec_hash": "003cdbb16362dcec0da9b56c59b2abfe9698b28bff9ea0a16f7a2f2764e44dad",
+          "verdict": "insufficient_data"
+        }
+      ],
+      "experiment_id": "oi-price-1h-h2-long-oi-up-v1",
+      "hypothesis_id": "H2",
+      "knowledge_status": "insufficient_evidence",
+      "limitations": [
+        "development: 1 qualifying days in segment (< 10)",
+        "development: 24 timestamps with selections (< 200)",
+        "No validation run: nothing is independently confirmed.",
+        "No prospective evaluation yet: no evidence comes from data that was unseen when the claim was frozen.",
+        "The prediction registered no direction: a directional verdict can only show that outcomes differed, not support a claim."
+      ],
+      "prediction": "No direction assumed: either a positive or a negative incremental spread would be informative.",
+      "prediction_sign": "none",
+      "primary_evidence_ids": [
+        "oi-price-1h-h2-vs-price-only-v1"
+      ],
+      "statement": "Among coins with a sharp relative 1h decline, those whose Open Interest rose perform differently over the next hour from the price-only decline group.",
+      "validation_status": "not_validated"
+    },
+    {
+      "direction": "short",
+      "evidence": [
+        {
+          "current": true,
+          "dataset_sha256": [
+            "4f74a041b03445a2099de9dd52094bd9344ae46129c210c0900501e1f41c2f9a",
+            "a69c1befb5e4c3da13c20f770d9c8f8a7ad25cba37b56aa5c2e50f646459ffcc"
+          ],
+          "evidence_class": "development",
+          "executed_at": "2026-10-24T16:49:38.356670+00:00",
+          "experiment_id": "oi-price-1h-h3-vs-price-only-v1",
+          "independent": true,
+          "protocol": "comparison-v1",
+          "role": "primary",
+          "run_id": "20261024T164938356670Z-b73e3b",
+          "segment": "development",
+          "spec_hash": "4948b0f0750886bf4b3384fa19e00b21984d0666fd872261a99b5a126a63395b",
+          "verdict": "insufficient_data"
+        },
+        {
+          "current": true,
+          "dataset_sha256": [
+            "4f74a041b03445a2099de9dd52094bd9344ae46129c210c0900501e1f41c2f9a",
+            "a69c1befb5e4c3da13c20f770d9c8f8a7ad25cba37b56aa5c2e50f646459ffcc"
+          ],
+          "evidence_class": "development",
+          "executed_at": "2026-10-24T16:49:37.896342+00:00",
+          "experiment_id": "oi-price-1h-h3-short-oi-down-v1",
+          "independent": true,
+          "protocol": "evaluator-v1",
+          "role": "context",
+          "run_id": "20261024T164937896342Z-93cbf3",
+          "segment": "development",
+          "spec_hash": "dfb7fa6e5b56ae0c34147540a029252dd64ca1b98cf65f6ed68d3844e96c871d",
+          "verdict": "insufficient_data"
+        }
+      ],
+      "experiment_id": "oi-price-1h-h3-short-oi-down-v1",
+      "hypothesis_id": "H3",
+      "knowledge_status": "insufficient_evidence",
+      "limitations": [
+        "development: 1 qualifying days in segment (< 10)",
+        "development: 24 timestamps with selections (< 200)",
+        "No validation run: nothing is independently confirmed.",
+        "No prospective evaluation yet: no evidence comes from data that was unseen when the claim was frozen."
+      ],
+      "prediction": "Positive incremental spread (evaluated Short) versus the price-only Short baseline.",
+      "prediction_sign": "positive",
+      "primary_evidence_ids": [
+        "oi-price-1h-h3-vs-price-only-v1"
+      ],
+      "statement": "Among coins with a sharp relative 1h rise, those whose Open Interest fell underperform over the next hour relative to the price-only rally group.",
+      "validation_status": "not_validated"
+    },
+    {
+      "direction": "short",
+      "evidence": [
+        {
+          "current": true,
+          "dataset_sha256": [
+            "4f74a041b03445a2099de9dd52094bd9344ae46129c210c0900501e1f41c2f9a",
+            "a69c1befb5e4c3da13c20f770d9c8f8a7ad25cba37b56aa5c2e50f646459ffcc"
+          ],
+          "evidence_class": "development",
+          "executed_at": "2026-10-24T16:49:38.451657+00:00",
+          "experiment_id": "oi-price-1h-h4-vs-price-only-v1",
+          "independent": true,
+          "protocol": "comparison-v1",
+          "role": "primary",
+          "run_id": "20261024T164938451657Z-f07e63",
+          "segment": "development",
+          "spec_hash": "9c86e8ac029a5c57a988d4d00972489f4e7983fe294b5fa96c1ec3c7d5c949fa",
+          "verdict": "insufficient_data"
+        },
+        {
+          "current": true,
+          "dataset_sha256": [
+            "4f74a041b03445a2099de9dd52094bd9344ae46129c210c0900501e1f41c2f9a",
+            "a69c1befb5e4c3da13c20f770d9c8f8a7ad25cba37b56aa5c2e50f646459ffcc"
+          ],
+          "evidence_class": "development",
+          "executed_at": "2026-10-24T16:49:37.957838+00:00",
+          "experiment_id": "oi-price-1h-h4-short-oi-up-v1",
+          "independent": true,
+          "protocol": "evaluator-v1",
+          "role": "context",
+          "run_id": "20261024T164937957838Z-928125",
+          "segment": "development",
+          "spec_hash": "d1cf72269772224f2473e1c4101aca3a8d9e8f8ca9976e7d33f330650891dd2b",
+          "verdict": "insufficient_data"
+        }
+      ],
+      "experiment_id": "oi-price-1h-h4-short-oi-up-v1",
+      "hypothesis_id": "H4",
+      "knowledge_status": "insufficient_evidence",
+      "limitations": [
+        "development: 1 qualifying days in segment (< 10)",
+        "development: 24 timestamps with selections (< 200)",
+        "No validation run: nothing is independently confirmed.",
+        "No prospective evaluation yet: no evidence comes from data that was unseen when the claim was frozen.",
+        "The prediction registered no direction: a directional verdict can only show that outcomes differed, not support a claim."
+      ],
+      "prediction": "No direction assumed. Evaluated Short: a positive spread means more reversal than the rally group, a negative one more continuation.",
+      "prediction_sign": "none",
+      "primary_evidence_ids": [
+        "oi-price-1h-h4-vs-price-only-v1"
+      ],
+      "statement": "Among coins with a sharp relative 1h rise, those whose Open Interest rose perform differently over the next hour from the price-only rally group.",
+      "validation_status": "not_validated"
+    }
+  ],
+  "knowledge_rules_version": 2,
+  "ledger_schema_version": 1,
+  "previous_revision_hash": "64982c57ba81138b6e6124f3f79293f771483308c3f738d9355a019688cdd3af",
+  "revision": 2,
+  "scope": "feature_level",
+  "scope_note": "Feature-level knowledge only: whether a registered market condition separated subsequent outcomes in these samples. It is not evidence that any ranking model using these features would perform better."
+}

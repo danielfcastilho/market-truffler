@@ -2,10 +2,12 @@ import Link from "next/link";
 
 import { ArtifactIssues } from "@/components/research/artifact-issues";
 import { ConditionList } from "@/components/research/condition-list";
+import { IndependentTesting } from "@/components/research/independent-testing";
 import { DirectionTag, KnowledgeBadge } from "@/components/research/knowledge-badge";
 import { ReportText } from "@/components/research/report-text";
 import { VerdictBadge } from "@/components/research/verdict-badge";
 import {
+  EVIDENCE_CLASS_LABEL,
   KNOWLEDGE_META,
   VALIDATION_META,
   describeLabel,
@@ -20,6 +22,7 @@ import {
   predictionKind,
   segmentLabel,
   shortHash,
+  unseenDataAnswer,
   verdictOf,
   type CampaignDetail,
   type CampaignHypothesis,
@@ -80,6 +83,11 @@ export function CampaignExplorer({ detail }: { detail: CampaignDetail }) {
             ))}
           </section>
         ))}
+
+      <section className="space-y-3">
+        <SectionTitle>Independent testing on unseen data</SectionTitle>
+        <IndependentTesting evaluations={detail.evaluations} />
+      </section>
 
       <section className="space-y-3">
         <SectionTitle>What each hypothesis is compared against</SectionTitle>
@@ -227,6 +235,7 @@ function HypothesisCard({
   const status = entry?.knowledge_status;
   const primary = entry?.evidence.filter((e) => e.role === "primary") ?? [];
   const context = entry?.evidence.filter((e) => e.role === "context" && e.current) ?? [];
+  const unseen = unseenDataAnswer(hypothesis.id, entry, detail.evaluations);
   return (
     <article id={hypothesis.id} className="scroll-mt-6 space-y-5 rounded-2xl bg-card p-5 ring-1 ring-foreground/10 md:p-6">
       <header className="flex flex-wrap items-start justify-between gap-3">
@@ -279,7 +288,7 @@ function HypothesisCard({
                   <li key={e.run_id} className="flex flex-wrap items-center gap-2">
                     <VerdictBadge verdict={e.verdict} />
                     <span className="text-xs text-muted-foreground">
-                      {segmentLabel(e.segment)} · vs reference
+                      {e.evidence_class ? EVIDENCE_CLASS_LABEL[e.evidence_class] : segmentLabel(e.segment)} · vs reference
                     </span>
                   </li>
                 ))}
@@ -301,8 +310,21 @@ function HypothesisCard({
           )}
         </Field>
         <Field label="Validation">
-          <p>{entry ? VALIDATION_META[entry.validation_status] : "—"}</p>
+          <p>{entry ? (VALIDATION_META[entry.validation_status] ?? entry.validation_status) : "—"}</p>
         </Field>
+      </div>
+
+      <div
+        className={
+          unseen.tested
+            ? "rounded-lg bg-primary/10 p-3 text-sm"
+            : "rounded-lg border border-dashed border-border p-3 text-sm"
+        }
+      >
+        <p className="font-mono text-[0.7rem] font-semibold tracking-wide text-muted-foreground uppercase">
+          Independently tested on genuinely unseen data?
+        </p>
+        <p>{unseen.text}</p>
       </div>
 
       {entry && entry.limitations.length > 0 && (

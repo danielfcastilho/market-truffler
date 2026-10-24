@@ -53,6 +53,20 @@ function EventBody({ event }: { event: ResearchEvent }) {
       </div>
     );
   }
+  if (event.type === "evaluation_registered") {
+    return (
+      <div className="text-sm">
+        <p>
+          Prospective evaluation registered for <CampaignLink id={event.campaign_id} />
+        </p>
+        <p className="text-muted-foreground">
+          {event.registration_id}: {event.hypotheses.join(", ")} frozen;{" "}
+          {event.partitions.map((p) => `${p.role} ${p.start} → ${p.end}`).join(", ")} reserved
+          (no outcomes from these periods existed at registration).
+        </p>
+      </div>
+    );
+  }
   if (event.type === "knowledge_revision") {
     return (
       <div className="text-sm">

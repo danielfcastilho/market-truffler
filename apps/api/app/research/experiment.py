@@ -39,6 +39,7 @@ import pyarrow as pa
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from app.research.dataset import read_dataset
+from app.research.reservations import Access, ReservedDataError, check_access
 
 SPEC_VERSION = 1
 MAX_CONDITIONS = 5
@@ -167,16 +168,31 @@ class LoadedDatasets:
     horizon_minutes: int
 
 
-def load_datasets(spec: ExperimentSpec, data_dir: Path) -> LoadedDatasets:
+def load_datasets(
+    spec: ExperimentSpec, data_dir: Path, *, access: Access | None = None
+) -> LoadedDatasets:
     """Load and validate every dataset the spec names: content hash (both
     the manifest's own record and the spec's pin), schema version, feature
     and label availability, one shared sampling cadence (mixing cadences
     would silently change observation weighting), one shared label
     horizon, and non-overlapping time ranges. Returns one time-ordered
-    table with only the needed columns."""
+    table with only the needed columns.
+
+    Before any Parquet file (and so any outcome label) is read, refuses
+    datasets reaching into data reserved for a prospective evaluation
+    (`app.research.reservations`) unless `access` is that evaluation's
+    live grant."""
+    manifests_by_name = {
+        ref.name: json.loads((data_dir / ref.name / "manifest.json").read_text())
+        for ref in spec.datasets
+    }
+    try:
+        check_access(data_dir, list(manifests_by_name.items()), access)
+    except ReservedDataError as exc:
+        raise ExperimentSpecError(str(exc)) from exc
     loaded: list[tuple[dict[str, Any], pa.Table]] = []
     for ref in spec.datasets:
-        manifest = json.loads((data_dir / ref.name / "manifest.json").read_text())
+        manifest = manifests_by_name[ref.name]
         if manifest.get("data_sha256") != ref.data_sha256:
             raise ExperimentSpecError(
                 f"dataset {ref.name}: spec pins data_sha256 {ref.data_sha256}, "

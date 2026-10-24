@@ -18,6 +18,7 @@ import {
   INSUFFICIENT_RUN,
   LEDGER,
   OVERVIEW,
+  PENDING_EVALUATION,
   POSITIVE_RUN,
 } from "./test-fixtures";
 import { VerdictBadge } from "./verdict-badge";
@@ -250,5 +251,63 @@ describe("ResearchHistory", () => {
     render(<ResearchHistory history={{ events: [], runs: [], issues: [] }} />);
     expect(screen.getByText("No research activity recorded yet.")).toBeInTheDocument();
     expect(screen.getByText("No experiment has been run yet.")).toBeInTheDocument();
+  });
+});
+
+describe("independent testing", () => {
+  it("says plainly that a registered plan is not yet a test", () => {
+    render(<CampaignExplorer detail={CAMPAIGN_DETAIL} />);
+    const card = within(document.getElementById("H1")!);
+    expect(card.getByText(/Independently tested on genuinely unseen data/)).toBeInTheDocument();
+    expect(
+      card.getByText(/Not yet — prospective validation registered for 2026-10-26 to 2026-11-25; awaiting data \(eligible from 2026-11-27\)/),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Protected holdout")).toBeInTheDocument();
+    expect(screen.getByText("Not yet accessed")).toBeInTheDocument();
+    expect(screen.getAllByText("Awaiting data")).toHaveLength(2);
+  });
+
+  it("answers no when nothing is registered, and warns about exposure", () => {
+    const exposed = {
+      ...PENDING_EVALUATION,
+      partitions: PENDING_EVALUATION.partitions.map((p) =>
+        p.role === "holdout" ? { ...p, state: "exposure_uncertain" as const, exposed: true, attempts: 1 } : p,
+      ),
+      events: [{ seq: 1, at: "2026-12-28T00:00:00+00:00", type: "started", role: "holdout", attempt_id: "a" }],
+    };
+    const { unmount } = render(<CampaignExplorer detail={{ ...CAMPAIGN_DETAIL, evaluations: [exposed] }} />);
+    expect(screen.getByText("Holdout exposed — it can never be re-run")).toBeInTheDocument();
+    expect(screen.getByText("Interrupted — exposure uncertain")).toBeInTheDocument();
+    expect(screen.getByText("Exposure history (1 events)")).toBeInTheDocument();
+    unmount();
+    render(<CampaignExplorer detail={{ ...CAMPAIGN_DETAIL, evaluations: [] }} />);
+    expect(screen.getByText(/No — no prospective evaluation is registered/)).toBeInTheDocument();
+    expect(screen.getByText(/No prospective evaluation is registered: every result/)).toBeInTheDocument();
+  });
+
+  it("counts only independent prospective evidence as tested", () => {
+    const tested = {
+      ...LEDGER,
+      hypotheses: [
+        {
+          ...LEDGER.hypotheses[0],
+          evidence: [
+            ...LEDGER.hypotheses[0].evidence,
+            { ...LEDGER.hypotheses[0].evidence[0], run_id: "p1", evidence_class: "reused" as const, registration_id: "r" },
+          ],
+        },
+      ],
+    };
+    render(<CampaignExplorer detail={{ ...CAMPAIGN_DETAIL, knowledge_revisions: [tested] }} />);
+    expect(screen.queryByText(/^Yes —/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Reused data — not independent/)).toBeInTheDocument();
+  });
+
+  it("shows the plan on the overview without implying validation", () => {
+    render(<ResearchOverview overview={OVERVIEW} />);
+    expect(
+      screen.getByText(/prospective validation registered \(2026-10-26 → 2026-11-25\), awaiting data until 2026-11-27/),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Independently validated").nextSibling).toHaveTextContent("0");
   });
 });

@@ -113,9 +113,57 @@ export type KnowledgeStatus =
 export type ValidationStatus =
   | "not_validated"
   | "validation_not_independent"
-  | "independently_validated";
+  | "independently_validated"
+  | "prospectively_validated"
+  | "prospective_evidence_not_independent";
+
+export type EvidenceClass =
+  | "development"
+  | "retrospective_validation"
+  | "prospective_validation"
+  | "protected_holdout"
+  | "reused"
+  | "independence_undetermined";
+
+export type PartitionStateName =
+  | "awaiting_data"
+  | "eligible"
+  | "authorized_only"
+  | "exposure_uncertain"
+  | "failed"
+  | "failed_before_exposure"
+  | "completed";
+
+export interface PartitionState {
+  role: "validation" | "holdout";
+  start: string;
+  end: string;
+  state: PartitionStateName;
+  eligible_from: string;
+  days: number;
+  days_with_shard: number;
+  attempts: number;
+  exposed: boolean;
+}
+
+export interface EvaluationSummary {
+  registration_id: string;
+  registration_hash: string;
+  registered_at: string;
+  campaign_id: string;
+  supersedes: string | null;
+  protocol_version: number;
+  hypotheses: string[];
+  embargo_minutes: number | null;
+  timestamp_trust: string | null;
+  partitions: PartitionState[];
+  events?: { seq: number; at: string; type: string; role: string; attempt_id: string; independence?: string; error?: string }[];
+}
 
 export interface EvidenceReference {
+  evidence_class?: EvidenceClass;
+  registration_id?: string;
+  independence?: string;
   experiment_id: string;
   run_id: string;
   role: "primary" | "context";
@@ -180,6 +228,14 @@ export type ResearchEvent =
       verdicts: Partial<Record<Verdict, number>>;
     }
   | {
+      type: "evaluation_registered";
+      at: string;
+      campaign_id: string;
+      registration_id: string;
+      hypotheses: string[];
+      partitions: { role: string; start: string; end: string }[];
+    }
+  | {
       type: "knowledge_revision";
       at: string;
       campaign_id: string;
@@ -190,7 +246,7 @@ export type ResearchEvent =
 export interface RunSummary {
   experiment_id: string;
   run_id: string;
-  kind: "experiment" | "incremental_comparison";
+  kind: "experiment" | "incremental_comparison" | "prospective_evaluation";
   campaign_id: string | null;
   direction: Direction | null;
   segment: string | null;
@@ -226,6 +282,7 @@ export interface ResearchOverview {
     ledger_revision: number | null;
     ledger_derived_at: string | null;
     ledger_problems: number;
+    evaluations: EvaluationSummary[];
     latest_activity: string | null;
   }[];
   activity: ResearchEvent[];
@@ -247,6 +304,7 @@ export interface CampaignDetail {
   report: { title: string; body: string }[] | null;
   knowledge_revisions: LedgerRevision[];
   knowledge_check: { problems: string[]; uncited_runs: string[] } | null;
+  evaluations: EvaluationSummary[];
   issues: ArtifactIssue[];
 }
 
@@ -345,8 +403,73 @@ export const KNOWLEDGE_META: Record<
 export const VALIDATION_META: Record<ValidationStatus, string> = {
   not_validated: "Not validated — no validation run exists",
   validation_not_independent: "Validation run reused earlier validation days — not independent",
-  independently_validated: "Independent validation run recorded",
+  independently_validated: "Independent (retrospective) validation run recorded",
+  prospectively_validated: "Evaluated prospectively on data unseen when the claim was frozen",
+  prospective_evidence_not_independent:
+    "A prospective evaluation ran, but its independence could not be established",
 };
+
+export const EVIDENCE_CLASS_LABEL: Record<EvidenceClass, string> = {
+  development: "Development (exploratory)",
+  retrospective_validation: "Retrospective validation",
+  prospective_validation: "Prospective validation",
+  protected_holdout: "Protected holdout",
+  reused: "Reused data — not independent",
+  independence_undetermined: "Independence undetermined",
+};
+
+export const PARTITION_STATE_LABEL: Record<PartitionStateName, string> = {
+  awaiting_data: "Awaiting data",
+  eligible: "Eligible — not yet evaluated",
+  authorized_only: "Authorized, never started",
+  exposure_uncertain: "Interrupted — exposure uncertain",
+  failed: "Failed after possible exposure",
+  failed_before_exposure: "Failed before any data was read",
+  completed: "Completed",
+};
+
+/**
+ * "Has this hypothesis been independently tested on genuinely unseen
+ * data?" — yes only when the knowledge ledger cites independent
+ * prospective evidence (never because a plan is registered).
+ */
+export function unseenDataAnswer(
+  hypothesisId: string,
+  entry: LedgerHypothesis | null | undefined,
+  evaluations: EvaluationSummary[],
+): { tested: boolean; text: string } {
+  const independent = entry?.evidence.filter(
+    (e) =>
+      e.current &&
+      (e.evidence_class === "prospective_validation" || e.evidence_class === "protected_holdout"),
+  );
+  if (independent && independent.length > 0) {
+    const roles = [...new Set(independent.map((e) => (e.evidence_class === "protected_holdout" ? "protected holdout" : "prospective validation")))];
+    return { tested: true, text: `Yes — ${roles.join(" and ")} on data unseen when the claim was frozen.` };
+  }
+  const plans = evaluations.filter((e) => e.hypotheses.includes(hypothesisId));
+  if (plans.length === 0) {
+    return { tested: false, text: "No — no prospective evaluation is registered; all evidence is historical." };
+  }
+  const validation = plans.flatMap((e) => e.partitions).find((p) => p.role === "validation");
+  if (!validation) return { tested: false, text: "Not yet — a prospective evaluation is registered." };
+  if (validation.state === "awaiting_data") {
+    return {
+      tested: false,
+      text: `Not yet — prospective validation registered for ${validation.start} to ${validation.end}; awaiting data (eligible from ${validation.eligible_from.slice(0, 10)}).`,
+    };
+  }
+  if (validation.state === "eligible") {
+    return { tested: false, text: "Not yet — prospective validation is eligible but has not been run." };
+  }
+  if (validation.state === "completed") {
+    return {
+      tested: false,
+      text: "No — the prospective validation ran, but the ledger does not count it as independent evidence.",
+    };
+  }
+  return { tested: false, text: `No — the prospective validation ${PARTITION_STATE_LABEL[validation.state].toLowerCase()}.` };
+}
 
 export function isKnowledgeStatus(value: unknown): value is KnowledgeStatus {
   return typeof value === "string" && value in KNOWLEDGE_META;

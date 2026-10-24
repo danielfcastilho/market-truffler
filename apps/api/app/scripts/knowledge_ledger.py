@@ -28,6 +28,7 @@ from app.research.knowledge import (
     verify_revision,
     write_revision,
 )
+from app.research.prospective import verify_prospective_run
 from app.research.runs import RUNS_DIRNAME, load_runs
 
 
@@ -55,6 +56,9 @@ def main() -> None:
         sys.exit(1)
     records = load_runs(args.data_dir / RUNS_DIRNAME).records
 
+    def prospective_check(record: dict) -> list[str]:
+        return verify_prospective_run(args.data_dir, record)
+
     if args.derive:
         try:
             derived = derive_ledger(campaign, specs, records)
@@ -70,7 +74,12 @@ def main() -> None:
 
         candidate["content_hash"] = content_hash(candidate)
         problems = verify_revision(
-            candidate, campaign, specs, records, revisions[-1] if revisions else None
+            candidate,
+            campaign,
+            specs,
+            records,
+            revisions[-1] if revisions else None,
+            prospective_check,
         )
         if problems:  # derivation and verification disagree: a bug, never written
             print("refused: derived ledger fails verification:", *problems, sep="\n  ")
@@ -97,7 +106,7 @@ def main() -> None:
     failed = False
     for i, revision in enumerate(revisions):
         problems = verify_revision(
-            revision, campaign, specs, records, revisions[i - 1] if i else None
+            revision, campaign, specs, records, revisions[i - 1] if i else None, prospective_check
         )
         failed |= bool(problems)
         print(f"revision {revision.get('revision')}: {'VERIFIED' if not problems else 'INVALID'}")

@@ -46,8 +46,10 @@ export function ResearchHistory({ history }: { history: History }) {
                       ) : (
                         run.experiment_id
                       )}
-                      {run.kind === "incremental_comparison" && (
-                        <span className="ml-2 text-muted-foreground">comparison</span>
+                      {run.kind !== "experiment" && (
+                        <span className="ml-2 text-muted-foreground">
+                          {run.kind === "prospective_evaluation" ? "prospective" : "comparison"}
+                        </span>
                       )}
                     </td>
                     <td className="px-3 py-2 text-muted-foreground">{run.run_id}</td>

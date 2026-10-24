@@ -19,6 +19,7 @@ as `issues`, never silently skipped.
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -192,6 +193,39 @@ class ResearchArtifacts:
             revisions.append(revision)
         return revisions
 
+    def evaluations(self) -> list[dict[str, Any]]:
+        """Prospective evaluation registrations (`<data>/evaluations/`), each
+        with its exposure events in sequence order."""
+        root = self.data_dir / "evaluations"
+        if not root.is_dir():
+            return []
+        found = []
+        for directory in sorted(p for p in root.iterdir() if p.is_dir() and SLUG.match(p.name)):
+            stored = self._read_json(directory / "registration" / "registration.json")
+            if stored is None or not isinstance(stored.get("registration"), dict):
+                if stored is not None:
+                    self.issues.append({"artifact": self._label(directory), "problem": "malformed"})
+                continue
+            registration = stored["registration"]
+            if registration.get("registration_id") != directory.name:
+                self.issues.append(
+                    {"artifact": self._label(directory), "problem": "registration id differs"}
+                )
+                continue
+            events = []
+            for path in sorted((directory / "events").glob("[0-9]" * 6 + "/event.json")):
+                event = self._read_json(path)
+                if event is not None:
+                    events.append(event)
+            found.append(
+                {
+                    "registration": registration,
+                    "registration_hash": stored.get("registration_hash"),
+                    "events": events,
+                }
+            )
+        return found
+
     def run(self, experiment_id: str, run_id: str) -> dict[str, Any] | None:
         if not SLUG.match(experiment_id) or not RUN_ID.match(run_id):
             raise InvalidIdentifier(f"{experiment_id}/{run_id}")
@@ -245,3 +279,65 @@ def check_ledger(revision: dict[str, Any], records: list[dict[str, Any]]) -> dic
             if key[0] in evidence_ids and record.get("status") == "completed" and key not in cited:
                 uncited.append(f"{hid}: {key[0]}/{key[1]}")
     return {"problems": problems, "uncited_runs": uncited}
+
+
+#: Mirrors app.research.prospective.READY_AFTER: a partition with missing
+#: shards becomes eligible this long after it ends.
+READY_AFTER_DAYS = 2
+
+
+def _attempt_outcome(types: list[str]) -> str:
+    if "completed" in types:
+        return "completed"
+    if "failed" in types:
+        return "failed" if "started" in types else "failed_before_exposure"
+    if "started" in types:
+        return "exposure_uncertain"
+    return "authorized_only"
+
+
+def evaluation_states(
+    registration: dict[str, Any], events: list[dict[str, Any]], data_dir: Path, now: datetime
+) -> list[dict[str, Any]]:
+    """Each partition's state from the exposure log, the partition's dates
+    and which daily shards exist — the same rules as
+    `app.research.prospective.partition_state`, read-only."""
+    states = []
+    for partition in registration.get("partitions", []):
+        role = partition.get("role")
+        start, end = date.fromisoformat(partition["start"]), date.fromisoformat(partition["end"])
+        days = [start + timedelta(days=i) for i in range((end - start).days)]
+        present = sum(
+            1 for d in days if (data_dir / f"shard_s15m_{d:%Y%m%d}" / "manifest.json").exists()
+        )
+        end_at = datetime.combine(end, datetime.min.time(), tzinfo=UTC)
+        eligible_from = (
+            end_at if present == len(days) else end_at + timedelta(days=READY_AFTER_DAYS)
+        )
+        by_attempt: dict[str, list[str]] = {}
+        for e in events:
+            if e.get("role") == role:
+                by_attempt.setdefault(str(e.get("attempt_id")), []).append(str(e.get("type")))
+        outcomes = [_attempt_outcome(types) for types in by_attempt.values()]
+        if outcomes:
+            state = outcomes[-1]
+        elif now >= eligible_from:
+            state = "eligible"
+        else:
+            state = "awaiting_data"
+        states.append(
+            {
+                "role": role,
+                "start": partition["start"],
+                "end": partition["end"],
+                "state": state,
+                "eligible_from": eligible_from.isoformat(),
+                "days": len(days),
+                "days_with_shard": present,
+                "attempts": len(outcomes),
+                "exposed": any(
+                    o not in ("authorized_only", "failed_before_exposure") for o in outcomes
+                ),
+            }
+        )
+    return states
