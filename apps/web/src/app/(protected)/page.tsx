@@ -18,13 +18,13 @@ export default function HomePage() {
           href="/sniffer"
           icon="🐽"
           title="Sniffer"
-          description="Senses the market: data, history, and measurable features."
+          description="Senses the market: experimental Long/Short rankings, market data and measurable features."
         />
         <ModuleCard
           href="/oink-corp"
           icon="🧬"
           title="OINK CORP"
-          description="Learns and discovers: market research and, eventually, Long/Short opportunity rankings — the truffles."
+          description="Learns and discovers: market research and the ranking models behind Sniffer's rankings."
         />
         <ModuleCard
           href="/vitals"

@@ -47,19 +47,25 @@ a different estimand than Evaluator v1's spread. Only the development
 segment is run here: every result is exploratory.
 """
 
-import bisect
 import math
-import statistics
 from collections import Counter
-from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
 import pyarrow as pa
-from pydantic import Field, ValidationError, field_validator, model_validator
+from pydantic import Field, ValidationError, field_validator
 
+from app.ranking.scoring import (
+    MIN_CROSS_SECTION,
+    FeatureTerm,
+    RankingCandidate,
+    candidate_hash,
+    eligible_indices,
+    score_cross_section,
+    transform,
+)
 from app.research import evaluation
 from app.research.evaluation import _day_block_interval, _mean, plan_split
 from app.research.experiment import (
@@ -73,10 +79,9 @@ from app.research.experiment import (
 RANKING_SPEC_VERSION = 1
 RANKING_EVALUATOR_VERSION = 1
 PRIMARY_METRIC = "top_k_excess_utility"
-MIN_UNIVERSE = evaluation.MIN_UNIVERSE_PER_TIMESTAMP
-MAX_TERMS = 10
+#: Equal to Evaluator v1's MIN_UNIVERSE_PER_TIMESTAMP (tested).
+MIN_UNIVERSE = MIN_CROSS_SECTION
 _SLUG = r"^[a-z0-9][a-z0-9-]{0,79}$"
-_MAD_SCALE = 1.4826
 
 RANKING_DISCLOSURES = (
     "Utilities are market-relative forward returns, not trading P&L: no costs, slippage, "
@@ -86,41 +91,6 @@ RANKING_DISCLOSURES = (
     "Coins ranked at the same timestamp move together; timestamps within a day are "
     "dependent (handled by one value per timestamp and day-block resampling only).",
 )
-
-
-class FeatureTerm(_Frozen):
-    feature: str = Field(min_length=1, max_length=64)
-    transform: Literal["identity", "cs_percentile", "cs_robust_z"]
-    weight: float
-
-    @field_validator("weight")
-    @classmethod
-    def _check_weight(cls, value: float) -> float:
-        if not math.isfinite(value) or value == 0:
-            raise ValueError("a weight must be finite and non-zero")
-        return value
-
-
-class RankingCandidate(_Frozen):
-    spec_version: Literal[1]
-    candidate_id: str = Field(pattern=_SLUG)
-    name: str = Field(min_length=1, max_length=200)
-    model_family: Literal["linear_weighted_v1"]
-    direction: Literal["long", "short"]
-    objective: str = Field(min_length=1, max_length=2000)
-    terms: list[FeatureTerm] = Field(min_length=1, max_length=MAX_TERMS)
-    missing_policy: Literal["exclude"]
-
-    @model_validator(mode="after")
-    def _unique_features(self) -> "RankingCandidate":
-        features = [t.feature for t in self.terms]
-        if len(features) != len(set(features)):
-            raise ValueError("each feature may appear once")
-        return self
-
-    @property
-    def features(self) -> list[str]:
-        return [t.feature for t in self.terms]
 
 
 class RankingStudy(_Frozen):
@@ -168,10 +138,6 @@ def load_study(
     return study, candidate, reference
 
 
-def candidate_hash(candidate: RankingCandidate) -> str:
-    return _canonical_hash(candidate.model_dump(mode="json"))
-
-
 def study_hash(
     study: RankingStudy, candidate: RankingCandidate, reference: RankingCandidate | None
 ) -> str:
@@ -192,23 +158,6 @@ def _finite(value: Any) -> bool:
     return isinstance(value, int | float) and math.isfinite(value)
 
 
-def transform(name: str, values: Sequence[float]) -> tuple[list[float], bool]:
-    """One feature's transform over the decision universe. Returns the
-    transformed values and whether the feature was degenerate (no
-    variation) at this timestamp."""
-    if name == "identity":
-        return list(values), False
-    if name == "cs_percentile":
-        ordered = sorted(values)
-        n = len(ordered)
-        return [bisect.bisect_right(ordered, v) / n for v in values], ordered[0] == ordered[-1]
-    median = statistics.median(values)
-    mad = statistics.median(abs(v - median) for v in values)
-    if mad == 0:
-        return [0.0] * len(values), True
-    return [(v - median) / (_MAD_SCALE * mad) for v in values], False
-
-
 @dataclass(frozen=True)
 class Ranking:
     frame_time: datetime
@@ -224,22 +173,18 @@ def rank_timestamp(
     symbols: list[str],
     features: dict[str, list[float]],
 ) -> Ranking:
-    """Rank the decision universe at one timestamp. `features` holds, per
-    feature, one finite value per symbol — and nothing else: no outcome."""
-    scores = [0.0] * len(symbols)
-    degenerate = []
-    for term in candidate.terms:
-        values, flat = transform(term.transform, features[term.feature])
-        if flat:
-            degenerate.append(term.feature)
-        scores = [s + term.weight * v for s, v in zip(scores, values, strict=True)]
-    order = sorted(range(len(symbols)), key=lambda i: (-scores[i], symbols[i]))
+    """Rank the decision universe at one timestamp with the shared scoring
+    core (`app.ranking.scoring`, the same code the live rankings use).
+    `features` holds, per feature, one finite value per symbol — and
+    nothing else: no outcome."""
+    scored = score_cross_section(candidate, symbols, features)
+    order = scored.order
     return Ranking(
         frame_time,
         [symbols[i] for i in order],
-        [scores[i] for i in order],
+        [scored.scores[i] for i in order],
         len(symbols),
-        degenerate,
+        scored.degenerate_features,
     )
 
 
@@ -258,7 +203,10 @@ def decision_universes(
         end = start
         while end < len(times) and times[end] == times[start]:
             end += 1
-        rows = [i for i in range(start, end) if all(_finite(columns[f][i]) for f in features)]
+        rows = [
+            start + i
+            for i in eligible_indices({f: columns[f][start:end] for f in features}, features)
+        ]
         out.append(
             (
                 times[start],
@@ -521,6 +469,9 @@ def evaluate_study(
 
 
 __all__ = [
+    "FeatureTerm",
+    "RankingCandidate",
+    "eligible_indices",
     "PRIMARY_METRIC",
     "RANKING_EVALUATOR_VERSION",
     "RankingCandidate",

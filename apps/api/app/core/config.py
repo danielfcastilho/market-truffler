@@ -89,6 +89,13 @@ class Settings(BaseSettings):
     research_campaigns_dir: str = "/app/research_campaigns"
     research_knowledge_dir: str = "/app/research_knowledge"
     research_ranking_dir: str = "/app/research_ranking"
+    # Live Sniffer rankings (app.services.live_rankings): the ranking
+    # candidates (files under `<research_ranking_dir>/candidates/`) applied
+    # to the latest Sniffer frame. Experimental: manually specified, not
+    # validated, not Champions. A missing or invalid candidate makes that
+    # direction unavailable — nothing is substituted.
+    live_ranking_long_candidate: str = "long-price-reversal-oi-v1"
+    live_ranking_short_candidate: str = "short-price-reversal-oi-v1"
 
     @property
     def allowed_origins_list(self) -> list[str]:

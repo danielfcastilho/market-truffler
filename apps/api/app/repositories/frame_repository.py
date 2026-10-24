@@ -217,6 +217,22 @@ class FrameRepository:
             members=[],
         )
 
+    async def get_summary(self, frame_time: datetime) -> MarketFrame | None:
+        """One frame's metadata (any status, `members` always `[]`) — the
+        cheap read live rankings use to confirm their frame finalized."""
+        row = await self._session.get(MarketFrameRow, frame_time)
+        if row is None:
+            return None
+        return MarketFrame(
+            frame_time=row.frame_time,
+            expected_instruments=row.expected_instruments,
+            available_instruments=row.available_instruments,
+            status=FrameStatus(row.status),
+            created_at=row.created_at,
+            finalized_at=row.finalized_at,
+            members=[],
+        )
+
     async def _latest_finalized_row(self) -> MarketFrameRow | None:
         result = await self._session.execute(
             select(MarketFrameRow)

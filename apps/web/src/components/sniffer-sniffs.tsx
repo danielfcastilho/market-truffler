@@ -4,12 +4,12 @@ import { SnifferTable } from "@/components/sniffer-table";
 import { formatFrameTimeUtc } from "@/lib/sniffer-format";
 
 /**
- * Sniffer's Market Data inspector (`/sniffer`): every factual,
+ * Sniffer's Market Data inspector (`/sniffer/market-data`): every factual,
  * per-instrument measurement (return_5m, rsi_14_5m, ...) for the most
  * recently analyzed Market Frame, plus a jump to any symbol's detail
- * page. Observations only — no Score, Rank, or Truffle (those are OINK
- * CORP's, and don't exist yet). "Sniff" is the product term for what the
- * backend calls a Feature (`app/features/`, `FeatureEngine`).
+ * page. Observations only — scores and ranks live on the Rankings tab,
+ * and no Truffle is qualified anywhere yet. "Sniff" is the product term for
+ * what the backend calls a Feature (`app/features/`, `FeatureEngine`).
  */
 export function SnifferSniffs({ frame }: { frame: SnifferFrame | null }) {
   return (

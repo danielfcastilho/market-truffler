@@ -1068,31 +1068,55 @@ heuristic, which belongs to OINK CORP). The backend keeps the engineering
 names (`app/features/`, `FeatureEngine`, metric keys like `rsi_14_5m`);
 "Sniff" is only how a feature is presented to the user.
 
-Two routes under `apps/web/src/app/(protected)/sniffer/`, sharing one
-shell (`layout.tsx`, titled "🐽 Sniffer / Market Data"):
+Routes under `apps/web/src/app/(protected)/sniffer/`, sharing one shell
+(`layout.tsx`, "🐽 Sniffer" with 🍄 Rankings / 📊 Market Data tabs):
 
 ```
-/sniffer             Market Data inspector (SnifferSniffs): latest frame
+/sniffer              Experimental Long/Short rankings (RankingBoard), the default
+/sniffer/market-data  Market Data inspector (SnifferSniffs): latest frame
                       context, "Inspect symbol…" search, and the full
                       Sniffs matrix (SnifferTable) over the tracked universe
-/sniffer/{symbol}     Symbol detail (SnifferSymbolDetail): that symbol's
-                      Sniffs, grouped like the matrix
+/sniffer/{symbol}     Symbol detail (SnifferSymbolDetail) plus its ranking
+                      context (RankingContext) in both directions
 ```
 
-Both read the same `getLatestSnifferFrame()` and the same
-`FEATURE_COLUMNS` config, so the matrix and a symbol page can never
-disagree; no extra backend endpoint exists for either. Missing values
-render as "N/A", never 0. An unknown or not-yet-analyzed symbol renders an
-honest inline message.
+The matrix and a symbol page read the same `getLatestSnifferFrame()` and
+`FEATURE_COLUMNS` config, so they can never disagree. Missing values render
+as "N/A", never 0. `/sniffer/sniffs` redirects to `/sniffer/market-data`,
+and `/sniffer/truffles` to `/sniffer` (`next.config.ts`).
 
-Sniffer's UI deliberately has no Score, Rank, Scents, or 🍄 Truffle
-surface. An earlier iteration made `/sniffer` a Green/Red "Truffles"
-dashboard and gave symbol pages Scents/Score/Rank sections; those were
-always-empty placeholders attributing ranking to Sniffer, and were removed
-when ranking ownership moved to OINK CORP. `/sniffer/sniffs` (the matrix's
-old route) and `/sniffer/truffles` redirect to `/sniffer`
-(`next.config.ts`). Ranking views will be built under OINK CORP once a
-Champion model actually produces rankings — not before.
+**Experimental live rankings.** OINK CORP develops and evaluates ranking
+models; Sniffer applies the configured ones to the latest frame; the human
+decides. Scoring is shared: `app/ranking/scoring.py` holds the candidate
+spec, transforms, eligibility, scoring with per-feature contributions, and
+ordering. It is imported by both OINK CORP research (`app.research.ranking`)
+and the live service (`app.services.live_rankings`), never duplicated.
+
+It imports no research code, sees only feature values, and was moved out
+of `app.research` so the live pipeline still never imports research. The
+move reproduces both recorded ranking studies byte-for-byte.
+
+`GET /api/sniffer/rankings` returns one snapshot:
+- **Frame:** Sniffer's latest analyzed frame, ranked only if it finalized.
+  It reports status, completeness and instrument counts. Staleness follows
+  the frame cadence (`BASE_DURATION` + `FINALIZE_ALLOWANCE`), or a newer
+  finalized frame that Sniffer hasn't analyzed.
+- **Both directions:** Long and Short always from that same frame, each
+  with its model, eligible and excluded coins, and rows giving rank, score,
+  per-feature raw / transformed / weight / contribution (summing exactly to
+  the score), and factual context.
+
+The candidates are configured by id (`live_ranking_long_candidate` /
+`live_ranking_short_candidate`, files under the ranking research
+directory): `long-price-reversal-oi-v1` and `short-price-reversal-oi-v1`. A
+missing or invalid one makes that direction unavailable; nothing is
+substituted. Rankings are computed on request and never persisted.
+
+They're labelled experimental (manual, unoptimized, unvalidated, not a
+Champion). Showing a model live does not validate or promote it, and no
+coin is qualified as a 🍄 Truffle. Historical/live parity is tested:
+identical features and candidate give identical universes, scores and
+order.
 
 ### OINK CORP: historical Sniff replay and research datasets
 
@@ -1975,10 +1999,10 @@ once each has something real to show.
   shell. A `(protected)` route group enforces auth server-side before
   rendering; a runtime route handler at `src/app/api/[...path]/route.ts`
   proxies `/api/*` to the backend so the browser only ever talks to one
-  origin. `/sniffer` is Sniffer's Market Data inspector (the Sniffs
-  matrix) and `/sniffer/{symbol}` its per-symbol detail (see "Sniffer in
-  the UI: Market Data" above). `/oink-corp` is an honest "in progress"
-  page.
+  origin. `/sniffer` shows Sniffer's experimental Long/Short rankings,
+  `/sniffer/market-data` the Sniffs matrix and `/sniffer/{symbol}` the
+  per-symbol detail with its ranking context (see "Sniffer in the UI"
+  above). `/oink-corp` is the Research Explorer.
 - **`apps/api`** (FastAPI, Pydantic, SQLAlchemy 2, Alembic): the backend.
   Owns the `User` model, session issuance/verification, and the
   database-touching endpoints (`/health`, `/ready`, `/api/me`,

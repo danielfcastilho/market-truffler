@@ -6,6 +6,7 @@ import type {
   ResearchHistory as ResearchHistoryData,
   ResearchOverview as ResearchOverviewData,
 } from "@/lib/research";
+import type { LiveRankings as LiveRankingsData } from "@/lib/rankings";
 
 const API_INTERNAL_URL = process.env.API_INTERNAL_URL ?? "http://localhost:8000";
 
@@ -292,4 +293,19 @@ export function getResearchHistory(): Promise<ResearchResult<ResearchHistoryData
 
 export function getRankingResearch(): Promise<ResearchResult<RankingResearchData>> {
   return researchFetch("/api/research/ranking");
+}
+
+export type LiveRankingsResult =
+  | { status: "ok"; data: LiveRankingsData }
+  | { status: "error"; message: string };
+
+/** Experimental live Long/Short rankings — one snapshot, one frame. */
+export async function getLiveRankings(): Promise<LiveRankingsResult> {
+  try {
+    const response = await serverFetch("/api/sniffer/rankings");
+    if (!response.ok) return { status: "error", message: `HTTP ${response.status}` };
+    return { status: "ok", data: (await response.json()) as LiveRankingsData };
+  } catch {
+    return { status: "error", message: "rankings API unreachable" };
+  }
 }

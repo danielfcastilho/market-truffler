@@ -1,12 +1,16 @@
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, status
 
+from app.core.config import get_settings
 from app.core.deps import CurrentUserDep, DbSessionDep
 from app.domain.sniffer import SnifferFrameResult
 from app.repositories.sniffer_repository import SnifferRepository
+from app.schemas.rankings import LiveRankings
 from app.schemas.sniffer import SnifferFrameResponse, SnifferInstrument, SnifferStatus
+from app.services.live_rankings import live_rankings
 
 router = APIRouter(tags=["sniffer"])
 logger = logging.getLogger(__name__)
@@ -81,6 +85,23 @@ async def latest_sniffer_result(
     if result is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="No Sniffer analysis yet")
     return _to_response(result)
+
+
+@router.get("/api/sniffer/rankings", response_model=LiveRankings)
+async def sniffer_rankings(db: DbSessionDep, current_user: CurrentUserDep) -> LiveRankings:
+    """Experimental Long and Short rankings of the latest analyzed frame, in
+    one snapshot (both directions always rank the same frame). Read-only,
+    computed from Sniffer features with the configured ranking candidates —
+    not validated, not trading signals."""
+    settings = get_settings()
+    result = await live_rankings(
+        db,
+        candidates_dir=Path(settings.research_ranking_dir) / "candidates",
+        long_candidate=settings.live_ranking_long_candidate,
+        short_candidate=settings.live_ranking_short_candidate,
+        now=datetime.now(UTC),
+    )
+    return LiveRankings.model_validate(result)
 
 
 @router.get("/api/sniffer/frames/{frame_time}", response_model=SnifferFrameResponse)

@@ -4,9 +4,10 @@ const nextConfig: NextConfig = {
   output: "standalone",
   async redirects() {
     return [
-      // Sniffer's former Truffles dashboard (/sniffer, briefly
-      // /sniffer/truffles) is gone — rankings belong to OINK CORP — and
-      // the Sniffs matrix moved from /sniffer/sniffs to /sniffer itself.
+      // /sniffer is now the experimental Rankings tab; the Sniffs matrix
+      // (formerly /sniffer/sniffs, then /sniffer) lives at
+      // /sniffer/market-data. The old /sniffer/truffles placeholder goes to
+      // the rankings — no Truffle is qualified anywhere yet.
       {
         source: "/sniffer/truffles",
         destination: "/sniffer",
@@ -14,7 +15,7 @@ const nextConfig: NextConfig = {
       },
       {
         source: "/sniffer/sniffs",
-        destination: "/sniffer",
+        destination: "/sniffer/market-data",
         permanent: false,
       },
     ];
