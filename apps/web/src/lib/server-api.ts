@@ -80,6 +80,9 @@ export interface MarketStatus {
   /** That frame's available_instruments / expected_instruments, in [0, 1].
    * Null alongside latest_market_frame === null. */
   frame_completeness: number | null;
+  frames_expected_24h: number;
+  frames_missed_24h: number;
+  last_missed_frame: string | null;
   /** Per-symbol historical-data readiness across the active universe right
    * now (DISCOVERED -> BACKFILLING -> READY — see the backend's
    * app.services.symbol_readiness). Always real counts summing to

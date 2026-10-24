@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -156,6 +156,12 @@ class FrameRepository:
             .order_by(MarketFrameRow.frame_time)
         )
         return list(result.scalars().all())
+
+    async def get_earliest_frame_time(self) -> datetime | None:
+        """The first `frame_time` ever recorded (frame headers are never
+        pruned), or None before the first frame."""
+        result = await self._session.execute(select(func.min(MarketFrameRow.frame_time)))
+        return result.scalar_one_or_none()
 
     async def get_frame(self, frame_time: datetime) -> MarketFrame | None:
         """Frame metadata plus every member's full joined OHLCV context —

@@ -384,6 +384,7 @@ async def test_market_status_reports_na_frame_fields_when_no_frame_exists_yet(cl
     body = response.json()
     assert body["latest_market_frame"] is None
     assert body["frame_completeness"] is None
+    assert body["frames_expected_24h"] == 0 and body["frames_missed_24h"] == 0
 
 
 async def test_market_status_reports_the_real_latest_finalized_frame(client, test_user, db_session):
@@ -419,6 +420,9 @@ async def test_market_status_reports_the_real_latest_finalized_frame(client, tes
     body = response.json()
     assert body["latest_market_frame"] == "2026-01-01T14:35:00Z"
     assert body["frame_completeness"] == 0.5  # 1 of 2 expected — PARTIAL, truthfully reported
+    # Its only frame is months old: every boundary of the last 24h is missed.
+    assert body["frames_expected_24h"] > 280
+    assert body["frames_missed_24h"] == body["frames_expected_24h"]
 
 
 async def test_market_status_ignores_a_still_building_frame(client, test_user, db_session):

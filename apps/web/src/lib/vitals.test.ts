@@ -28,6 +28,9 @@ const healthyMarket: MarketStatus = {
   historical_coverage: 0.681,
   latest_market_frame: "2026-09-19T16:37:00.000Z",
   frame_completeness: 0.9987,
+  frames_expected_24h: 288,
+  frames_missed_24h: 0,
+  last_missed_frame: null,
   symbols_discovered: 2,
   symbols_backfilling: 10,
   symbols_ready: 202,
@@ -54,6 +57,9 @@ const noMarketDataYet: MarketStatus = {
   historical_coverage: 0.124,
   latest_market_frame: null,
   frame_completeness: null,
+  frames_expected_24h: 0,
+  frames_missed_24h: 0,
+  last_missed_frame: null,
   symbols_discovered: 2,
   symbols_backfilling: 10,
   symbols_ready: 202,
@@ -118,6 +124,9 @@ describe("overallStatus", () => {
         historical_coverage: null,
         latest_market_frame: null,
         frame_completeness: null,
+        frames_expected_24h: 0,
+        frames_missed_24h: 0,
+        last_missed_frame: null,
         symbols_discovered: 0,
         symbols_backfilling: 0,
         symbols_ready: 0,
@@ -266,6 +275,41 @@ describe("buildVitalsSections", () => {
       value: "99.9%",
       status: "ok",
     });
+    expect(market?.rows.find((r) => r.label === "Missed frames (24h)")).toEqual({
+      label: "Missed frames (24h)",
+      value: "0 of 288",
+      status: "ok",
+    });
+  });
+
+  it("keeps a collection interruption visible after collection resumes", () => {
+    const sections = buildVitalsSections({
+      health: "ok",
+      ready: "ok",
+      system: healthySystem,
+      market: {
+        ...healthyMarket,
+        frames_missed_24h: 24,
+        last_missed_frame: "2026-09-19T04:55:00.000Z",
+      },
+      sniffer: healthySniffer,
+    });
+    const market = sections.find((s) => s.title === "MARKET");
+    expect(market?.rows.find((r) => r.label === "Missed frames (24h)")).toEqual({
+      label: "Missed frames (24h)",
+      value: "24 of 288, last 2026-09-19 04:55:00 UTC",
+      status: "down",
+    });
+    const fresh = buildVitalsSections({
+      health: "ok",
+      ready: "ok",
+      system: healthySystem,
+      market: noMarketDataYet,
+      sniffer: healthySniffer,
+    });
+    expect(
+      fresh.find((s) => s.title === "MARKET")?.rows.find((r) => r.label === "Missed frames (24h)"),
+    ).toEqual({ label: "Missed frames (24h)", value: "N/A", status: "unavailable" });
   });
 
   it("reports Bybit connectivity as down and symbols tracked as N/A when Bybit REST is unreachable", () => {
@@ -282,6 +326,9 @@ describe("buildVitalsSections", () => {
         historical_coverage: null,
         latest_market_frame: null,
         frame_completeness: null,
+        frames_expected_24h: 0,
+        frames_missed_24h: 0,
+        last_missed_frame: null,
         symbols_discovered: 0,
         symbols_backfilling: 0,
         symbols_ready: 0,

@@ -1307,7 +1307,8 @@ container. Nothing is ever uploaded; whether the destination is really
 independent storage (another disk, a NAS) is the operator's call, which
 the marker records. Not configured, Vitals says so — never "protected".
 
-**Operational runbook.**
+**Operational runbook.** (Host sleep prevention, restart behaviour,
+disaster-recovery coverage and hosting options: [`OPERATIONS.md`](OPERATIONS.md).)
 
 1. Keep the stack running continuously — frames exist only while it runs.
    After downtime the worker catches up automatically (earliest deadline

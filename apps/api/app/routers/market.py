@@ -12,6 +12,8 @@ from app.repositories.frame_repository import FrameRepository
 from app.repositories.instrument_repository import InstrumentRepository
 from app.schemas.frame import FrameCandleContext, FrameMember, MarketFrameResponse
 from app.schemas.market import MarketStatus
+from app.services.collection_continuity import WINDOW as COLLECTION_WINDOW
+from app.services.collection_continuity import missed_frames
 from app.services.historical_coverage import compute_historical_coverage
 from app.services.symbol_readiness import SymbolReadiness, summarize_readiness
 
@@ -128,9 +130,13 @@ async def market_status(
     # per-member OHLCV join `get_latest_finalized` does, which this row
     # doesn't need and which was by far the most expensive part of this
     # endpoint (see `FrameRepository.get_latest_finalized_summary`).
-    latest_frame = await FrameRepository(db).get_latest_finalized_summary()
+    frames = FrameRepository(db)
+    latest_frame = await frames.get_latest_finalized_summary()
     latest_market_frame = latest_frame.frame_time if latest_frame else None
     frame_completeness = latest_frame.completeness if latest_frame else None
+    # At most 288 frame_times (plus legacy off-grid ones) — cheap.
+    recent = set(await frames.list_frame_times_in_range(now - COLLECTION_WINDOW, now))
+    missed = missed_frames(recent, await frames.get_earliest_frame_time(), now)
 
     return MarketStatus(
         bybit_connectivity=bybit_connectivity,
@@ -141,6 +147,9 @@ async def market_status(
         historical_coverage=historical_coverage,
         latest_market_frame=latest_market_frame,
         frame_completeness=frame_completeness,
+        frames_expected_24h=missed.expected,
+        frames_missed_24h=missed.missed,
+        last_missed_frame=missed.last_missed,
         symbols_discovered=readiness_counts[SymbolReadiness.DISCOVERED],
         symbols_backfilling=readiness_counts[SymbolReadiness.BACKFILLING],
         symbols_ready=readiness_counts[SymbolReadiness.READY],

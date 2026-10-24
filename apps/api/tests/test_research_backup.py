@@ -1,4 +1,5 @@
 import json
+import shutil
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -138,6 +139,17 @@ def test_protected_copies_are_reverified_only_when_due(data_dir, destination, mo
     assert hashed == []
     run_backup(data_dir, destination, now=NOW + backup_module.REVERIFY_INTERVAL)
     assert hashed  # due again: both sides re-hashed
+
+
+def test_a_new_destination_is_verified_from_scratch(data_dir, destination, tmp_path, monkeypatch):
+    run_backup(data_dir, destination, now=NOW)
+    other = tmp_path / "other-drive"
+    shutil.copytree(destination, other)  # same names, never verified *there*
+    target = other / "shard_s15m_20261012" / "data.parquet"
+    target.chmod(0o644)
+    target.write_bytes(target.read_bytes()[:-1])
+    report = run_backup(data_dir, other, now=NOW + timedelta(hours=1))
+    assert "shard_s15m_20261012" in report["errors"]
 
 
 def test_restore_after_losing_the_data_directory(data_dir, destination, tmp_path):

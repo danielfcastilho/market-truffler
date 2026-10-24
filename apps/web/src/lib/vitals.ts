@@ -118,6 +118,27 @@ export function researchRows(research: ResearchStatus | null): VitalRow[] {
 }
 
 /**
+ * 5-minute boundaries of the last 24h with no Market Frame — collection
+ * interruptions (host sleep, stack down). Live freshness recovers seconds
+ * after a restart; this keeps the permanent gap visible for a day.
+ */
+function missedFramesRow(market: MarketStatus | null): VitalRow {
+  const label = "Missed frames (24h)";
+  if (market === null || market.frames_expected_24h === 0) {
+    return unavailableRow(label);
+  }
+  const missed = market.frames_missed_24h;
+  const last = market.last_missed_frame
+    ? `, last ${formatTimestampUtc(market.last_missed_frame)}`
+    : "";
+  return {
+    label,
+    value: `${missed} of ${market.frames_expected_24h}${last}`,
+    status: missed > 0 ? "down" : "ok",
+  };
+}
+
+/**
  * Pure transform from raw probe results into the sections rendered by the
  * Vitals page. Kept separate from presentation (like `route-guard.ts`) so
  * the "what does the app honestly know about its own health" logic can be
@@ -264,6 +285,7 @@ export function buildVitalsSections({
               : NOT_AVAILABLE,
           status: market?.frame_completeness != null ? "ok" : "unavailable",
         },
+        missedFramesRow(market),
       ],
     },
     {

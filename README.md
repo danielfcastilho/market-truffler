@@ -39,9 +39,10 @@ market-truffler/
 │   └── oink_corp/       🧬 OINK CORP — historical Sniff replay + research datasets (data/ is gitignored output)
 ├── packages/
 │   └── shared/           Reserved boundary for future code shared across apps
-├── infra/                 Reserved boundary for future non-app infrastructure
+├── infra/                 Host-level operations (keep-awake.sh)
 ├── docs/
-│   └── ARCHITECTURE.md    Conceptual system architecture (future + current)
+│   ├── ARCHITECTURE.md    Conceptual system architecture (future + current)
+│   └── OPERATIONS.md      Keeping collection running; backup, restore, recovery
 ├── docker-compose.yml
 └── .env.example
 ```
@@ -189,13 +190,18 @@ market-data API, which requires no API key.
 docker compose up --build
 ```
 
-This starts three services:
+This starts four services:
 
 | Service    | What it is                          | Port  |
 |------------|--------------------------------------|-------|
 | `postgres` | PostgreSQL 17                        | internal only |
-| `api`      | FastAPI backend                      | `localhost:8000` |
+| `api`      | FastAPI backend (also runs all market-data collection) | `localhost:8000` |
+| `research` | OINK CORP research continuity worker | none |
 | `web`      | Next.js frontend                     | `localhost:3000` |
+
+Frames are only collected while the stack runs, and macOS sleep stops it:
+run `infra/keep-awake.sh start` while collecting (`status`, `stop`), and see
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md) for backups and recovery.
 
 `postgres` has no published port — it's reachable only from `api`, on the
 internal Docker network, never from the host or the internet. `web` and

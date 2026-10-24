@@ -184,7 +184,9 @@ def run_backup(
     ones that are due, persist and return the report. Never raises for a
     single item; a destination that can't be used is reported as an error."""
     now = now or datetime.now(UTC)
-    previous = load_report(data_dir).get("items", {})
+    last = load_report(data_dir)
+    # Earlier verifications only count for the same destination.
+    previous = last.get("items", {}) if last.get("destination") == str(destination) else {}
     report: dict[str, Any] = {
         "destination": str(destination),
         "checked_at": now.isoformat(),

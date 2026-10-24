@@ -21,6 +21,13 @@ class MarketStatus(BaseModel):
     # That frame's available_instruments / expected_instruments, in [0, 1].
     # None alongside latest_market_frame=None.
     frame_completeness: float | None
+    # 5-minute boundaries in the last 24h that should have a Market Frame
+    # and have none — collection interruptions (host sleep, stack down),
+    # permanent because frames are never backfilled. See
+    # app.services.collection_continuity.
+    frames_expected_24h: int
+    frames_missed_24h: int
+    last_missed_frame: datetime | None
     # Per-symbol historical-data readiness (DISCOVERED -> BACKFILLING ->
     # READY) across the active universe right now — see
     # app.services.symbol_readiness for exact semantics. Counts always sum

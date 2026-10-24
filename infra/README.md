@@ -5,7 +5,8 @@ configuration, provisioning scripts, or environment-specific overlays.
 
 ## Status
 
-Empty in the foundation milestone. Local development is fully covered by the
-root `docker-compose.yml` and each app's own `Dockerfile`. This directory
-exists as a boundary for later, more elaborate infrastructure (e.g. a
-production deployment target) rather than being populated speculatively now.
+- `keep-awake.sh` — prevents macOS idle sleep while the stack collects
+  (`start` / `status` / `stop`); see `docs/OPERATIONS.md`.
+
+Local development is otherwise covered by the root `docker-compose.yml` and
+each app's own `Dockerfile`. No deployment target exists yet.
