@@ -12,7 +12,7 @@ from app.core.logging import configure_logging
 from app.db.session import get_session_factory
 from app.features.engine import REQUIRED_WARMUP
 from app.integrations.bybit.client import BybitClient
-from app.routers import auth, market, research, sniffer, system
+from app.routers import auth, market, research, research_explorer, sniffer, system
 from app.services.frame_synchronizer import FrameSynchronizer
 from app.services.funding_rate_reconciler import FundingRateReconciler
 from app.services.history_reconciler import HistoryReconciler
@@ -157,3 +157,4 @@ app.include_router(auth.router)
 app.include_router(market.router)
 app.include_router(sniffer.router)
 app.include_router(research.router)
+app.include_router(research_explorer.router)

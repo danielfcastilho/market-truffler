@@ -48,6 +48,9 @@ services:
       # OINK CORP experiment specs (committed, read-only): run with
       # `python -m app.scripts.run_experiment --spec /app/research_experiments/<id>.json`.
       - ./research/oink_corp/experiments:/app/research_experiments:ro
+      # OINK CORP campaigns and their reports (committed, read-only), shown by
+      # the Research Explorer (/api/research/campaigns/...).
+      - ./research/oink_corp/campaigns:/app/research_campaigns:ro
     networks:
       - market-truffler
     healthcheck:

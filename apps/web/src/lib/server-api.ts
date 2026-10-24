@@ -1,4 +1,9 @@
 import { cookies } from "next/headers";
+import type {
+  CampaignDetail as CampaignDetailData,
+  ExperimentDetail as ExperimentDetailData,
+  ResearchOverview as ResearchOverviewData,
+} from "@/lib/research";
 
 const API_INTERNAL_URL = process.env.API_INTERNAL_URL ?? "http://localhost:8000";
 
@@ -243,4 +248,38 @@ export async function getLatestSnifferFrame(): Promise<SnifferFrame | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * OINK CORP Research Explorer reads (see `app/routers/research_explorer.py`).
+ * A missing artifact (404) is distinguished from an unavailable API, so a
+ * page can say "not found" without ever claiming research doesn't exist
+ * when it merely couldn't be read.
+ */
+export type ResearchResult<T> =
+  | { status: "ok"; data: T }
+  | { status: "not_found" }
+  | { status: "error"; message: string };
+
+async function researchFetch<T>(path: string): Promise<ResearchResult<T>> {
+  try {
+    const response = await serverFetch(path);
+    if (response.status === 404) return { status: "not_found" };
+    if (!response.ok) return { status: "error", message: `HTTP ${response.status}` };
+    return { status: "ok", data: (await response.json()) as T };
+  } catch {
+    return { status: "error", message: "research API unreachable" };
+  }
+}
+
+export function getResearchOverview(): Promise<ResearchResult<ResearchOverviewData>> {
+  return researchFetch("/api/research/overview");
+}
+
+export function getResearchCampaign(id: string): Promise<ResearchResult<CampaignDetailData>> {
+  return researchFetch(`/api/research/campaigns/${encodeURIComponent(id)}`);
+}
+
+export function getResearchExperiment(id: string): Promise<ResearchResult<ExperimentDetailData>> {
+  return researchFetch(`/api/research/experiments/${encodeURIComponent(id)}`);
 }

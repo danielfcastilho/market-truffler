@@ -1,12 +1,11 @@
-import { InProgressPage } from "@/components/in-progress-page";
+import { ResearchOverview } from "@/components/research/research-overview";
+import { ResearchUnavailable } from "@/components/research/research-unavailable";
+import { getResearchOverview } from "@/lib/server-api";
 
-export default function OinkCorpPage() {
-  return (
-    <InProgressPage
-      icon="🧬"
-      name="OINK CORP"
-      tagline="Market research and Long/Short opportunity intelligence."
-      message="No research or ranking views yet — research datasets are generated offline, and no ranking model has been approved."
-    />
-  );
+export default async function OinkCorpPage() {
+  const result = await getResearchOverview();
+  if (result.status !== "ok") {
+    return <ResearchUnavailable message={result.status === "error" ? result.message : "not found"} />;
+  }
+  return <ResearchOverview overview={result.data} />;
 }
