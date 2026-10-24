@@ -83,9 +83,11 @@ class Settings(BaseSettings):
     # such, never assumed). See docs/ARCHITECTURE.md's runbook.
     research_backup_dir: str = ""
     # Committed OINK CORP artifacts the Research Explorer reads (read-only
-    # mounts in docker-compose.yml): experiment specs and campaigns.
+    # mounts in docker-compose.yml): experiment specs, campaigns and their
+    # knowledge ledgers.
     research_experiments_dir: str = "/app/research_experiments"
     research_campaigns_dir: str = "/app/research_campaigns"
+    research_knowledge_dir: str = "/app/research_knowledge"
 
     @property
     def allowed_origins_list(self) -> list[str]:

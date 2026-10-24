@@ -1,6 +1,7 @@
-"""Research Explorer responses. Specs, campaigns and run records are passed
-through as recorded (`dict`) — re-modelling them here would be a second,
-drifting definition of artifacts owned by `app.research`."""
+"""Research Explorer responses. Specs, campaigns, run records and knowledge
+ledger revisions are passed through as recorded (`dict`) — re-modelling
+them here would be a second, drifting definition of artifacts owned by
+`app.research`."""
 
 from typing import Any, Literal
 
@@ -22,21 +23,39 @@ class ResearchCounts(BaseModel):
     latest_verdicts: dict[str, dict[str, int]]
 
 
+class KnowledgeCounts(BaseModel):
+    #: knowledge_status -> hypotheses, from each campaign's latest ledger revision.
+    by_status: dict[str, int]
+    #: Registered hypotheses whose campaign has no ledger revision yet.
+    hypotheses_without_ledger: int
+
+
+class HypothesisSummary(BaseModel):
+    hypothesis_id: str
+    experiment_id: str
+    direction: str | None
+    #: The experiment's registered selection conditions (for a readable title).
+    conditions: list[dict[str, Any]]
+    #: From the latest ledger revision; None when there is none.
+    knowledge_status: str | None
+    validation_status: str | None
+
+
 class CampaignSummary(BaseModel):
     campaign_id: str
     created: str | None
     question: str
-    hypotheses: int
-    experiments: int
+    hypotheses: list[HypothesisSummary]
     comparisons: int
     comparisons_executed: int
-    comparisons_validated: int
-    #: Latest development verdict of each primary comparison, counted.
-    development_verdicts: dict[str, int]
+    ledger_revision: int | None
+    ledger_derived_at: str | None
+    #: Cited runs that don't match their records (see `check_ledger`).
+    ledger_problems: int
     latest_activity: str | None
 
 
-class RecentRun(BaseModel):
+class RunSummary(BaseModel):
     experiment_id: str
     run_id: str
     kind: Literal["experiment", "incremental_comparison"]
@@ -52,8 +71,18 @@ class RecentRun(BaseModel):
 
 class ResearchOverview(BaseModel):
     counts: ResearchCounts
+    knowledge: KnowledgeCounts
     campaigns: list[CampaignSummary]
-    recent_runs: list[RecentRun]
+    #: The latest research events (see `ResearchHistory.events`).
+    activity: list[dict[str, Any]]
+    issues: list[dict[str, str]]
+
+
+class ResearchHistory(BaseModel):
+    #: campaign_registered | evaluation | knowledge_revision, newest first.
+    events: list[dict[str, Any]]
+    #: Every immutable run, newest first.
+    runs: list[RunSummary]
     issues: list[dict[str, str]]
 
 
@@ -68,6 +97,10 @@ class CampaignDetail(BaseModel):
     campaign_hashes: list[str]
     #: The report split at its `## ` headings, verbatim; None if absent.
     report: list[dict[str, str]] | None
+    #: Knowledge ledger revisions, oldest first (empty: no ledger yet).
+    knowledge_revisions: list[dict[str, Any]]
+    #: The latest revision checked against the run records it cites.
+    knowledge_check: dict[str, list[str]] | None
     issues: list[dict[str, str]]
 
 
@@ -75,6 +108,8 @@ class ExperimentDetail(BaseModel):
     experiment_id: str
     spec: dict[str, Any] | None
     campaigns: list[dict[str, Any]]
+    #: Hypotheses this experiment tests, with their latest knowledge status.
+    knowledge: list[dict[str, Any]]
     runs: list[dict[str, Any]]
     comparisons: list[dict[str, Any]]
     issues: list[dict[str, str]]

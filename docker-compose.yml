@@ -51,6 +51,8 @@ services:
       # OINK CORP campaigns and their reports (committed, read-only), shown by
       # the Research Explorer (/api/research/campaigns/...).
       - ./research/oink_corp/campaigns:/app/research_campaigns:ro
+      # OINK CORP knowledge ledgers (committed revisions, read-only).
+      - ./research/oink_corp/knowledge:/app/research_knowledge:ro
     networks:
       - market-truffler
     healthcheck:

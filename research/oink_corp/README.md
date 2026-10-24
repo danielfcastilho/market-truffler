@@ -71,6 +71,9 @@ automatic daily research shards (the `research` worker), and pre-registered
 research campaigns (`campaigns/`: a campaign file, its incremental
 comparisons against simpler baselines, and a report). The first,
 `oi-incremental-price-1h-v1`, is waiting for more data: see its report.
+What the evidence currently justifies about each hypothesis is kept in a
+verified, hash-chained knowledge ledger (`knowledge/<campaign_id>/`,
+written only by `python -m app.scripts.knowledge_ledger --derive`).
 Still not
 implemented: a heuristic library, autonomous hypothesis generation,
 ranking models, Champion/Challenger promotion, Score, Rank or Truffles. No

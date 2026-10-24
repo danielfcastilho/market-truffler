@@ -2,11 +2,16 @@ import Link from "next/link";
 
 import { ArtifactIssues } from "@/components/research/artifact-issues";
 import { ConditionList } from "@/components/research/condition-list";
+import { DirectionTag, KnowledgeBadge } from "@/components/research/knowledge-badge";
 import { RunEvidence } from "@/components/research/run-evidence";
 import { VerdictBadge } from "@/components/research/verdict-badge";
 import {
+  KNOWLEDGE_META,
+  VALIDATION_META,
   describeLabel,
   directionNote,
+  hypothesisTitle,
+  isKnowledgeStatus,
   formatTimestamp,
   latestBySegment,
   segmentLabel,
@@ -31,9 +36,15 @@ export function ExperimentInspector({ detail }: { detail: ExperimentDetail }) {
 
       <header className="space-y-2">
         <p className="font-mono text-xs text-muted-foreground">Experiment</p>
-        <h2 className="font-mono text-xl font-semibold tracking-tight break-all">
-          {detail.experiment_id}
-        </h2>
+        {spec && (
+          <div className="flex flex-wrap items-center gap-2">
+            <DirectionTag direction={spec.hypothesis.direction} />
+            <span className="text-lg font-semibold tracking-tight">
+              {hypothesisTitle(spec.hypothesis.conditions)}
+            </span>
+          </div>
+        )}
+        <h2 className="font-mono text-sm break-all text-muted-foreground">{detail.experiment_id}</h2>
         {detail.campaigns.map((c) => (
           <p key={c.campaign_id} className="font-mono text-xs text-muted-foreground">
             In{" "}
@@ -44,6 +55,31 @@ export function ExperimentInspector({ detail }: { detail: ExperimentDetail }) {
           </p>
         ))}
       </header>
+
+      {detail.knowledge.map((k) => (
+        <div
+          key={`${k.campaign_id}/${k.hypothesis_id}`}
+          className="space-y-2 rounded-2xl bg-card p-5 ring-1 ring-foreground/10"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm">
+              Tests hypothesis{" "}
+              <Link
+                href={`/oink-corp/campaigns/${k.campaign_id}#${k.hypothesis_id}`}
+                className="font-medium underline underline-offset-4"
+              >
+                {k.hypothesis_id}
+              </Link>{" "}
+              of {k.campaign_id}
+            </p>
+            <KnowledgeBadge status={k.knowledge_status} size="lg" />
+          </div>
+          <p className="text-sm text-muted-foreground">
+            {isKnowledgeStatus(k.knowledge_status) && KNOWLEDGE_META[k.knowledge_status].meaning}{" "}
+            {VALIDATION_META[k.validation_status]}. (Knowledge ledger revision {k.revision}.)
+          </p>
+        </div>
+      ))}
 
       <Section title="Definition">
         {spec === null ? (

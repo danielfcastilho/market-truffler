@@ -2,13 +2,16 @@ import { describe, expect, it } from "vitest";
 
 import { COMPARISON_RUN, INSUFFICIENT_RUN } from "@/components/research/test-fixtures";
 import {
+  conditionShort,
   describeCondition,
   describeFeature,
   describeLabel,
   evidenceFigures,
   formatReturn,
   formatSpread,
+  hypothesisTitle,
   latestBySegment,
+  predictionKind,
   technicalCondition,
   verdictOf,
 } from "@/lib/research";
@@ -76,5 +79,27 @@ describe("runs", () => {
     const comparison = evidenceFigures(COMPARISON_RUN);
     expect(comparison).toMatchObject({ kind: "comparison", selectedRows: 2138, spread: 0.0001 });
     expect(comparison.baselineLabel).toBe("Reference group mean");
+  });
+});
+
+describe("hypothesis titles", () => {
+  it("summarises registered conditions without replacing them", () => {
+    const down = { feature: "return_1h", transform: "cs_percentile", op: "<=", value: 0.2 } as const;
+    const oiUp = { feature: "oi_change_1h", transform: "raw", op: ">", value: 0 } as const;
+    expect(hypothesisTitle([down, oiUp])).toBe("Price ↓ + Open Interest ↑ · 1h");
+    expect(hypothesisTitle([down, { ...oiUp, feature: "oi_change_4h" }])).toBe(
+      "Price ↓ + Open Interest ↑",
+    );
+    expect(conditionShort({ feature: "rsi_14_1h", transform: "raw", op: ">=", value: 70 })).toBe(
+      "RSI >= 70",
+    );
+    expect(conditionShort({ feature: "mystery", transform: "raw", op: "<", value: 0 })).toBe(
+      "mystery ↓",
+    );
+  });
+
+  it("describes prediction kinds without inventing a direction", () => {
+    expect(predictionKind("positive")).toBe("Directional prediction");
+    expect(predictionKind("unspecified")).toMatch(/No direction registered/);
   });
 });

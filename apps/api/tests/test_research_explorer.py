@@ -101,11 +101,61 @@ def artifacts(tmp_path, monkeypatch) -> Path:
         ),
     )
     (data / "runs" / BASE / ".20261024T130000000000Z-cccccc.tmp-dead").mkdir()  # incomplete
+    knowledge = tmp_path / "k" / CAMPAIGN
+    knowledge.mkdir(parents=True)
+    (knowledge / "0001.json").write_text(json.dumps(_revision()))
     settings = get_settings()
     monkeypatch.setattr(settings, "research_campaigns_dir", str(campaigns))
     monkeypatch.setattr(settings, "research_experiments_dir", str(experiments))
     monkeypatch.setattr(settings, "research_data_dir", str(data))
+    monkeypatch.setattr(settings, "research_knowledge_dir", str(tmp_path / "k"))
     return tmp_path
+
+
+def _revision(**overrides) -> dict:
+    """A ledger revision as `app.scripts.knowledge_ledger` writes it."""
+    evidence = [
+        {
+            "experiment_id": CMP,
+            "run_id": NEW_RUN,
+            "role": "primary",
+            "segment": "development",
+            "verdict": "insufficient_data",
+            "current": True,
+        },
+        {
+            "experiment_id": CAND,
+            "run_id": NEW_RUN,
+            "role": "context",
+            "segment": "development",
+            "verdict": "insufficient_data",
+            "current": True,
+        },
+    ]
+    return {
+        "ledger_schema_version": 1,
+        "knowledge_rules_version": 1,
+        "campaign_id": CAMPAIGN,
+        "campaign_hash": "c" * 64,
+        "revision": 1,
+        "previous_revision_hash": None,
+        "derived_at": "2026-10-24T13:00:00+00:00",
+        "content_hash": "d" * 64,
+        "scope": "feature_level",
+        "hypotheses": [
+            {
+                "hypothesis_id": "H1",
+                "experiment_id": CAND,
+                "primary_evidence_ids": [CMP],
+                "direction": "long",
+                "knowledge_status": "insufficient_evidence",
+                "validation_status": "not_validated",
+                "evidence": evidence,
+                "limitations": ["development: 1 qualifying days in segment (< 10)"],
+            }
+        ],
+        **overrides,
+    }
 
 
 async def _login(client, test_user):
@@ -130,6 +180,7 @@ def _tree_hash(root: Path) -> str:
         "/api/research/overview",
         f"/api/research/campaigns/{CAMPAIGN}",
         f"/api/research/experiments/{BASE}",
+        "/api/research/history",
     ],
 )
 async def test_every_explorer_endpoint_requires_authentication(client, path):
@@ -152,12 +203,28 @@ async def test_overview_counts_artifacts_and_latest_verdicts_only(client, test_u
         "insufficient_data": 3,
     }
     [campaign] = body["campaigns"]
-    assert campaign["development_verdicts"]["insufficient_data"] == 1
-    assert campaign["comparisons_validated"] == 0
     assert campaign["latest_activity"].startswith("2026-10-24T12")
-    comparison = next(r for r in body["recent_runs"] if r["kind"] == "incremental_comparison")
-    assert comparison["link_experiment_id"] == CAND and comparison["direction"] == "long"
-    assert comparison["campaign_id"] == CAMPAIGN
+    assert (campaign["ledger_revision"], campaign["ledger_problems"]) == (1, 0)
+    [h1] = campaign["hypotheses"]
+    assert (h1["hypothesis_id"], h1["direction"], h1["knowledge_status"]) == (
+        "H1",
+        "long",
+        "insufficient_evidence",
+    )
+    assert [c["feature"] for c in h1["conditions"]] == ["return_1h", "oi_change_1h"]
+    assert body["knowledge"] == {
+        "by_status": {"insufficient_evidence": 1},
+        "hypotheses_without_ledger": 0,
+    }
+    kinds = [e["type"] for e in body["activity"]]
+    # All four runs belong to the campaign and share a UTC day: one evaluation.
+    assert kinds == ["knowledge_revision", "evaluation", "campaign_registered"]
+    revision = body["activity"][0]
+    assert revision["changes"] == [
+        {"hypothesis_id": "H1", "from": None, "to": "insufficient_evidence"}
+    ]
+    latest_evaluation = body["activity"][1]
+    assert (latest_evaluation["runs"], latest_evaluation["repeat_runs"]) == (4, 1)
     assert body["issues"] == []
 
 
@@ -165,11 +232,16 @@ async def test_empty_research_directories_give_an_honest_empty_overview(
     client, test_user, tmp_path, monkeypatch
 ):
     settings = get_settings()
-    for name in ("research_campaigns_dir", "research_experiments_dir", "research_data_dir"):
+    for name in (
+        "research_campaigns_dir",
+        "research_experiments_dir",
+        "research_data_dir",
+        "research_knowledge_dir",
+    ):
         monkeypatch.setattr(settings, name, str(tmp_path / "missing"))
     await _login(client, test_user)
     body = (await client.get("/api/research/overview")).json()
-    assert body["campaigns"] == [] and body["recent_runs"] == []
+    assert body["campaigns"] == [] and body["activity"] == []
     assert body["counts"]["runs"] == 0 and body["counts"]["campaigns"] == 0
 
 
@@ -275,3 +347,66 @@ def test_the_explorer_has_no_write_endpoints():
         for method in getattr(route, "methods", set())
     }
     assert methods <= {"GET", "HEAD"}
+
+
+async def test_history_lists_every_run_and_artifact_backed_events(client, test_user, artifacts):
+    await _login(client, test_user)
+    body = (await client.get("/api/research/history")).json()
+    assert len(body["runs"]) == 4
+    comparison = next(r for r in body["runs"] if r["kind"] == "incremental_comparison")
+    assert comparison["link_experiment_id"] == CAND and comparison["direction"] == "long"
+    assert comparison["campaign_id"] == CAMPAIGN
+    assert {e["type"] for e in body["events"]} == {
+        "campaign_registered",
+        "evaluation",
+        "knowledge_revision",
+    }
+
+
+async def test_campaign_detail_serves_ledger_revisions_and_their_check(
+    client, test_user, artifacts
+):
+    await _login(client, test_user)
+    body = (await client.get(f"/api/research/campaigns/{CAMPAIGN}")).json()
+    [revision] = body["knowledge_revisions"]
+    assert revision["hypotheses"][0]["knowledge_status"] == "insufficient_evidence"
+    assert body["knowledge_check"] == {"problems": [], "uncited_runs": []}
+    experiment = (await client.get(f"/api/research/experiments/{CAND}")).json()
+    assert experiment["knowledge"] == [
+        {
+            "campaign_id": CAMPAIGN,
+            "revision": 1,
+            "hypothesis_id": "H1",
+            "knowledge_status": "insufficient_evidence",
+            "validation_status": "not_validated",
+        }
+    ]
+
+
+async def test_a_ledger_citing_missing_or_different_runs_is_flagged(client, test_user, artifacts):
+    forged = _revision()
+    forged["hypotheses"][0]["evidence"][0]["verdict"] = "positive_evidence"
+    forged["hypotheses"][0]["evidence"][1]["run_id"] = "20991231T000000000000Z-ffffff"
+    (artifacts / "k" / CAMPAIGN / "0001.json").write_text(json.dumps(forged))
+    await _login(client, test_user)
+    body = (await client.get(f"/api/research/campaigns/{CAMPAIGN}")).json()
+    problems = body["knowledge_check"]["problems"]
+    assert any("differs from its record" in p for p in problems)
+    assert any("does not exist" in p for p in problems)
+    assert body["knowledge_check"]["uncited_runs"] == [f"H1: {CAND}/{NEW_RUN}"]
+    overview = (await client.get("/api/research/overview")).json()
+    assert overview["campaigns"][0]["ledger_problems"] == 2
+
+
+async def test_a_malformed_or_misplaced_ledger_revision_is_reported(client, test_user, artifacts):
+    ledger = artifacts / "k" / CAMPAIGN
+    (ledger / "0001.json").write_text("{broken")
+    (ledger / "0002.json").write_text(json.dumps(_revision(revision=7)))
+    await _login(client, test_user)
+    body = (await client.get(f"/api/research/campaigns/{CAMPAIGN}")).json()
+    assert body["knowledge_revisions"] == [] and body["knowledge_check"] is None
+    problems = {i["artifact"]: i["problem"] for i in body["issues"]}
+    assert problems[f"{CAMPAIGN}/0001.json"].startswith("unreadable")
+    assert problems[f"{CAMPAIGN}/0002.json"] == "revision ids differ from its file"
+    overview = (await client.get("/api/research/overview")).json()
+    assert overview["knowledge"]["hypotheses_without_ledger"] == 1

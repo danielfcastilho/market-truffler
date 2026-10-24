@@ -1,9 +1,11 @@
-"""OINK CORP Research Explorer: read-only views of campaigns, experiments
-and their immutable run records (see `app.services.research_artifacts`).
+"""OINK CORP Research Explorer: read-only views of campaigns, hypotheses and
+their knowledge, experiments, and the immutable run records behind them
+(see `app.services.research_artifacts`).
 
-Every number and verdict comes from a recorded artifact; this router only
-gathers and relates them. Nothing here runs research, reads datasets, or
-writes files.
+Every verdict comes from a run record and every knowledge status from a
+knowledge ledger revision (written and verified by
+`app.scripts.knowledge_ledger`); this router only gathers and relates them.
+Nothing here runs research, derives knowledge, reads datasets, or writes.
 """
 
 from collections import Counter
@@ -18,21 +20,25 @@ from app.schemas.research_explorer import (
     CampaignDetail,
     CampaignSummary,
     ExperimentDetail,
-    RecentRun,
+    HypothesisSummary,
+    KnowledgeCounts,
     ResearchCounts,
+    ResearchHistory,
     ResearchOverview,
+    RunSummary,
 )
 from app.services.research_artifacts import (
     VERDICTS,
     InvalidIdentifier,
     ResearchArtifacts,
+    check_ledger,
     latest_per_segment,
     verdict_of,
 )
 
 router = APIRouter(prefix="/api/research", tags=["research"])
 
-RECENT_RUNS = 15
+OVERVIEW_EVENTS = 8
 
 
 def _artifacts() -> ResearchArtifacts:
@@ -41,6 +47,7 @@ def _artifacts() -> ResearchArtifacts:
         campaigns_dir=Path(settings.research_campaigns_dir),
         experiments_dir=Path(settings.research_experiments_dir),
         data_dir=Path(settings.research_data_dir),
+        knowledge_dir=Path(settings.research_knowledge_dir),
     )
 
 
@@ -69,8 +76,117 @@ def _campaign_experiments(campaign: dict[str, Any]) -> dict[str, list[str]]:
     return roles
 
 
-def _latest_activity(records: list[dict[str, Any]]) -> str | None:
-    return str(records[0]["executed_at"]) if records else None
+def _campaign_of(campaigns: list[dict[str, Any]]) -> dict[str, str]:
+    """experiment or comparison id -> the (first) campaign it belongs to."""
+    owner: dict[str, str] = {}
+    for campaign in campaigns:
+        for experiment_id in _campaign_experiments(campaign):
+            owner.setdefault(experiment_id, campaign["campaign_id"])
+        for c in campaign.get("comparisons", []):
+            owner.setdefault(c.get("comparison_id"), campaign["campaign_id"])
+    return owner
+
+
+def _run_summary(
+    record: dict[str, Any], owner: dict[str, str], specs: dict[str, dict[str, Any] | None]
+) -> RunSummary:
+    run_id = str(record.get("experiment_id"))
+    is_comparison = record.get("kind") == "incremental_comparison"
+    subject = (record.get("candidate") or {}).get("experiment_id") if is_comparison else run_id
+    spec = specs.get(subject) if subject else None
+    return RunSummary(
+        experiment_id=run_id,
+        run_id=str(record.get("run_id")),
+        kind="incremental_comparison" if is_comparison else "experiment",
+        campaign_id=record.get("campaign_id") or owner.get(run_id),
+        direction=(spec or {}).get("hypothesis", {}).get("direction"),
+        segment=record.get("segment"),
+        status=str(record.get("status")),
+        verdict=verdict_of(record),
+        executed_at=record.get("executed_at"),
+        link_experiment_id=subject,
+    )
+
+
+def _events(
+    campaigns: list[dict[str, Any]],
+    records: list[dict[str, Any]],
+    ledgers: dict[str, list[dict[str, Any]]],
+    owner: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Research activity supported by artifacts, newest first: campaign
+    registrations (their registered date), evaluations (runs grouped by
+    campaign — or standalone experiment — and UTC day, with repeats of an
+    already-run experiment and segment counted separately), and knowledge
+    ledger revisions with the status changes they recorded."""
+    events: list[dict[str, Any]] = [
+        {
+            "type": "campaign_registered",
+            "at": str(c.get("created")),
+            "campaign_id": c["campaign_id"],
+            "title": c.get("question", ""),
+        }
+        for c in campaigns
+    ]
+    seen: set[tuple[str, str]] = set()
+    groups: dict[tuple[str, str], dict[str, Any]] = {}
+    for record in sorted(records, key=lambda r: str(r.get("executed_at", ""))):
+        experiment_id = str(record.get("experiment_id"))
+        campaign_id = record.get("campaign_id") or owner.get(experiment_id)
+        day = str(record.get("executed_at", ""))[:10]
+        group = groups.setdefault(
+            (campaign_id or f"experiment:{experiment_id}", day),
+            {
+                "type": "evaluation",
+                "campaign_id": campaign_id,
+                "experiment_ids": set(),
+                "runs": 0,
+                "repeat_runs": 0,
+                "failed_runs": 0,
+                "segments": set(),
+                "verdicts": Counter(),
+            },
+        )
+        key = (experiment_id, str(record.get("segment")))
+        group["repeat_runs"] += key in seen
+        seen.add(key)
+        group["at"] = str(record.get("executed_at"))
+        group["runs"] += 1
+        group["experiment_ids"].add(experiment_id)
+        group["segments"].add(str(record.get("segment")))
+        verdict = verdict_of(record)
+        if verdict:
+            group["verdicts"][verdict] += 1
+        else:
+            group["failed_runs"] += 1
+    for group in groups.values():
+        group["experiment_ids"] = sorted(group["experiment_ids"])
+        group["segments"] = sorted(group["segments"])
+        group["verdicts"] = dict(group["verdicts"])
+        events.append(group)
+    for campaign_id, revisions in ledgers.items():
+        previous: dict[str, str] = {}
+        for revision in revisions:
+            statuses = {
+                h.get("hypothesis_id"): h.get("knowledge_status")
+                for h in revision.get("hypotheses", [])
+            }
+            events.append(
+                {
+                    "type": "knowledge_revision",
+                    "at": str(revision.get("derived_at")),
+                    "campaign_id": campaign_id,
+                    "revision": revision.get("revision"),
+                    "changes": [
+                        {"hypothesis_id": h, "from": previous.get(h), "to": s}
+                        for h, s in statuses.items()
+                        if previous.get(h) != s
+                    ],
+                }
+            )
+            previous = statuses
+    events.sort(key=lambda e: e["at"], reverse=True)
+    return events
 
 
 @router.get("/overview", response_model=ResearchOverview)
@@ -81,19 +197,10 @@ async def research_overview(current_user: CurrentUserDep) -> ResearchOverview:
     records = artifacts.runs()
     by_id = _runs_by_id(records)
     specs = {i: artifacts.spec(i) for i in experiment_ids}
+    owner = _campaign_of(campaigns)
+    ledgers = {c["campaign_id"]: artifacts.ledger_revisions(c["campaign_id"]) for c in campaigns}
 
-    comparison_ids = {
-        c.get("comparison_id"): campaign["campaign_id"]
-        for campaign in campaigns
-        for c in campaign.get("comparisons", [])
-    }
-    campaign_of_experiment: dict[str, str] = {}
-    for campaign in campaigns:
-        for experiment_id in _campaign_experiments(campaign):
-            campaign_of_experiment.setdefault(experiment_id, campaign["campaign_id"])
-
-    # One verdict per experiment/comparison and segment — the latest run —
-    # so repeated runs never count as more evidence.
+    # One verdict per experiment/comparison and segment — the latest run.
     verdicts: dict[str, Counter[str]] = {"development": Counter(), "validation": Counter()}
     for runs in by_id.values():
         for segment, record in latest_per_segment(runs).items():
@@ -101,64 +208,57 @@ async def research_overview(current_user: CurrentUserDep) -> ResearchOverview:
             if verdict and segment in verdicts:
                 verdicts[segment][verdict] += 1
 
+    statuses: Counter[str] = Counter()
+    without_ledger = 0
     summaries = []
     for campaign in campaigns:
-        primary = [by_id.get(c.get("comparison_id"), []) for c in campaign.get("comparisons", [])]
-        primary_verdicts: Counter[str] = Counter()
-        validated = 0
-        for runs in primary:
-            latest = latest_per_segment(runs)
-            verdict = verdict_of(latest["development"]) if "development" in latest else None
-            if verdict:
-                primary_verdicts[verdict] += 1
-            validated += "validation" in latest
-        involved = [
-            r
-            for i in [
-                *_campaign_experiments(campaign),
-                *[c.get("comparison_id") for c in campaign.get("comparisons", [])],
-            ]
-            for r in by_id.get(i, [])
-        ]
-        involved.sort(key=lambda r: str(r.get("executed_at", "")), reverse=True)
+        latest = ledgers[campaign["campaign_id"]][-1] if ledgers[campaign["campaign_id"]] else None
+        entries = {h.get("hypothesis_id"): h for h in (latest or {}).get("hypotheses", [])}
+        hypotheses = []
+        for h in campaign.get("hypotheses", []):
+            entry = entries.get(h.get("id"))
+            spec = specs.get(h.get("experiment_id")) or {}
+            if entry:
+                statuses[str(entry.get("knowledge_status"))] += 1
+            else:
+                without_ledger += 1
+            hypotheses.append(
+                HypothesisSummary(
+                    hypothesis_id=h.get("id"),
+                    experiment_id=h.get("experiment_id"),
+                    direction=spec.get("hypothesis", {}).get("direction"),
+                    conditions=spec.get("hypothesis", {}).get("conditions", []),
+                    knowledge_status=entry.get("knowledge_status") if entry else None,
+                    validation_status=entry.get("validation_status") if entry else None,
+                )
+            )
+        involved = sorted(
+            (
+                r
+                for r in records
+                if owner.get(str(r.get("experiment_id"))) == campaign["campaign_id"]
+            ),
+            key=lambda r: str(r.get("executed_at", "")),
+            reverse=True,
+        )
         summaries.append(
             CampaignSummary(
                 campaign_id=campaign["campaign_id"],
                 created=campaign.get("created"),
                 question=campaign.get("question", ""),
-                hypotheses=len(campaign.get("hypotheses", [])),
-                experiments=len(_campaign_experiments(campaign)),
+                hypotheses=hypotheses,
                 comparisons=len(campaign.get("comparisons", [])),
-                comparisons_executed=sum(1 for runs in primary if runs),
-                comparisons_validated=validated,
-                development_verdicts={v: primary_verdicts[v] for v in VERDICTS},
-                latest_activity=_latest_activity(involved),
+                comparisons_executed=sum(
+                    1 for c in campaign.get("comparisons", []) if by_id.get(c.get("comparison_id"))
+                ),
+                ledger_revision=latest.get("revision") if latest else None,
+                ledger_derived_at=latest.get("derived_at") if latest else None,
+                ledger_problems=len(check_ledger(latest, records)["problems"]) if latest else 0,
+                latest_activity=str(involved[0]["executed_at"]) if involved else None,
             )
         )
 
-    recent = []
-    for record in records[:RECENT_RUNS]:
-        run_id = str(record.get("experiment_id"))
-        is_comparison = record.get("kind") == "incremental_comparison"
-        subject = (record.get("candidate") or {}).get("experiment_id") if is_comparison else run_id
-        spec = specs.get(subject) if subject else None
-        recent.append(
-            RecentRun(
-                experiment_id=run_id,
-                run_id=str(record.get("run_id")),
-                kind="incremental_comparison" if is_comparison else "experiment",
-                campaign_id=record.get("campaign_id")
-                or comparison_ids.get(run_id)
-                or campaign_of_experiment.get(run_id),
-                direction=(spec or {}).get("hypothesis", {}).get("direction"),
-                segment=record.get("segment"),
-                status=str(record.get("status")),
-                verdict=verdict_of(record),
-                executed_at=record.get("executed_at"),
-                link_experiment_id=subject,
-            )
-        )
-
+    comparison_ids = [c.get("comparison_id") for c in campaigns for c in c.get("comparisons", [])]
     executed = {
         str(r.get("experiment_id")) for r in records if r.get("kind") != "incremental_comparison"
     }
@@ -174,8 +274,26 @@ async def research_overview(current_user: CurrentUserDep) -> ResearchOverview:
             runs_failed=sum(1 for r in records if r.get("status") != "completed"),
             latest_verdicts={s: {v: c[v] for v in VERDICTS} for s, c in verdicts.items()},
         ),
+        knowledge=KnowledgeCounts(
+            by_status=dict(statuses), hypotheses_without_ledger=without_ledger
+        ),
         campaigns=summaries,
-        recent_runs=recent,
+        activity=_events(campaigns, records, ledgers, owner)[:OVERVIEW_EVENTS],
+        issues=artifacts.issues,
+    )
+
+
+@router.get("/history", response_model=ResearchHistory)
+async def research_history(current_user: CurrentUserDep) -> ResearchHistory:
+    artifacts = _artifacts()
+    campaigns = artifacts.campaigns()
+    records = artifacts.runs()
+    owner = _campaign_of(campaigns)
+    specs = {i: artifacts.spec(i) for i in artifacts.experiment_ids()}
+    ledgers = {c["campaign_id"]: artifacts.ledger_revisions(c["campaign_id"]) for c in campaigns}
+    return ResearchHistory(
+        events=_events(campaigns, records, ledgers, owner),
+        runs=[_run_summary(r, owner, specs) for r in records],
         issues=artifacts.issues,
     )
 
@@ -190,9 +308,11 @@ async def research_campaign(campaign_id: str, current_user: CurrentUserDep) -> C
         roles = _campaign_experiments(campaign)
         specs = {i: artifacts.spec(i) for i in roles if i}
         report = artifacts.report_sections(campaign_id)
+        revisions = artifacts.ledger_revisions(campaign_id)
     except InvalidIdentifier as exc:
         raise _not_found("campaign") from exc
-    by_id = _runs_by_id(artifacts.runs())
+    records = artifacts.runs()
+    by_id = _runs_by_id(records)
     comparison_runs = {
         c["comparison_id"]: by_id.get(c["comparison_id"], [])
         for c in campaign.get("comparisons", [])
@@ -212,6 +332,8 @@ async def research_campaign(campaign_id: str, current_user: CurrentUserDep) -> C
         comparison_runs=comparison_runs,
         campaign_hashes=hashes,
         report=report,
+        knowledge_revisions=revisions,
+        knowledge_check=check_ledger(revisions[-1], records) if revisions else None,
         issues=artifacts.issues,
     )
 
@@ -230,10 +352,23 @@ async def research_experiment(experiment_id: str, current_user: CurrentUserDep) 
 
     campaigns = []
     comparisons = []
+    knowledge = []
     for campaign in artifacts.campaigns():
         roles = _campaign_experiments(campaign).get(experiment_id)
         if roles:
             campaigns.append({"campaign_id": campaign["campaign_id"], "roles": roles})
+        revisions = artifacts.ledger_revisions(campaign["campaign_id"]) if roles else []
+        for entry in revisions[-1].get("hypotheses", []) if revisions else []:
+            if entry.get("experiment_id") == experiment_id:
+                knowledge.append(
+                    {
+                        "campaign_id": campaign["campaign_id"],
+                        "revision": revisions[-1].get("revision"),
+                        "hypothesis_id": entry.get("hypothesis_id"),
+                        "knowledge_status": entry.get("knowledge_status"),
+                        "validation_status": entry.get("validation_status"),
+                    }
+                )
         for c in campaign.get("comparisons", []):
             if experiment_id in (c.get("candidate"), c.get("reference")):
                 comparisons.append(
@@ -248,6 +383,7 @@ async def research_experiment(experiment_id: str, current_user: CurrentUserDep) 
         experiment_id=experiment_id,
         spec=spec,
         campaigns=campaigns,
+        knowledge=knowledge,
         runs=by_id.get(experiment_id, []),
         comparisons=comparisons,
         issues=artifacts.issues,

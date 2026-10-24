@@ -1,6 +1,8 @@
 import type {
   CampaignDetail,
   Condition,
+  LedgerRevision,
+  ResearchHistory,
   ExperimentDetail,
   ExperimentSpec,
   ResearchOverview,
@@ -113,6 +115,61 @@ export const POSITIVE_RUN: RunRecord = {
   },
 };
 
+export const LEDGER: LedgerRevision = {
+  ledger_schema_version: 1,
+  knowledge_rules_version: 1,
+  campaign_id: CAMPAIGN,
+  campaign_hash: "c".repeat(64),
+  scope: "feature_level",
+  scope_note: "Feature-level knowledge only.",
+  revision: 1,
+  previous_revision_hash: null,
+  derived_at: "2026-10-24T17:57:37+00:00",
+  content_hash: "e".repeat(64),
+  hypotheses: [
+    {
+      hypothesis_id: "H1",
+      statement: "Declines with falling OI recover more.",
+      prediction: "Positive incremental spread versus the price-only Long baseline.",
+      prediction_sign: "positive",
+      direction: "long",
+      experiment_id: CAND,
+      primary_evidence_ids: [CMP],
+      knowledge_status: "insufficient_evidence",
+      validation_status: "not_validated",
+      evidence: [
+        {
+          experiment_id: CMP,
+          run_id: COMPARISON_RUN.run_id,
+          role: "primary",
+          segment: "development",
+          verdict: "insufficient_data",
+          independent: null,
+          protocol: "comparison-v1",
+          spec_hash: "f".repeat(64),
+          dataset_sha256: ["4f74a041".padEnd(64, "0")],
+          executed_at: "2026-10-24T16:49:38+00:00",
+          current: true,
+        },
+        {
+          experiment_id: CMP,
+          run_id: "20261024T100000000000Z-aaaaaa",
+          role: "primary",
+          segment: "development",
+          verdict: "insufficient_data",
+          independent: null,
+          protocol: "comparison-v1",
+          current: false,
+        },
+      ],
+      limitations: [
+        "development: 1 qualifying days in segment (< 10)",
+        "No validation run: nothing is independently confirmed.",
+      ],
+    },
+  ],
+};
+
 export const CAMPAIGN_DETAIL: CampaignDetail = {
   campaign: {
     campaign_id: CAMPAIGN,
@@ -144,29 +201,42 @@ export const CAMPAIGN_DETAIL: CampaignDetail = {
     { title: "Conclusion", body: "**We learned nothing about the hypotheses yet.**\n\n- more days needed" },
     { title: "Knowledge status", body: "| H | Status |\n|---|---|\n| H1 | tested — insufficient data |" },
   ],
+  knowledge_revisions: [LEDGER],
+  knowledge_check: { problems: [], uncited_runs: [] },
   issues: [],
 };
 
 export const EXPERIMENT_DETAIL: ExperimentDetail = {
-  experiment_id: BASE,
-  spec: spec(BASE),
-  campaigns: [{ campaign_id: CAMPAIGN, roles: ["baseline price-only-long", `reference in ${CMP}`] }],
-  runs: [INSUFFICIENT_RUN],
+  experiment_id: CAND,
+  spec: spec(CAND, [DOWN, OI_DOWN]),
+  campaigns: [{ campaign_id: CAMPAIGN, roles: ["hypothesis H1", `candidate in ${CMP}`] }],
+  knowledge: [
+    {
+      campaign_id: CAMPAIGN,
+      revision: 1,
+      hypothesis_id: "H1",
+      knowledge_status: "insufficient_evidence",
+      validation_status: "not_validated",
+    },
+  ],
+  runs: [{ ...INSUFFICIENT_RUN, experiment_id: CAND }],
   comparisons: [
     {
       campaign_id: CAMPAIGN,
       comparison: { comparison_id: CMP, hypothesis: "H1", candidate: CAND, reference: BASE },
-      role: "reference",
+      role: "candidate",
       runs: [COMPARISON_RUN],
     },
   ],
   issues: [],
 };
 
+const SHORT_UP = { feature: "return_1h", transform: "cs_percentile", op: ">=", value: 0.8 } as const;
+
 export const OVERVIEW: ResearchOverview = {
   counts: {
     campaigns: 1,
-    hypotheses: 4,
+    hypotheses: 2,
     experiments_registered: 7,
     experiments_executed: 7,
     comparisons_registered: 4,
@@ -178,21 +248,76 @@ export const OVERVIEW: ResearchOverview = {
       validation: { positive_evidence: 0, negative_evidence: 0, inconclusive: 0, insufficient_data: 1 },
     },
   },
+  knowledge: { by_status: { insufficient_evidence: 2 }, hypotheses_without_ledger: 0 },
   campaigns: [
     {
       campaign_id: CAMPAIGN,
       created: "2026-10-24",
       question: "Does Open Interest add information beyond price?",
-      hypotheses: 4,
-      experiments: 6,
+      hypotheses: [
+        {
+          hypothesis_id: "H1",
+          experiment_id: CAND,
+          direction: "long",
+          conditions: [DOWN, OI_DOWN],
+          knowledge_status: "insufficient_evidence",
+          validation_status: "not_validated",
+        },
+        {
+          hypothesis_id: "H3",
+          experiment_id: "short-v1",
+          direction: "short",
+          conditions: [SHORT_UP, OI_DOWN],
+          knowledge_status: "insufficient_evidence",
+          validation_status: "not_validated",
+        },
+      ],
       comparisons: 4,
       comparisons_executed: 4,
-      comparisons_validated: 0,
-      development_verdicts: { positive_evidence: 0, negative_evidence: 0, inconclusive: 0, insufficient_data: 4 },
+      ledger_revision: 1,
+      ledger_derived_at: "2026-10-24T17:57:37+00:00",
+      ledger_problems: 0,
       latest_activity: "2026-10-24T16:49:38+00:00",
     },
   ],
-  recent_runs: [
+  activity: [
+    {
+      type: "knowledge_revision",
+      at: "2026-10-24T17:57:37+00:00",
+      campaign_id: CAMPAIGN,
+      revision: 1,
+      changes: [{ hypothesis_id: "H1", from: null, to: "insufficient_evidence" }],
+    },
+    {
+      type: "evaluation",
+      at: "2026-10-24T16:49:38+00:00",
+      campaign_id: CAMPAIGN,
+      experiment_ids: [CAND, CMP],
+      runs: 10,
+      repeat_runs: 0,
+      failed_runs: 0,
+      segments: ["development"],
+      verdicts: { insufficient_data: 10 },
+    },
+    {
+      type: "evaluation",
+      at: "2026-10-12T20:16:46+00:00",
+      campaign_id: null,
+      experiment_ids: ["reversal-v1"],
+      runs: 3,
+      repeat_runs: 1,
+      failed_runs: 0,
+      segments: ["development", "validation"],
+      verdicts: { insufficient_data: 3 },
+    },
+    { type: "campaign_registered", at: "2026-10-24", campaign_id: CAMPAIGN, title: "Does OI add information?" },
+  ],
+  issues: [],
+};
+
+export const HISTORY: ResearchHistory = {
+  events: OVERVIEW.activity,
+  runs: [
     {
       experiment_id: CMP,
       run_id: COMPARISON_RUN.run_id,

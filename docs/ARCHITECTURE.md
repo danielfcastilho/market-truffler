@@ -1502,6 +1502,103 @@ First campaign: `oi-incremental-price-1h-v1`, on whether 1h Open Interest
 change adds information beyond the 1h price move. All runs are
 `insufficient_data`, with 1 qualifying day.
 
+### OINK CORP: knowledge ledger
+
+Hypotheses, evidence and knowledge are three different things, kept apart:
+
+```
+hypothesis (campaign, pre-registered)
+   → experiment / comparison (spec)
+   → immutable run (data/runs/…)
+   → verdict (Evaluator v1 / comparison protocol v1)
+   → knowledge (ledger revision)          ← derived, never asserted
+   → Research Explorer
+```
+
+`app.research.knowledge` derives, per campaign hypothesis, the **knowledge
+status** its evidence currently justifies. The Evaluator's *verdicts*
+describe one run; the *knowledge status* describes a hypothesis.
+
+**Evidence.**
+- A hypothesis is judged on its registered comparison(s) (primary). Its own
+  experiment-vs-universe runs are listed as context only.
+- Per evidence id and segment, only the latest run is *current*. Repeated
+  runs of a spec read the same hash-pinned datasets, so they are repeats,
+  never replications. They must also agree under the same protocol, or
+  derivation refuses.
+
+**Statuses** (knowledge rules v1), always the weakest the evidence justifies:
+- untested
+- insufficient_evidence
+- inconclusive
+- preliminary_support / preliminary_contradiction / preliminary_difference
+  (development only)
+- independently_supported / independently_contradicted /
+  independently_observed_difference: development **and** an *independent*
+  validation run (`validation_reuse.independent`) directional with the same
+  sign
+- conflicting_evidence: opposite signs
+
+The rules:
+- **Reused validation never upgrades a status.**
+- **Unsigned predictions never earn "support".** Campaign v1 predictions are
+  text, and only the registered forms "Positive…", "Negative…" and "No
+  direction assumed" carry a sign. Anything else counts as unsigned and can
+  only show a *difference*.
+
+**Storage.** `research/oink_corp/knowledge/<campaign_id>/NNNN.json`
+(committed, like campaigns) holds immutable, hash-chained revisions:
+- each stores its campaign hash, the rules version, the evidence it cites
+  (run references: segment, verdict, protocol, spec hash, dataset hashes)
+  and per-hypothesis limitations;
+- `content_hash` plus `previous_revision_hash` form the chain.
+
+`python -m app.scripts.knowledge_ledger --derive --campaign …` appends a
+revision only when the derived knowledge changed, and only after verifying
+it. `--verify` checks every revision, rejecting it unless:
+- the campaign hash matches the campaign and its specs;
+- the hypotheses and predictions match the registration;
+- every cited run exists, with the same segment, verdict, protocol, spec and
+  dataset hashes;
+- comparison runs carry the campaign hash;
+- the chain is intact;
+- re-deriving statuses from exactly the cited runs reproduces them.
+
+So no process (including a future autonomous Researcher) can write "supported"
+without the immutable evidence for it. Newer uncited runs make a revision
+*stale*, not wrong.
+
+History is the revision chain; states before the first revision are not
+reconstructed.
+
+**Feature-level vs model-level knowledge.**
+- **Feature-level:** every status above is a feature-level claim, i.e.
+  whether a registered market condition separated subsequent outcomes in
+  these samples. Ledgers record `scope: "feature_level"`, and verification
+  rejects anything else.
+- **Model-level:** whether a Long (or Short) *ranking model* that uses a
+  feature ranks unseen periods better is a different claim. It needs its own
+  evaluation of ranking quality: top-ranked outcomes, discrimination, and
+  stability across regimes and independent periods, against the current
+  Champion.
+- **Neither implies the other:** a feature can carry information without
+  improving a model, and a weak feature can help through interactions.
+- **Not built yet:** no model registry or model-level schema exists; Long and
+  Short models are to be developed and judged independently.
+
+The Research Explorer (`/oink-corp`) is hypothesis-first:
+- **Overview:** knowledge counts (no "established findings" metric, since
+  nothing qualifies without independent validation), each campaign's Long
+  and Short hypotheses with their status, and artifact-backed activity.
+  Repeated runs are labelled as repeats.
+- **Campaign:** per-hypothesis cards showing claim, registered prediction,
+  status, cited evidence, validation and limitations; then results, the
+  report's conclusion, knowledge history and provenance.
+- **History (`/oink-corp/history`):** every event and every immutable run.
+- **Consistency:** the API cross-checks each served revision's cited runs
+  against the run records and flags mismatches and newer uncited runs. Full
+  verification is the CLI's job.
+
 ### OINK CORP: future design
 
 **Everything in this section is design intent, not implemented code.** The

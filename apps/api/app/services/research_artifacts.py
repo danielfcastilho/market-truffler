@@ -1,7 +1,8 @@
 """Read-only access to OINK CORP's committed research artifacts for the
 Research Explorer: campaign files (`<campaigns>/<id>.json` and their
-`<id>.report.md`), experiment specs (`<experiments>/<id>.json`) and the
-immutable run records (`<data>/runs/<id>/<run_id>/result.json`).
+`<id>.report.md`), experiment specs (`<experiments>/<id>.json`), knowledge
+ledger revisions (`<knowledge>/<campaign_id>/NNNN.json`) and the immutable
+run records (`<data>/runs/<id>/<run_id>/result.json`).
 
 Plain JSON and text only — it never imports `app.research` (see
 `tests/test_architecture_boundaries.py`), never reads a dataset, never
@@ -36,6 +37,7 @@ class ResearchArtifacts:
     campaigns_dir: Path
     experiments_dir: Path
     data_dir: Path
+    knowledge_dir: Path | None = None
     issues: list[dict[str, str]] = field(default_factory=list)
 
     # -- safe paths --------------------------------------------------------------------------
@@ -61,7 +63,8 @@ class ResearchArtifacts:
 
     def _label(self, path: Path) -> str:
         """A path relative to its artifact directory — never an absolute path."""
-        for base in (self.campaigns_dir, self.experiments_dir, self.data_dir):
+        bases = (self.campaigns_dir, self.experiments_dir, self.data_dir, self.knowledge_dir)
+        for base in (b for b in bases if b is not None):
             try:
                 return str(path.resolve().relative_to(base.resolve()))
             except ValueError:
@@ -164,6 +167,31 @@ class ResearchArtifacts:
         records.sort(key=lambda r: str(r.get("executed_at", "")), reverse=True)
         return records
 
+    def ledger_revisions(self, campaign_id: str) -> list[dict[str, Any]]:
+        """A campaign's knowledge ledger revisions, oldest first (written and
+        fully verified by `app.scripts.knowledge_ledger`)."""
+        if not SLUG.match(campaign_id):
+            raise InvalidIdentifier(campaign_id)
+        if self.knowledge_dir is None:
+            return []
+        directory = self._inside(self.knowledge_dir, campaign_id)
+        if not directory.is_dir():
+            return []
+        revisions = []
+        for path in sorted(directory.glob("[0-9][0-9][0-9][0-9].json")):
+            revision = self._read_json(path)
+            if revision is None:
+                continue
+            if revision.get("campaign_id") != campaign_id or revision.get("revision") != int(
+                path.stem
+            ):
+                self.issues.append(
+                    {"artifact": self._label(path), "problem": "revision ids differ from its file"}
+                )
+                continue
+            revisions.append(revision)
+        return revisions
+
     def run(self, experiment_id: str, run_id: str) -> dict[str, Any] | None:
         if not SLUG.match(experiment_id) or not RUN_ID.match(run_id):
             raise InvalidIdentifier(f"{experiment_id}/{run_id}")
@@ -185,3 +213,35 @@ def latest_per_segment(records: list[dict[str, Any]]) -> dict[str, dict[str, Any
     for record in records:
         latest.setdefault(str(record.get("segment")), record)
     return latest
+
+
+def check_ledger(revision: dict[str, Any], records: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """A light consistency check of a ledger revision against the run
+    records it cites (does each run exist with the cited segment and
+    verdict?) plus runs of its evidence ids it does not cite yet. The full
+    verification — hashes, chain, re-derived statuses — is
+    `python -m app.scripts.knowledge_ledger --verify`."""
+    by_key = {(r.get("experiment_id"), r.get("run_id")): r for r in records}
+    problems: list[str] = []
+    uncited: list[str] = []
+    for entry in revision.get("hypotheses", []):
+        hid = entry.get("hypothesis_id")
+        cited = set()
+        for reference in entry.get("evidence", []):
+            key = (reference.get("experiment_id"), reference.get("run_id"))
+            cited.add(key)
+            record = by_key.get(key)
+            if record is None:
+                problems.append(f"{hid}: cited run {key[0]}/{key[1]} does not exist")
+            elif reference.get("segment") != record.get("segment") or reference.get("verdict") != (
+                record.get("report") or {}
+            ).get("verdict"):
+                problems.append(f"{hid}: cited run {key[1]} differs from its record")
+        evidence_ids = {e.get("experiment_id") for e in entry.get("evidence", [])}
+        evidence_ids.update(entry.get("primary_evidence_ids", []))
+        evidence_ids.add(entry.get("experiment_id"))
+        for record in records:
+            key = (record.get("experiment_id"), record.get("run_id"))
+            if key[0] in evidence_ids and record.get("status") == "completed" and key not in cited:
+                uncited.append(f"{hid}: {key[0]}/{key[1]}")
+    return {"problems": problems, "uncited_runs": uncited}

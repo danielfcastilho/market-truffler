@@ -98,6 +98,108 @@ export interface ArtifactIssue {
   problem: string;
 }
 
+export type KnowledgeStatus =
+  | "untested"
+  | "insufficient_evidence"
+  | "inconclusive"
+  | "preliminary_support"
+  | "preliminary_contradiction"
+  | "preliminary_difference"
+  | "independently_supported"
+  | "independently_contradicted"
+  | "independently_observed_difference"
+  | "conflicting_evidence";
+
+export type ValidationStatus =
+  | "not_validated"
+  | "validation_not_independent"
+  | "independently_validated";
+
+export interface EvidenceReference {
+  experiment_id: string;
+  run_id: string;
+  role: "primary" | "context";
+  segment: string;
+  verdict: Verdict;
+  independent?: boolean | null;
+  protocol: string;
+  spec_hash?: string;
+  dataset_sha256?: string[];
+  executed_at?: string;
+  current: boolean;
+}
+
+export interface LedgerHypothesis {
+  hypothesis_id: string;
+  statement: string;
+  prediction: string;
+  prediction_sign: "positive" | "negative" | "none" | "unspecified";
+  direction: Direction;
+  experiment_id: string;
+  primary_evidence_ids: string[];
+  knowledge_status: KnowledgeStatus;
+  validation_status: ValidationStatus;
+  evidence: EvidenceReference[];
+  limitations: string[];
+}
+
+export interface LedgerRevision {
+  ledger_schema_version: number;
+  knowledge_rules_version: number;
+  campaign_id: string;
+  campaign_hash: string;
+  scope: string;
+  scope_note?: string;
+  revision: number;
+  previous_revision_hash: string | null;
+  derived_at: string;
+  content_hash: string;
+  hypotheses: LedgerHypothesis[];
+}
+
+export interface HypothesisSummary {
+  hypothesis_id: string;
+  experiment_id: string;
+  direction: Direction | null;
+  conditions: Condition[];
+  knowledge_status: KnowledgeStatus | null;
+  validation_status: ValidationStatus | null;
+}
+
+export type ResearchEvent =
+  | { type: "campaign_registered"; at: string; campaign_id: string; title: string }
+  | {
+      type: "evaluation";
+      at: string;
+      campaign_id: string | null;
+      experiment_ids: string[];
+      runs: number;
+      repeat_runs: number;
+      failed_runs: number;
+      segments: string[];
+      verdicts: Partial<Record<Verdict, number>>;
+    }
+  | {
+      type: "knowledge_revision";
+      at: string;
+      campaign_id: string;
+      revision: number;
+      changes: { hypothesis_id: string; from: KnowledgeStatus | null; to: KnowledgeStatus }[];
+    };
+
+export interface RunSummary {
+  experiment_id: string;
+  run_id: string;
+  kind: "experiment" | "incremental_comparison";
+  campaign_id: string | null;
+  direction: Direction | null;
+  segment: string | null;
+  status: string;
+  verdict: Verdict | null;
+  executed_at: string | null;
+  link_experiment_id: string | null;
+}
+
 export interface ResearchOverview {
   counts: {
     campaigns: number;
@@ -110,30 +212,29 @@ export interface ResearchOverview {
     runs_failed: number;
     latest_verdicts: Record<string, Record<Verdict, number>>;
   };
+  knowledge: {
+    by_status: Partial<Record<KnowledgeStatus, number>>;
+    hypotheses_without_ledger: number;
+  };
   campaigns: {
     campaign_id: string;
     created: string | null;
     question: string;
-    hypotheses: number;
-    experiments: number;
+    hypotheses: HypothesisSummary[];
     comparisons: number;
     comparisons_executed: number;
-    comparisons_validated: number;
-    development_verdicts: Record<Verdict, number>;
+    ledger_revision: number | null;
+    ledger_derived_at: string | null;
+    ledger_problems: number;
     latest_activity: string | null;
   }[];
-  recent_runs: {
-    experiment_id: string;
-    run_id: string;
-    kind: "experiment" | "incremental_comparison";
-    campaign_id: string | null;
-    direction: Direction | null;
-    segment: string | null;
-    status: string;
-    verdict: Verdict | null;
-    executed_at: string | null;
-    link_experiment_id: string | null;
-  }[];
+  activity: ResearchEvent[];
+  issues: ArtifactIssue[];
+}
+
+export interface ResearchHistory {
+  events: ResearchEvent[];
+  runs: RunSummary[];
   issues: ArtifactIssue[];
 }
 
@@ -144,6 +245,8 @@ export interface CampaignDetail {
   comparison_runs: Record<string, RunRecord[]>;
   campaign_hashes: string[];
   report: { title: string; body: string }[] | null;
+  knowledge_revisions: LedgerRevision[];
+  knowledge_check: { problems: string[]; uncited_runs: string[] } | null;
   issues: ArtifactIssue[];
 }
 
@@ -151,6 +254,13 @@ export interface ExperimentDetail {
   experiment_id: string;
   spec: ExperimentSpec | null;
   campaigns: { campaign_id: string; roles: string[] }[];
+  knowledge: {
+    campaign_id: string;
+    revision: number;
+    hypothesis_id: string;
+    knowledge_status: KnowledgeStatus;
+    validation_status: ValidationStatus;
+  }[];
   runs: RunRecord[];
   comparisons: {
     campaign_id: string;
@@ -159,6 +269,124 @@ export interface ExperimentDetail {
     runs: RunRecord[];
   }[];
   issues: ArtifactIssue[];
+}
+
+// -- knowledge --------------------------------------------------------------------------------
+
+/**
+ * Names and meanings of the knowledge ledger's statuses (knowledge rules
+ * v1, `app.research.knowledge`). The ledger decides them; this only names
+ * them. "Established" is deliberately absent: no status here means a
+ * finding is settled, and only the independently_* ones involve validation.
+ */
+export const KNOWLEDGE_META: Record<
+  KnowledgeStatus,
+  { label: string; meaning: string; tone: "muted" | "neutral" | "preliminary" | "supported" | "against" }
+> = {
+  untested: {
+    label: "Untested",
+    meaning: "Registered, but no evaluation has completed yet.",
+    tone: "muted",
+  },
+  insufficient_evidence: {
+    label: "Insufficient evidence",
+    meaning:
+      "Evaluated, but the evidence did not meet the minimum requirements. Nothing is established in either direction.",
+    tone: "muted",
+  },
+  inconclusive: {
+    label: "Inconclusive",
+    meaning: "Enough data was evaluated, but no directional conclusion was justified.",
+    tone: "neutral",
+  },
+  preliminary_support: {
+    label: "Preliminary support",
+    meaning:
+      "Development evidence agrees with the registered prediction. Exploratory only — not independently validated.",
+    tone: "preliminary",
+  },
+  preliminary_contradiction: {
+    label: "Preliminary contradiction",
+    meaning:
+      "Development evidence disagrees with the registered prediction. Exploratory only — not independently validated.",
+    tone: "preliminary",
+  },
+  preliminary_difference: {
+    label: "Preliminary difference",
+    meaning:
+      "Outcomes differed in development, but the prediction registered no direction, so nothing is supported. Not validated.",
+    tone: "preliminary",
+  },
+  independently_supported: {
+    label: "Independently supported",
+    meaning:
+      "Development and an independent validation both agree with the registered prediction — a feature-level result in these samples, not proof a ranking model improves.",
+    tone: "supported",
+  },
+  independently_contradicted: {
+    label: "Independently contradicted",
+    meaning:
+      "Development and an independent validation both disagree with the registered prediction, in these samples.",
+    tone: "against",
+  },
+  independently_observed_difference: {
+    label: "Independently observed difference",
+    meaning:
+      "Development and an independent validation show the same directional difference; the prediction registered no direction.",
+    tone: "supported",
+  },
+  conflicting_evidence: {
+    label: "Conflicting evidence",
+    meaning: "Development and independent validation point in opposite directions.",
+    tone: "against",
+  },
+};
+
+export const VALIDATION_META: Record<ValidationStatus, string> = {
+  not_validated: "Not validated — no validation run exists",
+  validation_not_independent: "Validation run reused earlier validation days — not independent",
+  independently_validated: "Independent validation run recorded",
+};
+
+export function isKnowledgeStatus(value: unknown): value is KnowledgeStatus {
+  return typeof value === "string" && value in KNOWLEDGE_META;
+}
+
+const FAMILY: [RegExp, string][] = [
+  [/^return_/, "Price"],
+  [/^oi_change_/, "Open Interest"],
+  [/^rsi_14_/, "RSI"],
+  [/^volatility_/, "Volatility"],
+  [/^relative_volume_/, "Relative volume"],
+  [/^funding_rate_/, "Funding"],
+];
+
+/** A condition as a compact symbol: low (↓) or high (↑), or the raw rule. */
+export function conditionShort(condition: Condition): string {
+  const family = FAMILY.find(([pattern]) => pattern.test(condition.feature))?.[1] ?? condition.feature;
+  const low = condition.op === "<" || condition.op === "<=";
+  if (condition.transform === "cs_percentile") return `${family} ${low ? "↓" : "↑"}`;
+  // An arrow only stands for a sign test (against exactly 0); any other
+  // threshold is shown as written.
+  if (condition.value === 0) return `${family} ${low ? "↓" : "↑"}`;
+  return `${family} ${condition.op} ${condition.value}`;
+}
+
+/**
+ * A hypothesis' readable title from its registered conditions, e.g.
+ * "Price ↓ + Open Interest ↓ · 1h". The exact conditions are always shown
+ * next to it — the title is a label, not the definition.
+ */
+export function hypothesisTitle(conditions: Condition[]): string {
+  if (conditions.length === 0) return "No conditions";
+  const timeframes = new Set(conditions.map((c) => c.feature.match(/_(\d+[mhd])$/)?.[1] ?? "?"));
+  const suffix = timeframes.size === 1 && !timeframes.has("?") ? ` · ${[...timeframes][0]}` : "";
+  return conditions.map(conditionShort).join(" + ") + suffix;
+}
+
+export function predictionKind(sign: LedgerHypothesis["prediction_sign"]): string {
+  if (sign === "positive" || sign === "negative") return "Directional prediction";
+  return "No direction registered — only a difference can be observed";
 }
 
 // -- verdicts -----------------------------------------------------------------------------
