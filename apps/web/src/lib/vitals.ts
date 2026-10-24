@@ -29,54 +29,91 @@ function unavailableRow(label: string): VitalRow {
 }
 
 const RESEARCH_STATUS_LABEL: Record<ResearchStatus["status"], string> = {
-  ok: "OK",
+  healthy: "Healthy",
+  recovering: "Recovering",
   degraded: "Degraded",
-  down: "Worker not reporting",
-  unavailable: NOT_AVAILABLE,
+  blocked: "Blocked",
+  unknown: "Unknown",
 };
+
+const RESEARCH_ROW_LABELS = [
+  "Research continuity",
+  "Last preserved day",
+  "Missing days",
+  "Last preservation",
+  "Last failure",
+  "Backup protection",
+];
+
+function backupRow(research: ResearchStatus): VitalRow {
+  const label = "Backup protection";
+  const total = research.datasets ?? 0;
+  const unprotected = research.unprotected_datasets ?? 0;
+  switch (research.backup_status) {
+    case "protected": {
+      const checked = research.backup_checked_at
+        ? ` (${formatTimestampUtc(research.backup_checked_at)})`
+        : "";
+      return { label, value: `All ${total} verified${checked}`, status: "ok" };
+    }
+    case "failing":
+      return { label, value: `Failing: ${research.backup_error ?? "copy errors"}`, status: "down" };
+    case "unprotected":
+      return { label, value: `${total - unprotected} of ${total} protected`, status: "down" };
+    case "not_configured":
+      return { label, value: `Not configured — 0 of ${total} protected`, status: "down" };
+    default:
+      return unavailableRow(label);
+  }
+}
 
 /**
  * OINK CORP's research-data rows, from the read-only continuity report
- * (see `ResearchStatus`). Datasets without an independent backup are shown
- * as a problem ("down" styling) for as long as no backup destination is
- * configured — they are verified, but a single copy is not preserved.
+ * (see `ResearchStatus`). Health is the backend's classification —
+ * "Recovering" while recoverable days are due, never "Healthy" merely
+ * because the worker runs. Backup protection is its own row and stays a
+ * problem until an independent copy of every dataset has been verified.
  */
 export function researchRows(research: ResearchStatus | null): VitalRow[] {
-  if (research === null || research.status === "unavailable") {
-    return [
-      unavailableRow("Research data"),
-      unavailableRow("Last preserved day"),
-      unavailableRow("Failing / waiting days"),
-      unavailableRow("Unprotected datasets"),
-    ];
+  if (research === null) {
+    return RESEARCH_ROW_LABELS.map(unavailableRow);
   }
-  const unprotected = research.unprotected_datasets ?? 0;
+  const missing = research.missing_days ?? [];
   const failing = research.failing_days ?? 0;
+  const shown = missing.slice(0, 3).join(", ") + (missing.length > 3 ? ", …" : "");
+  const success = research.last_success;
+  const failure = research.last_failure;
   return [
     {
-      label: "Research data",
-      value: research.generating_day
-        ? `${RESEARCH_STATUS_LABEL[research.status]} (generating ${research.generating_day})`
-        : RESEARCH_STATUS_LABEL[research.status],
-      status: research.status === "ok" ? "ok" : "down",
+      label: "Research continuity",
+      value: `${RESEARCH_STATUS_LABEL[research.status]} — ${research.reason}`,
+      status: research.status === "healthy" || research.status === "recovering" ? "ok" : "down",
     },
     {
       label: "Last preserved day",
       value: research.last_preserved_day ?? "None yet",
-      status: research.last_preserved_day ? "ok" : "unavailable",
+      status: research.last_preserved_day ? "ok" : missing.length > 0 ? "down" : "unavailable",
     },
     {
-      label: "Failing / waiting days",
-      value: `${failing} / ${research.waiting_days ?? 0}`,
+      label: "Missing days",
+      value:
+        `${missing.length} recoverable${missing.length ? ` (${shown})` : ""}` +
+        ` · ${research.unrecoverable_days ?? 0} lost`,
       status: failing > 0 ? "down" : "ok",
     },
     {
-      label: "Unprotected datasets",
-      value: research.backup_configured
-        ? String(unprotected)
-        : `${unprotected} (no backup destination)`,
-      status: unprotected > 0 ? "down" : "ok",
+      label: "Last preservation",
+      value: success?.at ? `${success.day} at ${formatTimestampUtc(success.at)}` : "None yet",
+      status: success?.at ? "ok" : "unavailable",
     },
+    {
+      label: "Last failure",
+      value: failure?.at
+        ? `${failure.day} · ${failure.kind ?? "unclassified"} at ${formatTimestampUtc(failure.at)}`
+        : "None",
+      status: failing > 0 ? "down" : "ok",
+    },
+    backupRow(research),
   ];
 }
 

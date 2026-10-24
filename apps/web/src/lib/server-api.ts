@@ -107,18 +107,39 @@ export interface SnifferStatus {
 
 /** OINK CORP research data continuity, as last reported by the backend's
  * `research` worker (apps/api/app/routers/research.py). Read-only. */
+export interface ResearchEvent {
+  day: string | null;
+  at: string | null;
+  kind: string | null;
+  error: string | null;
+}
+
 export interface ResearchStatus {
-  status: "ok" | "degraded" | "down" | "unavailable";
+  status: "healthy" | "recovering" | "degraded" | "blocked" | "unknown";
+  reason: string;
   reported_at: string | null;
+  heartbeat_at: string | null;
   generating_day: string | null;
+  generating_since: string | null;
   last_preserved_day: string | null;
   preserved_days: number | null;
+  missing_days: string[];
   waiting_days: number | null;
+  due_days: number | null;
   failing_days: number | null;
+  blocked_days: number | null;
   collection_gaps: number | null;
+  unrecoverable_days: number | null;
   expiry_warnings: number | null;
+  last_success: ResearchEvent | null;
+  last_failure: ResearchEvent | null;
+  last_interruption: ResearchEvent | null;
+  datasets: number | null;
   unprotected_datasets: number | null;
   backup_configured: boolean;
+  backup_status: "protected" | "unprotected" | "failing" | "not_configured" | "unknown";
+  backup_checked_at: string | null;
+  backup_error: string | null;
 }
 
 export async function getResearchStatus(): Promise<ResearchStatus | null> {

@@ -273,8 +273,9 @@ the MARKET history reconciler, and "Latest market frame"/"Frame
 completeness" come from the MARKET frame synchronizer — all three have been
 running in the background since the API started; Vitals just reads their
 status, it never triggers any of them. 🐽 SNIFFER reports Sniffer's latest
-analysis, and 🧬 OINK CORP its research-data continuity (last preserved
-day, failing/waiting days, datasets not yet backed up).
+analysis, and 🧬 OINK CORP its research-data continuity (health, last
+preserved day, missing and lost days, last preservation and failure, and
+whether datasets have a verified independent backup).
 
 ## 6. Run tests
 

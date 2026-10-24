@@ -10,19 +10,25 @@
                             (YYYY-MM-DD, inclusive); gaps are listed, never emitted
     --generate-day DAY      internal: generate one shard (run by the worker in a
                             subprocess, under the worker's lock)
+    --backup [--verify-all] back up research records now (re-verifying every copy
+                            with --verify-all), under the generation lock
+    --restore NAME          restore one record (`<dataset>` or
+                            `runs/<experiment>/<run>`) from the verified backup
 
 The worker never runs migrations: it waits until the database's Alembic
 revision equals this image's head (the api container migrates on start).
-No backup destination exists: every dataset is reported as NOT backed up.
+Backup runs after each pass only when `RESEARCH_BACKUP_DIR` is set (see
+`app.research.backup`); otherwise every record is reported NOT backed up.
 """
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
 import signal
 import sys
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +37,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.core.config import get_settings
 from app.db.session import _to_async_url, get_engine, get_session_factory
+from app.research.backup import backup_report, restore_item, run_backup
 from app.research.continuity import (
+    EXIT_ALREADY_PRESERVED,
+    EXIT_INTEGRITY,
+    RESTART_GRACE,
     SHARD_HORIZONS,
     SHARD_INTERVAL_MINUTES,
     STATEMENT_TIMEOUT,
@@ -46,12 +56,13 @@ from app.research.continuity import (
     wait_for_live_window,
     write_status,
 )
-from app.research.dataset import generate_dataset
+from app.research.dataset import DatasetIntegrityError, generate_dataset
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger(__name__)
 
 _API_DIR = Path(__file__).resolve().parents[2]
+_HEARTBEAT = timedelta(seconds=60)
 
 
 def _config(data_dir: Path | None) -> ContinuityConfig:
@@ -83,6 +94,31 @@ async def _schema_matches() -> bool:
     return current == _code_alembic_head()
 
 
+def _backup_dir() -> Path | None:
+    configured = get_settings().research_backup_dir
+    return Path(configured) if configured else None
+
+
+def _backup_now(config: ContinuityConfig, *, reverify_all: bool = False) -> dict[str, Any] | None:
+    destination = _backup_dir()
+    if destination is None:
+        return None
+    return run_backup(config.data_dir, destination, reverify_all=reverify_all)
+
+
+async def _status(
+    config: ContinuityConfig, worker: dict[str, Any], *, verify: bool = False
+) -> dict[str, Any]:
+    return await build_status(
+        get_session_factory(),
+        config,
+        now=datetime.now(UTC),
+        verify=verify,
+        worker=worker,
+        backup=backup_report(config.data_dir, configured=_backup_dir() is not None),
+    )
+
+
 def _read_worker_field(config: ContinuityConfig) -> dict[str, Any]:
     try:
         return json.loads((config.continuity_dir / "status.json").read_text()).get("worker", {})
@@ -101,7 +137,11 @@ def _update_worker_field(config: ContinuityConfig, worker: dict[str, Any]) -> No
 
 
 async def _one_pass(
-    config: ContinuityConfig, worker: dict[str, Any], stop: asyncio.Event | None
+    config: ContinuityConfig,
+    worker: dict[str, Any],
+    stop: asyncio.Event | None,
+    *,
+    readiness_grace_until: datetime | None = None,
 ) -> None:
     session_factory = get_session_factory()
 
@@ -112,9 +152,20 @@ async def _one_pass(
     async def generate(day: date, detail: dict[str, Any]) -> None:
         await run_generation_subprocess(day, detail, config, stop=stop)
 
+    async def backup() -> None:
+        # Hashing and copying are blocking file I/O: keep the loop (and its
+        # stop signal and heartbeat) responsive.
+        await asyncio.to_thread(_backup_now, config)
+
     worker["last_pass_started_at"] = datetime.now(UTC).isoformat()
     summary = await run_pass(
-        session_factory, GenerationLock(get_engine()), config, generate, on_status=on_status
+        session_factory,
+        GenerationLock(get_engine()),
+        config,
+        generate,
+        on_status=on_status,
+        readiness_grace_until=readiness_grace_until,
+        after_generation=backup,
     )
     worker["generating"] = None
     worker["last_pass_finished_at"] = datetime.now(UTC).isoformat()
@@ -123,8 +174,7 @@ async def _one_pass(
         if summary is None
         else {k: v for k, v in summary.items() if k != "decisions"}
     )
-    status = await build_status(session_factory, config, now=datetime.now(UTC), worker=worker)
-    write_status(config, status)
+    write_status(config, await _status(config, worker))
     logger.info("continuity_pass_complete", extra={"summary": worker["last_pass_summary"]})
 
 
@@ -142,16 +192,41 @@ async def _loop(config: ContinuityConfig) -> None:
         except TimeoutError:
             pass
 
-    worker: dict[str, Any] = {"started_at": datetime.now(UTC).isoformat()}
-    while not stop.is_set():
-        try:
-            await _one_pass(config, worker, stop)
-        except Exception:  # noqa: BLE001 - one bad pass must not kill the worker
-            logger.exception("continuity_pass_failed")
-        try:
-            await asyncio.wait_for(stop.wait(), timeout=config.pass_interval_seconds)
-        except TimeoutError:
-            pass
+    started = datetime.now(UTC)
+    worker: dict[str, Any] = {"started_at": started.isoformat()}
+
+    async def heartbeat() -> None:
+        # Proof of life independent of pass length (a pass may generate for
+        # hours): Vitals treats a silent worker as unknown, never healthy.
+        while True:
+            worker["heartbeat_at"] = datetime.now(UTC).isoformat()
+            _update_worker_field(config, worker)
+            await asyncio.sleep(_HEARTBEAT.total_seconds())
+
+    beating = asyncio.create_task(heartbeat())
+    try:
+        while not stop.is_set():
+            try:
+                await _one_pass(config, worker, stop, readiness_grace_until=started + RESTART_GRACE)
+            except Exception as exc:  # noqa: BLE001 - one bad pass must not kill the worker
+                logger.exception("continuity_pass_failed")
+                worker["generating"] = None
+                worker["last_pass_error"] = {
+                    "at": datetime.now(UTC).isoformat(),
+                    "error": repr(exc)[-2000:],
+                }
+                _update_worker_field(config, worker)
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=config.pass_interval_seconds)
+            except TimeoutError:
+                pass
+    finally:
+        beating.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await beating
+        worker["generating"] = None
+        worker["stopped_at"] = datetime.now(UTC).isoformat()
+        _update_worker_field(config, worker)
     logger.info("continuity_worker_stopped")
 
 
@@ -212,6 +287,7 @@ def _print_status(status: dict[str, Any]) -> None:
     )
     print(f"last success: {status.get('last_success')}")
     print(f"last failure: {status.get('last_failure')}")
+    print(f"last interruption: {status.get('last_interruption')}")
     print(
         f"preserved days {s['preserved_days']} (latest {s['last_preserved_day']}), "
         f"collection gaps {s['collection_gaps']}, source-expired {s['source_expired_days']}, "
@@ -219,8 +295,11 @@ def _print_status(status: dict[str, Any]) -> None:
     )
     for day in status["days"]:
         extra = ""
-        if day["status"] == "retry_backoff":
-            extra = f" next retry {day.get('next_retry_at')}: {day.get('last_error', '')[:120]}"
+        if day.get("attempts"):
+            extra = (
+                f" attempts {day['attempts']}, next retry {day.get('next_retry_at')}: "
+                f"[{day.get('last_error_kind', '?')}] {day.get('last_error', '')[:120]}"
+            )
         elif day["status"] in ("waiting_maturity",):
             extra = f" matures {day.get('matures_at')}"
         elif day["status"] == "waiting_readiness":
@@ -228,15 +307,35 @@ def _print_status(status: dict[str, Any]) -> None:
         print(f"  {day['day']}  {day['status']:<18} deadline {day['full_feature_deadline']}{extra}")
     for warning in status["expiry_warnings"]:
         print(f"WARNING: {warning['day']} full-feature sources expire {warning['deadline']}")
+    backup = status.get("backup")
+    if backup is None:
+        where = "no backup destination configured"
+    elif backup.get("error"):
+        where = f"BACKUP FAILING: {backup['error']}"
+    else:
+        where = f"last verified backup {backup.get('checked_at')} to {backup.get('destination')}"
     print(
         f"datasets {s['datasets']}: all verified at write time; "
-        f"NOT independently backed up: {s['unprotected_datasets']} "
-        "(no backup destination configured)"
+        f"NOT independently backed up: {s['unprotected_datasets']} ({where})"
     )
+    for name, error in ((backup or {}).get("errors") or {}).items():
+        print(f"  BACKUP ERROR {name}: {error}")
     for d in status["datasets"]:
         verified = d.get("verified_now")
         flag = "" if verified is None else ("  re-verified OK" if verified else "  VERIFY FAILED")
         print(f"  {d['name']}  rows {d['row_count']}{flag}")
+
+
+async def _locked(work: Any) -> Any:
+    """Run blocking file work under the generation lock, so it never
+    overlaps shard generation (or another backup/restore)."""
+    lock = GenerationLock(get_engine())
+    if not await lock.acquire():
+        raise SystemExit("research generation lock is held (generation running); try later")
+    try:
+        return await asyncio.to_thread(work)
+    finally:
+        await lock.release()
 
 
 def main() -> None:
@@ -247,6 +346,8 @@ def main() -> None:
     mode.add_argument("--status", action="store_true")
     mode.add_argument("--spec-refs", nargs=2, metavar=("FIRST", "LAST"))
     mode.add_argument("--generate-day", metavar="DAY")
+    mode.add_argument("--backup", action="store_true")
+    mode.add_argument("--restore", metavar="NAME")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--verify-all", action="store_true")
     parser.add_argument("--data-dir", type=Path)
@@ -265,19 +366,26 @@ def main() -> None:
     elif args.once:
         asyncio.run(_one_pass(config, _read_worker_field(config), None))
     elif args.status:
-        status = asyncio.run(
-            build_status(
-                get_session_factory(),
-                config,
-                now=datetime.now(UTC),
-                verify=args.verify_all,
-                worker=_read_worker_field(config),
-            )
-        )
+        status = asyncio.run(_status(config, _read_worker_field(config), verify=args.verify_all))
         if args.json:
             print(json.dumps(status, indent=2, default=str))
         else:
             _print_status(status)
+    elif args.backup:
+        if _backup_dir() is None:
+            parser.error("RESEARCH_BACKUP_DIR is not set: no backup destination is configured")
+        report = asyncio.run(_locked(lambda: _backup_now(config, reverify_all=args.verify_all)))
+        print(json.dumps({k: v for k, v in report.items() if k != "items"}, indent=2))
+        print(f"protected: {len(report['items'])}")
+        sys.exit(1 if report["error"] or report["errors"] else 0)
+    elif args.restore:
+        destination = _backup_dir()
+        if destination is None:
+            parser.error("RESEARCH_BACKUP_DIR is not set: no backup destination is configured")
+        restored = asyncio.run(
+            _locked(lambda: restore_item(destination, config.data_dir, args.restore))
+        )
+        print(f"restored and verified: {restored}")
     elif args.spec_refs:
         first, last = (date.fromisoformat(v) for v in args.spec_refs)
         print(json.dumps(spec_refs(config, first, last), indent=2))
@@ -296,7 +404,10 @@ def main() -> None:
             )
         except FileExistsError as exc:
             print(str(exc), file=sys.stderr)
-            sys.exit(3)
+            sys.exit(EXIT_ALREADY_PRESERVED)
+        except DatasetIntegrityError as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(EXIT_INTEGRITY)
 
 
 if __name__ == "__main__":

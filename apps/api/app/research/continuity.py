@@ -23,15 +23,27 @@ A pass (see `run_pass`) walks every completed day since
   (recoverable-but-missing vs. permanently unavailable);
 - generates the rest in deadline order, each in a **subprocess** with a
   hard timeout (killed on expiry; its database statements are bounded by
-  `statement_timeout`); a failure is recorded with backoff and the pass
-  moves on, so one failing day never blocks newer days.
+  `statement_timeout`); a failure is recorded — with its kind (`timeout`,
+  `killed`, `integrity`, `generation`) — with backoff and the pass moves on,
+  so one failing day never blocks newer days. A worker *stop* is not a
+  failure of the day: the child is terminated, the interruption recorded
+  separately, no attempt is counted and the pass ends there (the next
+  pass after the restart resumes the same day from scratch).
+
+Interrupted generation never publishes anything: a shard is assembled in
+memory and written to a `.<name>.tmp-*` directory, verified there, and only
+then renamed into place (`app.research.dataset.generate_dataset`); leftovers
+are removed under the lock at the start of every pass. Passes run one after
+another (the next waits for the previous to finish, however long a shard
+takes) and the advisory lock makes them exclusive across processes.
 
 Deadlines are derived from what replay actually reads and how each source
 is pruned (`source_deadlines`), conservatively. Missing a full-feature
 deadline never stops generation — whatever remains is preserved.
 
-There is no backup destination: every dataset is reported as verified but
-NOT independently backed up.
+Independent backup is a separate step (`app.research.backup`), run after
+generation under the same lock; `build_status` reports its last verified
+state, never more.
 """
 
 import asyncio
@@ -40,6 +52,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -85,6 +98,14 @@ BACKOFF = (
     timedelta(hours=6),
     timedelta(hours=12),
 )
+#: After the worker (re)starts, the readiness fallback is not honoured for
+#: this long: after an outage the fallback time has usually passed already
+#: while the reconcilers are still catching up — generating immediately
+#: would preserve gaps that minutes later would have been filled.
+RESTART_GRACE = timedelta(hours=1)
+#: Consecutive failures after which a day needs a human (it keeps being
+#: retried every 12h regardless).
+BLOCKED_AFTER_ATTEMPTS = len(BACKOFF)
 #: Hard wall-clock limit for one shard's generation subprocess. A daily
 #: shard (96 frames at ~30s plus yielding) takes ~2.5-3h; 6h leaves 2x headroom.
 SHARD_TIMEOUT = timedelta(hours=6)
@@ -241,10 +262,11 @@ def save_state(config: ContinuityConfig, state: dict[str, Any]) -> None:
     _write_json_atomic(config.continuity_dir / "state.json", state)
 
 
-def _record_failure(state: dict[str, Any], day: date, now: datetime, error: str) -> None:
+def _record_failure(state: dict[str, Any], day: date, now: datetime, kind: str, error: str) -> None:
     entry = state["days"].setdefault(day.isoformat(), {"attempts": 0})
     entry["attempts"] += 1
     backoff = BACKOFF[min(entry["attempts"], len(BACKOFF)) - 1]
+    entry["last_error_kind"] = kind
     entry["last_error"] = error[-2000:]
     entry["last_failure_at"] = now.isoformat()
     entry["next_retry_at"] = (now + backoff).isoformat()
@@ -412,8 +434,26 @@ async def day_facts(session: AsyncSession, start: datetime, end: datetime) -> Da
 # -- the pass --------------------------------------------------------------------------------
 
 
+#: Exit codes of `--generate-day` (the child), besides 0 and Python's own 1.
+EXIT_ALREADY_PRESERVED = 3
+EXIT_INTEGRITY = 4
+
+
 class GenerationFailed(RuntimeError):
-    pass
+    """One day's generation failed. `kind` says what was actually observed:
+    `timeout` (the worker's limit expired and it terminated the child),
+    `killed` (the child died from a signal the worker did not send — e.g.
+    the out-of-memory killer), `integrity` (the written dataset failed
+    verification and was discarded), or `generation` (any other error exit)."""
+
+    def __init__(self, kind: str, message: str) -> None:
+        super().__init__(message)
+        self.kind = kind
+
+
+class GenerationInterrupted(Exception):
+    """The worker was asked to stop while (or before) generating: not a
+    failure of the day — nothing is counted against it."""
 
 
 GenerateDay = Callable[[date, dict[str, Any]], Awaitable[None]]
@@ -432,7 +472,13 @@ def _full_feature_deadline(config: ContinuityConfig, start: datetime) -> datetim
 
 
 async def decide_day(
-    session: AsyncSession, config: ContinuityConfig, day: date, now: datetime, state: dict
+    session: AsyncSession,
+    config: ContinuityConfig,
+    day: date,
+    now: datetime,
+    state: dict,
+    *,
+    readiness_grace_until: datetime | None = None,
 ) -> DayDecision:
     window = day_window(day, config.shards_start)
     assert window is not None
@@ -458,11 +504,15 @@ async def decide_day(
     if now < matured_at:
         detail["matures_at"] = matured_at.isoformat()
         return DayDecision(day, "waiting_maturity", detail)
+    previous = state["days"].get(day.isoformat())
+    if previous:
+        detail.update(previous)  # earlier failures stay visible while retried
     if _in_backoff(state, day, now):
-        detail.update(state["days"][day.isoformat()])
         return DayDecision(day, "retry_backoff", detail)
 
     fallback_at = min(matured_at + MAX_READINESS_WAIT, full_deadline - DEADLINE_SAFETY)
+    if readiness_grace_until is not None and full_deadline - now > 2 * RESTART_GRACE:
+        fallback_at = max(fallback_at, readiness_grace_until)
     readiness = facts.as_manifest() | {
         "fallback": not facts.gate_passed,
         "fallback_at": fallback_at.isoformat(),
@@ -483,9 +533,12 @@ async def run_pass(
     *,
     now: Now = _utcnow,
     on_status: Callable[[dict[str, Any]], None] | None = None,
+    readiness_grace_until: datetime | None = None,
+    after_generation: Callable[[], Awaitable[Any]] | None = None,
 ) -> dict[str, Any] | None:
     """One idempotent pass. Returns a summary, or None if another generator
-    holds the lock."""
+    holds the lock. `after_generation` (the backup step) runs last, still
+    under the lock, unless the pass was interrupted."""
     if not await lock.acquire():
         logger.info("continuity_pass_skipped_lock_held")
         return None
@@ -495,12 +548,23 @@ async def run_pass(
         decisions = []
         async with session_factory() as session:
             for day in completed_days(config.shards_start, now()):
-                decisions.append(await decide_day(session, config, day, now(), state))
+                decisions.append(
+                    await decide_day(
+                        session,
+                        config,
+                        day,
+                        now(),
+                        state,
+                        readiness_grace_until=readiness_grace_until,
+                    )
+                )
         due = sorted(
             (d for d in decisions if d.status == "generate"),
             key=lambda d: (d.detail["full_feature_deadline"], d.day),
         )
-        generated, failed = [], []
+        generated: list[str] = []
+        failed: list[str] = []
+        interrupted: str | None = None
         for decision in due:
             if on_status is not None:
                 on_status({"generating": decision.day.isoformat(), "started_at": now()})
@@ -509,22 +573,39 @@ async def run_pass(
                 state["days"].pop(decision.day.isoformat(), None)
                 state["last_success"] = {"day": decision.day.isoformat(), "at": now().isoformat()}
                 generated.append(decision.day.isoformat())
+            except GenerationInterrupted as exc:
+                logger.info("continuity_shard_interrupted", extra={"day": decision.day.isoformat()})
+                interrupted = decision.day.isoformat()
+                state["last_interruption"] = {
+                    "day": interrupted,
+                    "at": now().isoformat(),
+                    "reason": str(exc),
+                }
             except GenerationFailed as exc:
-                logger.warning("continuity_shard_failed", extra={"day": decision.day.isoformat()})
-                _record_failure(state, decision.day, now(), str(exc))
+                logger.warning(
+                    "continuity_shard_failed",
+                    extra={"day": decision.day.isoformat(), "kind": exc.kind},
+                )
+                _record_failure(state, decision.day, now(), exc.kind, str(exc))
                 state["last_failure"] = {
                     "day": decision.day.isoformat(),
                     "at": now().isoformat(),
+                    "kind": exc.kind,
                     "error": str(exc)[-2000:],
                 }
                 failed.append(decision.day.isoformat())
             finally:
                 clean_stale_tmp_dirs(config.data_dir)
             save_state(config, state)
+            if interrupted is not None:
+                break  # stopping: later days are not attempted, not failed
         save_state(config, state)
+        if interrupted is None and after_generation is not None:
+            await after_generation()
         return {
             "generated": generated,
             "failed": failed,
+            "interrupted": interrupted,
             "stale_tmp_dirs_removed": removed,
             "decisions": {d.day.isoformat(): d.status for d in decisions},
         }
@@ -581,7 +662,12 @@ async def run_generation_subprocess(
     """Generate one shard in a child process with a hard timeout. On
     timeout or stop, the child is terminated (then killed) and *waited
     for* before returning, so the caller's lock is never released while
-    generation still runs. Raises `GenerationFailed` on any failure."""
+    generation still runs. Raises `GenerationInterrupted` on a stop (also
+    when one was already requested — no child is started then) and
+    `GenerationFailed` on a failure, classified by what was observed. A
+    child reporting that the shard already exists is not a failure."""
+    if stop is not None and stop.is_set():
+        raise GenerationInterrupted("worker stopping; generation not started")
     argv = command or [
         sys.executable,
         "-m",
@@ -607,12 +693,21 @@ async def run_generation_subprocess(
 
     if communicate in done:
         _, stderr = communicate.result()
-        if proc.returncode != 0:
-            tail = (stderr or b"").decode(errors="replace").strip()[-2000:]
-            raise GenerationFailed(f"exit code {proc.returncode}: {tail}")
-        return
+        code = proc.returncode
+        tail = (stderr or b"").decode(errors="replace").strip()[-2000:]
+        if code in (0, EXIT_ALREADY_PRESERVED):
+            return
+        if code is not None and code < 0:
+            raise GenerationFailed(
+                "killed",
+                f"child killed by {_signal_name(-code)}, not by the worker "
+                f"(out of memory?): {tail}",
+            )
+        if code == EXIT_INTEGRITY:
+            raise GenerationFailed("integrity", f"dataset failed verification, discarded: {tail}")
+        raise GenerationFailed("generation", f"exit code {code}: {tail}")
 
-    reason = "stopped" if stop_waiter is not None and stop_waiter in done else "timed out"
+    stopped = stop_waiter is not None and stop_waiter in done
     proc.terminate()
     try:
         await asyncio.wait_for(proc.wait(), timeout=30)
@@ -621,7 +716,16 @@ async def run_generation_subprocess(
         await proc.wait()
     with contextlib.suppress(Exception):
         await communicate
-    raise GenerationFailed(f"generation {reason} after {timeout} limit; child terminated")
+    if stopped:
+        raise GenerationInterrupted("worker stopping; child terminated, nothing published")
+    raise GenerationFailed("timeout", f"generation exceeded the {timeout} limit; child terminated")
+
+
+def _signal_name(number: int) -> str:
+    try:
+        return signal.Signals(number).name
+    except ValueError:
+        return f"signal {number}"
 
 
 # -- status -----------------------------------------------------------------------------------
@@ -643,7 +747,6 @@ def _dataset_entries(config: ContinuityConfig, verify: bool) -> list[dict[str, A
             "last_frame_time": manifest.get("last_frame_time"),
             "row_count": manifest.get("row_count"),
             "readiness_fallback": (manifest.get("readiness") or {}).get("fallback"),
-            "backed_up": False,  # no backup destination is configured
         }
         if verify:
             try:
@@ -663,7 +766,11 @@ async def build_status(
     now: datetime,
     verify: bool = False,
     worker: dict[str, Any] | None = None,
+    backup: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """The persisted report Vitals reads. `backup` is the backup step's
+    own last verified report (`app.research.backup.backup_report`), or
+    None when no destination is configured — never inferred here."""
     state = load_state(config)
     async with session_factory() as session:
         decisions = [
@@ -680,11 +787,20 @@ async def build_status(
             if deadline - now <= EXPIRY_WARNING:
                 expiry_warnings.append({"day": d.day.isoformat(), "deadline": deadline.isoformat()})
     datasets = _dataset_entries(config, verify)
+    protected = set((backup or {}).get("protected", []))
+    for entry in datasets:
+        entry["backed_up"] = entry["name"] in protected
 
     def count(status: str) -> int:
         return sum(1 for d in decisions if d.status == status)
 
     preserved = [d.day.isoformat() for d in decisions if d.status == "preserved"]
+    unresolved = [d for d in decisions if d.status != "preserved" and d.detail.get("attempts")]
+    missing = [
+        d.day.isoformat()
+        for d in decisions
+        if d.status not in ("preserved", "collection_gap", "source_expired")
+    ]
     return {
         "schema": 1,
         "written_at": now.isoformat(),
@@ -693,18 +809,26 @@ async def build_status(
         "worker": worker or {},
         "last_success": state.get("last_success"),
         "last_failure": state.get("last_failure"),
+        "last_interruption": state.get("last_interruption"),
+        "backup": backup,
         "summary": {
             "preserved_days": count("preserved"),
             "last_preserved_day": preserved[-1] if preserved else None,
             "collection_gaps": count("collection_gap"),
             "source_expired_days": count("source_expired"),
             "waiting_days": count("waiting_maturity") + count("waiting_readiness"),
-            "failing_days": count("retry_backoff"),
+            # a day with an unresolved failure, whether in backoff or due again
+            "failing_days": len(unresolved),
+            "blocked_days": sum(
+                1 for d in unresolved if d.detail["attempts"] >= BLOCKED_AFTER_ATTEMPTS
+            ),
             "due_days": count("generate"),
+            "missing_days": missing,
+            "unrecoverable_days": count("collection_gap") + count("source_expired"),
             "expiry_warnings": len(expiry_warnings),
             "datasets": len(datasets),
             "unprotected_datasets": sum(1 for d in datasets if not d["backed_up"]),
-            "backup_configured": False,
+            "backup_configured": backup is not None,
         },
         "expiry_warnings": expiry_warnings,
         "days": days,
@@ -736,6 +860,7 @@ def spec_refs(config: ContinuityConfig, first: date, last: date) -> dict[str, An
 __all__ = [
     "ContinuityConfig",
     "GenerationFailed",
+    "GenerationInterrupted",
     "GenerationLock",
     "build_status",
     "file_sha256",

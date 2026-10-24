@@ -22,3 +22,6 @@ node_modules/
 # committed, and NOT regenerable once source data expires: back them up
 # independently (see docs/ARCHITECTURE.md).
 research/oink_corp/data/
+
+# Local Compose overrides (e.g. the research backup mount — host-specific paths).
+docker-compose.override.yml

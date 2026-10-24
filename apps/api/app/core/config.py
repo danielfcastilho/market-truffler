@@ -77,6 +77,11 @@ class Settings(BaseSettings):
     # every `research_pass_interval_seconds`.
     research_shards_start: datetime = datetime(2026, 10, 12, 15, 0, tzinfo=UTC)
     research_pass_interval_seconds: float = 1800.0
+    # Independent backup of research records (app.research.backup): a path
+    # inside the research container where the operator mounts storage that
+    # is NOT the research data's disk. Empty = not configured (reported as
+    # such, never assumed). See docs/ARCHITECTURE.md's runbook.
+    research_backup_dir: str = ""
 
     @property
     def allowed_origins_list(self) -> list[str]:

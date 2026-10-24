@@ -38,8 +38,9 @@ research-only `forward_return_H`/`forward_relative_return_H` labels, and
 writes the result as a Parquet file + `manifest.json` under `data/`
 (gitignored, never committed — and **not regenerable** once its source
 frames and market data expire, so each dataset is a permanent research
-record: hash-verified, never overwritten, and to be backed up to an
-independent location; see `docs/ARCHITECTURE.md`'s runbook).
+record: hash-verified, never overwritten, and backed up — once a
+destination is configured — to independent storage with verified copies;
+see `docs/ARCHITECTURE.md`'s runbook).
 
 Experiments (`experiments/<experiment_id>.json`, committed) are run with
 `python -m app.scripts.run_experiment`; their immutable results land in

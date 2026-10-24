@@ -20,10 +20,14 @@ from app.repositories.open_interest_repository import OpenInterestRepository
 from app.research import continuity
 from app.research.continuity import (
     CANDLE_LOOKBACK,
+    EXIT_ALREADY_PRESERVED,
+    EXIT_INTEGRITY,
     FUNDING_LOOKBACK,
     OI_LOOKBACK,
+    RESTART_GRACE,
     ContinuityConfig,
     GenerationFailed,
+    GenerationInterrupted,
     build_status,
     completed_days,
     day_window,
@@ -72,15 +76,18 @@ class _Generator:
     """Records calls; writes a placeholder shard directory like a real
     (verified) generation would, or fails for chosen days."""
 
-    def __init__(self, config, fail_days=()):
+    def __init__(self, config, fail_days=(), interrupt_days=()):
         self.config = config
         self.fail_days = set(fail_days)
+        self.interrupt_days = set(interrupt_days)
         self.calls: list[tuple[date, dict]] = []
 
     async def __call__(self, day, detail):
         self.calls.append((day, detail))
+        if day in self.interrupt_days:
+            raise GenerationInterrupted("worker stopping; child terminated, nothing published")
         if day in self.fail_days:
-            raise GenerationFailed(f"boom on {day}")
+            raise GenerationFailed("generation", f"boom on {day}")
         out = self.config.data_dir / shard_name(day)
         out.mkdir()
         (out / "manifest.json").write_text(json.dumps({"row_count": 1, "data_sha256": "x"}))
@@ -417,8 +424,18 @@ async def test_status_reports_unprotected_datasets_and_expiry_warnings(session_f
     status = await build_status(session_factory, config, now=DAY_START + timedelta(days=13))
     assert status["summary"]["unprotected_datasets"] == 1
     assert status["summary"]["backup_configured"] is False
+    assert status["backup"] is None
     assert status["summary"]["expiry_warnings"] == 1
+    assert status["summary"]["missing_days"] == [DAY.isoformat()]
     assert status["datasets"][0]["backed_up"] is False
+
+    # Protected only as far as the backup's own verified report says.
+    backup = {"checked_at": "x", "error": None, "errors": {}, "protected": ["research_first"]}
+    status = await build_status(
+        session_factory, config, now=DAY_START + timedelta(days=13), backup=backup
+    )
+    assert status["summary"]["unprotected_datasets"] == 0
+    assert status["summary"]["backup_configured"] is True
 
 
 # -- yielding and the subprocess runner ------------------------------------------------------
@@ -465,7 +482,7 @@ async def test_a_timed_out_generation_is_terminated_before_returning(tmp_path):
         "    p.write_text(str(time.time())); time.sleep(0.05)\n"
     )
     started = wallclock.monotonic()
-    with pytest.raises(GenerationFailed, match="timed out"):
+    with pytest.raises(GenerationFailed, match="exceeded the 0:00:00.500000 limit") as info:
         await run_generation_subprocess(
             DAY,
             {},
@@ -473,16 +490,20 @@ async def test_a_timed_out_generation_is_terminated_before_returning(tmp_path):
             timeout=timedelta(seconds=0.5),
             command=[sys.executable, "-c", script],
         )
+    assert info.value.kind == "timeout"
     assert wallclock.monotonic() - started < 10
     last_write = marker.read_text()
     await asyncio.sleep(0.3)
     assert marker.read_text() == last_write  # the child is really gone
 
 
-async def test_a_stop_request_terminates_the_child(tmp_path):
+async def test_a_stop_request_is_an_interruption_not_a_timeout(tmp_path):
+    """Regression (2026-10-16): a worker stop was reported as
+    "generation stopped after 6:00:00 limit" — reading like a timeout."""
     stop = asyncio.Event()
     asyncio.get_running_loop().call_later(0.3, stop.set)
-    with pytest.raises(GenerationFailed, match="stopped"):
+    started = wallclock.monotonic()
+    with pytest.raises(GenerationInterrupted) as info:
         await run_generation_subprocess(
             DAY,
             {},
@@ -490,11 +511,206 @@ async def test_a_stop_request_terminates_the_child(tmp_path):
             stop=stop,
             command=[sys.executable, "-c", "import time; time.sleep(30)"],
         )
+    assert wallclock.monotonic() - started < 10
+    assert "limit" not in str(info.value) and "timed out" not in str(info.value)
+
+
+async def test_no_child_is_started_once_a_stop_was_requested(tmp_path):
+    stop = asyncio.Event()
+    stop.set()
+    marker = tmp_path / "started"
+    with pytest.raises(GenerationInterrupted):
+        await run_generation_subprocess(
+            DAY,
+            {},
+            _config(tmp_path),
+            stop=stop,
+            command=[sys.executable, "-c", f"open({str(marker)!r}, 'w')"],
+        )
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    ("script", "kind", "message"),
+    [
+        ("import os, signal; os.kill(os.getpid(), signal.SIGKILL)", "killed", "SIGKILL"),
+        (f"import sys; sys.exit({EXIT_INTEGRITY})", "integrity", "failed verification"),
+        ("raise RuntimeError('db gone')", "generation", "db gone"),
+    ],
+)
+async def test_failures_are_classified_by_what_was_observed(tmp_path, script, kind, message):
+    with pytest.raises(GenerationFailed, match=message) as info:
+        await run_generation_subprocess(
+            DAY, {}, _config(tmp_path), command=[sys.executable, "-c", script]
+        )
+    assert info.value.kind == kind
+    assert "limit" not in str(info.value)
+
+
+async def test_a_child_finding_the_shard_already_preserved_is_not_a_failure(tmp_path):
+    await run_generation_subprocess(
+        DAY,
+        {},
+        _config(tmp_path),
+        command=[sys.executable, "-c", f"import sys; sys.exit({EXIT_ALREADY_PRESERVED})"],
+    )
+
+
+# -- interruption, restart and resumption ------------------------------------------------------
+
+
+async def test_a_stop_mid_pass_counts_nothing_and_attempts_no_further_day(
+    session_factory, tmp_path
+):
+    """Regression (2026-10-16): one SIGTERM recorded a failure, an attempt
+    and a backoff for *every* due day (Oct 12 and 13, 5 ms apart), starting
+    and killing a fresh child for each."""
+    day2_start = DAY_START + timedelta(days=1)
+    ids = await _ready_day(session_factory)
+    await _frames(session_factory, ids, [day2_start])
+    await _oi(session_factory, ids, day2_start + timedelta(days=1))
+    for i in ids:
+        async with session_factory() as session:
+            row = await session.get(Instrument, i)
+            row.history_synced_through = day2_start + timedelta(days=1, hours=6)
+            await session.commit()
+    config = _config(tmp_path)
+    gen = _Generator(config, interrupt_days={DAY})
+    backed_up = []
+
+    async def backup():
+        backed_up.append(True)
+
+    now = day2_start + timedelta(days=1, hours=5)
+    summary = await run_pass(
+        session_factory, _Lock(), config, gen, now=lambda: now, after_generation=backup
+    )
+    assert summary["interrupted"] == DAY.isoformat()
+    assert summary["failed"] == [] and summary["generated"] == []
+    assert [d for d, _ in gen.calls] == [DAY]  # the next day was not started
+    assert backed_up == []  # nothing else runs while stopping
+    state = json.loads((tmp_path / "continuity" / "state.json").read_text())
+    assert state["days"] == {} and "last_failure" not in state
+    assert state["last_interruption"]["day"] == DAY.isoformat()
+
+    # After the restart the next pass resumes both days, no backoff.
+    gen.interrupt_days.clear()
+    resumed = await run_pass(
+        session_factory, _Lock(), config, gen, now=lambda: now, after_generation=backup
+    )
+    assert resumed["generated"] == [DAY.isoformat(), (DAY + timedelta(days=1)).isoformat()]
+    assert backed_up == [True]
+
+
+async def test_an_interrupted_real_child_publishes_nothing_and_the_day_stays_missing(
+    session_factory, tmp_path
+):
+    await _ready_day(session_factory)
+    config = _config(tmp_path)
+    tmp = tmp_path / f".{shard_name(DAY)}.tmp-abcd1234"
+    # A child mid-write: its temporary directory exists, its real one not.
+    script = (
+        "import pathlib, time\n"
+        f"d = pathlib.Path({str(tmp)!r}); d.mkdir(); (d / 'data.parquet').write_bytes(b'PAR1')\n"
+        "time.sleep(30)\n"
+    )
+    stop = asyncio.Event()
+
+    async def generate(day, detail):
+        asyncio.get_running_loop().call_later(0.5, stop.set)
+        await run_generation_subprocess(
+            day, detail, config, stop=stop, command=[sys.executable, "-c", script]
+        )
+
+    summary = await run_pass(session_factory, _Lock(), config, generate, now=lambda: MATURED)
+    assert summary["interrupted"] == DAY.isoformat()
+    assert not (tmp_path / shard_name(DAY)).exists()
+    assert not tmp.exists()  # removed under the lock right after the interruption
+    status = await build_status(session_factory, config, now=MATURED)
+    assert status["summary"]["missing_days"] == [DAY.isoformat()]
+    assert status["summary"]["failing_days"] == 0
+
+
+async def test_after_a_restart_the_readiness_fallback_waits_for_the_grace_period(
+    session_factory, tmp_path
+):
+    """Regression (2026-10-24): after a 10-day outage the fallback time had
+    long passed, so the restarted worker generated one minute after start,
+    while 788 of 793 instruments' candle reconciliation was still catching up."""
+    ids = [
+        await _instrument(session_factory, s, synced_through=DAY_END - timedelta(hours=1))
+        for s in ("A", "B")
+    ]
+    await _frames(session_factory, ids, [DAY_START])
+    await _oi(session_factory, ids, DAY_END)
+    config = _config(tmp_path)
+    restart = MATURED + timedelta(days=3)  # long past the fallback
+    grace_until = restart + RESTART_GRACE
+
+    async def decide(now):
+        gen = _Generator(config)
+        summary = await run_pass(
+            session_factory,
+            _Lock(),
+            config,
+            gen,
+            now=lambda: now,
+            readiness_grace_until=grace_until,
+        )
+        return summary["decisions"][DAY.isoformat()]
+
+    assert await decide(restart + timedelta(minutes=1)) == "waiting_readiness"
+    assert await decide(grace_until) == "generate"
+
+
+async def test_the_restart_grace_never_delays_a_day_about_to_expire(session_factory, tmp_path):
+    ids = [
+        await _instrument(session_factory, s, synced_through=DAY_END - timedelta(hours=1))
+        for s in ("A", "B")
+    ]
+    await _frames(session_factory, ids, [DAY_START])
+    config = _config(tmp_path)
+    deadline = min(config.deadlines(DAY_START).values())
+    now = deadline - timedelta(hours=1)
+    summary = await run_pass(
+        session_factory,
+        _Lock(),
+        config,
+        _Generator(config),
+        now=lambda: now,
+        readiness_grace_until=now + RESTART_GRACE,
+    )
+    assert summary["decisions"][DAY.isoformat()] == "generate"
+
+
+async def test_status_keeps_failures_visible_until_resolved_and_flags_blocked_days(
+    session_factory, tmp_path
+):
+    await _ready_day(session_factory)
+    config = _config(tmp_path)
+    gen = _Generator(config, fail_days={DAY})
+    now = MATURED
+    for _ in range(continuity.BLOCKED_AFTER_ATTEMPTS):
+        await run_pass(session_factory, _Lock(), config, gen, now=lambda at=now: at)
+        now += timedelta(hours=13)  # past every backoff: the day is due again
+        status = await build_status(session_factory, config, now=now)
+        assert status["summary"]["due_days"] == 1
+        assert status["summary"]["failing_days"] == 1  # due again, still failing
+        day = status["days"][0]
+        assert day["last_error_kind"] == "generation" and "boom" in day["last_error"]
+    assert status["summary"]["blocked_days"] == 1
+    assert status["last_failure"]["kind"] == "generation"
+
+    gen.fail_days.clear()
+    await run_pass(session_factory, _Lock(), config, gen, now=lambda: now)
+    status = await build_status(session_factory, config, now=now)
+    assert status["summary"]["failing_days"] == 0 and status["summary"]["blocked_days"] == 0
+    assert status["summary"]["missing_days"] == []
 
 
 def test_continuity_module_never_backs_up_anywhere():
-    """No backup destination is authorized: nothing in the continuity code
-    copies research data elsewhere."""
+    """Copying research data is `app.research.backup`'s job alone (to an
+    operator-mounted path); the continuity code itself copies nothing."""
     source = (continuity.__file__ and open(continuity.__file__).read()) or ""
     for forbidden in ("copytree", "shutil.copy", "rsync", "upload"):
         assert forbidden not in source

@@ -1232,13 +1232,30 @@ once), a pass (`app.research.continuity.run_pass`):
   `min(matured + 24h, full-feature deadline - 3 days)`; after that the day
   is preserved anyway and the manifest's `readiness` block records what was
   still lagging (recoverable at the time) versus permanently unavailable
-  (missing frames, pruned frames, inactive instruments, expired sources);
+  (missing frames, pruned frames, inactive instruments, expired sources).
+  After a worker (re)start the fallback is held back for one more hour
+  (`RESTART_GRACE`, unless the deadline is closer than two hours): after an
+  outage the fallback time has usually passed while the reconcilers are
+  still catching up;
 - generates due days in **deadline order**, each in a child process with a
   hard 6-hour limit (terminated, then killed, and *waited for* before the
   lock is released; its statements are capped by a 10-minute
   `statement_timeout`), recording failures with backoff (30m, 2h, 6h, then
   every 12h) and **moving on**, so a failing day never blocks newer days.
-  A day is retried until its frames are actually gone.
+  A day is retried until its frames are actually gone; after 4 consecutive
+  failures it is reported **blocked** (still retried). Failures are
+  classified by what was observed — `timeout` (the 6h limit expired),
+  `killed` (the child died from a signal the worker didn't send, e.g. out
+  of memory), `integrity` (the written dataset failed verification and was
+  discarded), `generation` (any other error exit);
+- treats a **worker stop** (SIGTERM, container restart) as an interruption,
+  not a failure: the child is terminated, `last_interruption` recorded, no
+  attempt counted, and no further day started. The next pass after the
+  restart regenerates the same day from scratch — nothing is resumable
+  mid-shard and nothing partial is ever published (rows are built in
+  memory, written to `.<name>.tmp-*`, verified, then renamed; leftovers are
+  removed under the lock). Passes never overlap: the next one starts
+  30 minutes after the previous one *finished*, however long it took.
 
 Deadlines (`source_deadlines`) are derived from what replay reads, not from
 nominal retention: frame members (monthly partition) bound the whole
@@ -1261,25 +1278,80 @@ recorded as `yield_seconds`. A daily shard takes roughly 2.5-3 hours.
 (Acceptance run: with a 45s margin one live frame was delayed 12s by an
 overrunning replay; the margin was widened to 75s.)
 
+**Observability.** The worker writes `continuity/status.json` after every
+pass and a heartbeat into it every minute; `GET /api/research/status`
+only reads that file (no scans, no hashing) and classifies continuity as
+**healthy**, **recovering** (recoverable days due or being generated),
+**degraded** (a day with an unresolved failure, sources near expiry, or a
+crashed pass), **blocked** (repeated failures, or a failing day near
+expiry) or **unknown** (no report, stale heartbeat, or a stopped worker) —
+never healthy merely because the process runs. Vitals' OINK CORP section
+shows that health and its reason, the last preserved day, recoverable
+missing days versus lost ones, the last preservation, the last failure and
+its kind, and backup protection — a separate signal that is a problem
+until every dataset has a verified independent copy.
+
+**Backup (`app.research.backup`).** After each uninterrupted pass, under
+the same lock, every research record — dataset directories and experiment
+run records (`runs/<experiment>/<run>`) — is copied to
+`RESEARCH_BACKUP_DIR` if configured: into a temporary directory, every
+file's sha256 compared with the source (a dataset's source must also match
+its own `data_sha256`, else it's reported and not copied), then renamed.
+Each copy carries `BACKUP_CHECKSUMS.json`, so it can be verified and
+restored with no access to the original disk. Existing copies are never
+overwritten — a mismatch is reported for a human — and protected copies
+are re-hashed on both sides at most daily. The destination must contain
+the marker file `.market-truffler-backup`: an unmounted volume is then
+reported as an error instead of silently becoming a directory inside the
+container. Nothing is ever uploaded; whether the destination is really
+independent storage (another disk, a NAS) is the operator's call, which
+the marker records. Not configured, Vitals says so — never "protected".
+
 **Operational runbook.**
 
 1. Keep the stack running continuously — frames exist only while it runs.
    After downtime the worker catches up automatically (earliest deadline
-   first); nothing can recover frames that were never produced.
+   first); nothing can recover frames that were never produced. Host sleep
+   is downtime too.
 2. `docker compose exec research python -m app.scripts.research_continuity
    --status` (add `--verify-all` to re-hash every dataset, `--json` for
-   machine output): preserved days, gaps, waiting/failing days with next
-   retry and last error, expiry warnings, and which datasets are NOT backed
-   up. Vitals' OINK CORP section shows the same summary.
+   machine output): preserved days, gaps, waiting/failing days with
+   attempts, failure kind, next retry and last error, the last
+   interruption, expiry warnings, backup errors, and which datasets are NOT
+   backed up. Vitals' OINK CORP section shows the same summary.
 3. `--spec-refs 2026-10-13 2026-10-31` prints the `datasets` list for an
    experiment spec (preserved shards only, re-verified; gaps listed
    separately). The first 5-minute dataset cannot be combined with 15-minute
    shards — the experiment loader refuses mixed cadences.
-4. **Backup is not automated** and no destination is configured: every
-   dataset is reported as verified but NOT independently backed up. To
-   protect them, copy `research/oink_corp/data/` to an independent location
-   and compare `shasum -a 256 data.parquet` with each manifest's
-   `data_sha256`.
+4. **Activate backup** (not configured by default):
+   1. pick storage that is not the disk holding `research/oink_corp/data/`
+      (an external drive, a NAS share mounted on the host) and create a
+      directory on it, e.g. `/Volumes/Backup/market-truffler-research`;
+   2. confirm it is independent, then mark it:
+      `touch /Volumes/Backup/market-truffler-research/.market-truffler-backup`;
+   3. mount it into the worker with a `docker-compose.override.yml` next to
+      `docker-compose.yml` (merged automatically by Compose):
+      ```yaml
+      services:
+        research:
+          environment:
+            RESEARCH_BACKUP_DIR: /app/research_backup
+          volumes:
+            - /Volumes/Backup/market-truffler-research:/app/research_backup
+      ```
+   4. recreate only the worker, **when no shard is generating** (Vitals or
+      `--status` shows the generating day): `docker compose up -d research`;
+   5. back up now and check: `docker compose exec research python -m
+      app.scripts.research_continuity --backup` (exit status 0 only when
+      every record is verified; `--verify-all` re-hashes every copy), then
+      Vitals shows "All N verified".
+5. **Restore** a record (e.g. after losing the data disk):
+   `docker compose exec research python -m app.scripts.research_continuity
+   --restore shard_s15m_20261012` (or `runs/<experiment>/<run>`). The copy
+   is verified against its checksums, restored atomically, and a dataset
+   must also pass `read_dataset`; restore never replaces an existing
+   directory. Both `--backup` and `--restore` take the generation lock and
+   refuse to run while a shard is being generated.
 
 This is research only, an offline batch tool — not the future live
 ranking runtime, which must never depend on it. The boundary is enforced:

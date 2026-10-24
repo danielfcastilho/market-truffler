@@ -79,6 +79,9 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-truffler}:${POSTGRES_PASSWORD:-truffler}@postgres:5432/${POSTGRES_DB:-market_truffler}
       SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET must be set — see .env.example}
+      # Independent backup destination (mounted via docker-compose.override.yml;
+      # see docs/ARCHITECTURE.md's runbook). Empty = not configured.
+      RESEARCH_BACKUP_DIR: ${RESEARCH_BACKUP_DIR:-}
     volumes:
       - ./research/oink_corp/data:/app/research_data
     cpus: 1.0

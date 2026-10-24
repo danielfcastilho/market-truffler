@@ -415,12 +415,7 @@ describe("buildVitalsSections", () => {
     expect(sniffer?.rows.map((r) => r.label)).toEqual(["Status", "Last scan", "Coins analyzed"]);
     // OINK CORP shows only its real research-data signal — no ranking,
     // Truffle, or experiment rows until those capabilities exist.
-    expect(oinkCorp?.rows.map((r) => r.label)).toEqual([
-      "Research data",
-      "Last preserved day",
-      "Failing / waiting days",
-      "Unprotected datasets",
-    ]);
+    expect(oinkCorp?.rows.map((r) => r.label)).toEqual(RESEARCH_LABELS);
     const labels = sections.flatMap((s) => s.rows.map((r) => r.label.toLowerCase()));
     for (const absent of ["ranking", "truffle", "position", "exposure", "p&l", "exchange"]) {
       expect(labels.some((l) => l.includes(absent))).toBe(false);
@@ -515,52 +510,140 @@ it("renders the backend coverage fraction exactly once as a percentage", () => {
   ).toBe("20.7%");
 });
 
+const RESEARCH_LABELS = [
+  "Research continuity",
+  "Last preserved day",
+  "Missing days",
+  "Last preservation",
+  "Last failure",
+  "Backup protection",
+];
+
 describe("researchRows", () => {
   const base: ResearchStatus = {
-    status: "ok",
+    status: "healthy",
+    reason: "all recoverable days preserved or waiting normally",
     reported_at: "2026-10-20T12:00:00Z",
+    heartbeat_at: "2026-10-20T12:00:00Z",
     generating_day: null,
+    generating_since: null,
     last_preserved_day: "2026-10-19",
     preserved_days: 3,
+    missing_days: [],
     waiting_days: 1,
+    due_days: 0,
     failing_days: 0,
+    blocked_days: 0,
     collection_gaps: 2,
+    unrecoverable_days: 2,
     expiry_warnings: 0,
+    last_success: { day: "2026-10-19", at: "2026-10-20T06:10:00Z", kind: null, error: null },
+    last_failure: null,
+    last_interruption: null,
+    datasets: 4,
     unprotected_datasets: 4,
     backup_configured: false,
+    backup_status: "not_configured",
+    backup_checked_at: null,
+    backup_error: null,
   };
 
-  it("shows four N/A rows before the worker has ever reported", () => {
+  it("shows N/A rows when the status could not be fetched", () => {
     const rows = researchRows(null);
-    expect(rows.map((r) => r.label)).toEqual([
-      "Research data",
-      "Last preserved day",
-      "Failing / waiting days",
-      "Unprotected datasets",
-    ]);
+    expect(rows.map((r) => r.label)).toEqual(RESEARCH_LABELS);
     expect(rows.every((r) => r.value === "N/A" && r.status === "unavailable")).toBe(true);
   });
 
-  it("reports a healthy worker but flags datasets without an independent backup", () => {
+  it("reports healthy continuity but flags an unconfigured backup", () => {
     const rows = researchRows(base);
-    expect(rows[0]).toEqual({ label: "Research data", value: "OK", status: "ok" });
+    expect(rows[0]).toEqual({
+      label: "Research continuity",
+      value: "Healthy — all recoverable days preserved or waiting normally",
+      status: "ok",
+    });
     expect(rows[1]).toEqual({ label: "Last preserved day", value: "2026-10-19", status: "ok" });
-    expect(rows[2]).toEqual({ label: "Failing / waiting days", value: "0 / 1", status: "ok" });
-    expect(rows[3]).toEqual({
-      label: "Unprotected datasets",
-      value: "4 (no backup destination)",
+    expect(rows[2]).toEqual({ label: "Missing days", value: "0 recoverable · 2 lost", status: "ok" });
+    expect(rows[3].value).toBe("2026-10-19 at 2026-10-20 06:10:00 UTC");
+    expect(rows[4]).toEqual({ label: "Last failure", value: "None", status: "ok" });
+    expect(rows[5]).toEqual({
+      label: "Backup protection",
+      value: "Not configured — 0 of 4 protected",
       status: "down",
     });
   });
 
-  it("flags failing days, a stale worker, and shows the day being generated", () => {
-    const failing = researchRows({ ...base, status: "degraded", failing_days: 2 });
+  it("never shows nothing-preserved-yet as healthy", () => {
+    const rows = researchRows({
+      ...base,
+      status: "recovering",
+      reason: "generating 2026-10-12",
+      generating_day: "2026-10-12",
+      last_preserved_day: null,
+      preserved_days: 0,
+      missing_days: ["2026-10-12", "2026-10-13"],
+      due_days: 2,
+      last_success: null,
+    });
+    expect(rows[0].value).toBe("Recovering — generating 2026-10-12");
+    expect(rows[1]).toEqual({ label: "Last preserved day", value: "None yet", status: "down" });
+    expect(rows[2].value).toBe("2 recoverable (2026-10-12, 2026-10-13) · 2 lost");
+    expect(rows[3]).toEqual({ label: "Last preservation", value: "None yet", status: "unavailable" });
+  });
+
+  it("flags failures by kind, blocked or unknown continuity", () => {
+    const failing = researchRows({
+      ...base,
+      status: "degraded",
+      reason: "1 day(s) failing (timeout), retrying",
+      failing_days: 1,
+      missing_days: ["2026-10-19", "2026-10-20", "2026-10-21", "2026-10-22"],
+      last_failure: { day: "2026-10-19", at: "2026-10-20T08:00:00Z", kind: "timeout", error: "x" },
+    });
     expect(failing[0].status).toBe("down");
-    expect(failing[2]).toEqual({ label: "Failing / waiting days", value: "2 / 1", status: "down" });
-    const down = researchRows({ ...base, status: "down" });
-    expect(down[0].value).toBe("Worker not reporting");
-    const busy = researchRows({ ...base, generating_day: "2026-10-19" });
-    expect(busy[0].value).toBe("OK (generating 2026-10-19)");
+    expect(failing[2]).toEqual({
+      label: "Missing days",
+      value: "4 recoverable (2026-10-19, 2026-10-20, 2026-10-21, …) · 2 lost",
+      status: "down",
+    });
+    expect(failing[4]).toEqual({
+      label: "Last failure",
+      value: "2026-10-19 · timeout at 2026-10-20 08:00:00 UTC",
+      status: "down",
+    });
+    expect(researchRows({ ...base, status: "blocked", reason: "r" })[0].status).toBe("down");
+    const unknown = researchRows({ ...base, status: "unknown", reason: "worker not reporting" });
+    expect(unknown[0]).toEqual({
+      label: "Research continuity",
+      value: "Unknown — worker not reporting",
+      status: "down",
+    });
+  });
+
+  it("shows backup protection only as verified by the last backup run", () => {
+    const protectedRows = researchRows({
+      ...base,
+      backup_configured: true,
+      backup_status: "protected",
+      unprotected_datasets: 0,
+      backup_checked_at: "2026-10-20T12:30:00Z",
+    });
+    expect(protectedRows[5]).toEqual({
+      label: "Backup protection",
+      value: "All 4 verified (2026-10-20 12:30:00 UTC)",
+      status: "ok",
+    });
+    const partial = researchRows({ ...base, backup_status: "unprotected", unprotected_datasets: 1 });
+    expect(partial[5]).toEqual({
+      label: "Backup protection",
+      value: "3 of 4 protected",
+      status: "down",
+    });
+    const failing = researchRows({ ...base, backup_status: "failing", backup_error: "not mounted" });
+    expect(failing[5]).toEqual({
+      label: "Backup protection",
+      value: "Failing: not mounted",
+      status: "down",
+    });
   });
 
   it("leads the OINK CORP section with the research-data rows", () => {
@@ -570,14 +653,9 @@ describe("researchRows", () => {
       system: null,
       market: null,
       sniffer: null,
-      research: { ...base, status: "down" },
+      research: { ...base, status: "unknown", reason: "worker not reporting" },
     });
     const oink = sections.find((s) => s.title === "🧬 OINK CORP");
-    expect(oink?.rows.map((r) => r.label).slice(0, 4)).toEqual([
-      "Research data",
-      "Last preserved day",
-      "Failing / waiting days",
-      "Unprotected datasets",
-    ]);
+    expect(oink?.rows.map((r) => r.label)).toEqual(RESEARCH_LABELS);
   });
 });
