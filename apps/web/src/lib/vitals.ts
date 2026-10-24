@@ -99,11 +99,11 @@ export function researchRows(research: ResearchStatus | null): VitalRow[] {
  * background; this page only observes it, never drives it — reading Vitals
  * never creates a frame. In SNIFFER, "Status"/"Last scan"/"Coins analyzed"
  * are likewise real, reflecting Sniffer's own persisted analysis of the
- * most recently finalized frame (see `app.services.sniffer`). Warhog/OINK
- * CORP lay out the shape Vitals will eventually report on — including
- * OINK CORP's "Latest ranking"/"🍄 Truffles found", since rankings are
- * OINK CORP's, not Sniffer's — but every row in them is a hardcoded "N/A":
- * there is no live signal for any of it yet, so none is invented.
+ * most recently finalized frame (see `app.services.sniffer`). OINK CORP
+ * reports only what exists — its research-data continuity (see
+ * `researchRows`). Vitals has no rows for capabilities that don't exist
+ * yet (rankings, Truffles, experiment scheduling): a row is added when
+ * there is a real signal behind it, never as a placeholder.
  */
 export function buildVitalsSections({
   health,
@@ -250,25 +250,8 @@ export function buildVitalsSections({
       ],
     },
     {
-      title: "🐗 WARHOG",
-      rows: [
-        unavailableRow("Status"),
-        unavailableRow("Exchange"),
-        unavailableRow("Open positions"),
-        unavailableRow("Long exposure"),
-        unavailableRow("Short exposure"),
-        unavailableRow("Unrealized P&L"),
-      ],
-    },
-    {
       title: "🧬 OINK CORP",
-      rows: [
-        ...researchRows(research ?? null),
-        unavailableRow("Experiments running"),
-        unavailableRow("Last experiment"),
-        unavailableRow("Latest ranking"),
-        unavailableRow("🍄 Truffles found"),
-      ],
+      rows: researchRows(research ?? null),
     },
   ];
 }

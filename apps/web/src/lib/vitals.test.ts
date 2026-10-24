@@ -188,7 +188,7 @@ describe("buildVitalsSections", () => {
       sniffer: healthySniffer,
     });
     const titles = sections.map((s) => s.title);
-    expect(titles).toEqual(["SYSTEM", "MARKET", "🐽 SNIFFER", "🐗 WARHOG", "🧬 OINK CORP"]);
+    expect(titles).toEqual(["SYSTEM", "MARKET", "🐽 SNIFFER", "🧬 OINK CORP"]);
   });
 
   it("never fabricates a status for subsystems that do not exist yet", () => {
@@ -401,7 +401,7 @@ describe("buildVitalsSections", () => {
     });
   });
 
-  it("reports rankings under OINK CORP (hardcoded N/A), never under Sniffer", () => {
+  it("has no placeholder rows for capabilities that do not exist yet", () => {
     const sections = buildVitalsSections({
       health: "ok",
       ready: "ok",
@@ -413,16 +413,18 @@ describe("buildVitalsSections", () => {
     const oinkCorp = sections.find((s) => s.title === "🧬 OINK CORP");
 
     expect(sniffer?.rows.map((r) => r.label)).toEqual(["Status", "Last scan", "Coins analyzed"]);
-    expect(oinkCorp?.rows.find((r) => r.label === "Latest ranking")).toEqual({
-      label: "Latest ranking",
-      value: "N/A",
-      status: "unavailable",
-    });
-    expect(oinkCorp?.rows.find((r) => r.label === "🍄 Truffles found")).toEqual({
-      label: "🍄 Truffles found",
-      value: "N/A",
-      status: "unavailable",
-    });
+    // OINK CORP shows only its real research-data signal — no ranking,
+    // Truffle, or experiment rows until those capabilities exist.
+    expect(oinkCorp?.rows.map((r) => r.label)).toEqual([
+      "Research data",
+      "Last preserved day",
+      "Failing / waiting days",
+      "Unprotected datasets",
+    ]);
+    const labels = sections.flatMap((s) => s.rows.map((r) => r.label.toLowerCase()));
+    for (const absent of ["ranking", "truffle", "position", "exposure", "p&l", "exchange"]) {
+      expect(labels.some((l) => l.includes(absent))).toBe(false);
+    }
   });
 
   it("marks every SNIFFER row N/A when Sniffer has never analyzed a frame", () => {

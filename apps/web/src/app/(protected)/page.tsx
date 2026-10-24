@@ -8,9 +8,12 @@ export default function HomePage() {
         <h1 className="text-2xl font-semibold tracking-tight md:text-3xl">
           🐷🍄 Market Truffler
         </h1>
+        <p className="text-muted-foreground">
+          Sniffer senses. OINK CORP learns and discovers. The human decides.
+        </p>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid gap-4 sm:grid-cols-3">
         <ModuleCard
           href="/sniffer"
           icon="🐽"
@@ -18,16 +21,10 @@ export default function HomePage() {
           description="Senses the market: data, history, and measurable features."
         />
         <ModuleCard
-          href="/warhog"
-          icon="🐗"
-          title="Warhog"
-          description="Acts: entries, position management, and exits."
-        />
-        <ModuleCard
           href="/oink-corp"
           icon="🧬"
           title="OINK CORP"
-          description="Thinks: research, and Long/Short rankings — the truffles."
+          description="Learns and discovers: market research and, eventually, Long/Short opportunity rankings — the truffles."
         />
         <ModuleCard
           href="/vitals"

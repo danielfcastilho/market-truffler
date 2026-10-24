@@ -1,10 +1,10 @@
 # 🧬 OINK CORP
 
 OINK CORP is Market Truffler's intelligence: *Sniffer senses, OINK CORP
-thinks, Warhog acts.* It owns research (offline) and, eventually, the live
-Long/Short rankings that produce 🍄 Truffles — two operationally isolated
-halves. This directory is the research half's home for notebooks and
-generated data.
+learns and discovers, the human decides.* It owns research (offline) and,
+eventually, the live Long/Short rankings that produce 🍄 Truffles — two
+operationally isolated halves. This directory is the research half's home
+for notebooks and generated data.
 
 It is a **repository boundary, not a running service**. `docker-compose.yml`
 does not build or start anything from here — the `api` service only
@@ -19,9 +19,11 @@ language intuitions, which research may reject) and, eventually, from its
 own hypotheses, both judged by the same evaluation standard. Validated
 results become Challenger ranking models; a human-approved Champion runs in
 the deterministic live ranking runtime, which never depends on research.
-Future work here includes hypothesis experiments, chronological and
-regime-aware evaluation with protected holdout data, path-dependent outcome
-labels for the Martingale-inspired strategy, and Martingale simulation.
+Future work here includes broader hypothesis experiments, regime-aware
+evaluation with protected holdout data, and further outcome labels —
+including path-dependent ones such as favorable/adverse excursion and
+recovery — studied as general market behavior, not for any one trading
+strategy (execution is outside Market Truffler's product).
 
 See [`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md) for how this relates
 to the production domains.
@@ -62,7 +64,9 @@ Research rules on the 5m base timeframe:
   every dataset generated before the 5m migration. Regenerate old datasets
   rather than mixing them.
 
-Still not implemented: heuristics, hypotheses, experiments, evaluation,
-ranking models, Champion/Challenger promotion, Score, Rank, Truffles,
-backtesting, or Martingale simulation. No notebooks exist yet — none should
-be added merely to look implemented.
+Also implemented: manually written experiment specs
+(`experiments/`), the independent Evaluator, immutable run records, and
+automatic daily research shards (the `research` worker). Still not
+implemented: a heuristic library, autonomous hypothesis generation,
+ranking models, Champion/Challenger promotion, Score, Rank or Truffles. No
+notebooks exist yet — none should be added merely to look implemented.

@@ -1,6 +1,10 @@
 # Market Truffler 🐷🍄
 
-A crypto trading system, currently at its **foundation milestone** plus a
+A cryptocurrency **market-intelligence and opportunity-discovery
+platform** — not a trading bot: it observes the market, researches what
+conditions relate to what happens next, and will eventually produce
+explainable Long/Short opportunity rankings for a human trader. Execution
+is outside the product. Today it is at its **foundation milestone** plus a
 real MARKET capability and Sniffer's factual measurements: a clean,
 containerized, runnable application shell — authentication, a database, a
 typed API, a navigable frontend — that discovers its Bybit market universe
@@ -16,11 +20,12 @@ at 5m/15m/1h/4h, Open Interest change at 5m/15m/1h/4h/24h,
 Volatility/ATR% at 15m/1h/4h/24h, Relative Volume at 15m/1h/4h, and
 Funding Rate current/24h-avg from real settled Bybit funding events),
 persisting them for the `/api/sniffer/latest` API and the Sniffer/Vitals
-pages. No ranking, no scoring, no Truffles, no trading logic yet.
+pages. No ranking, no scoring, no Truffles yet.
 
-*Sniffer senses. OINK CORP thinks. Warhog acts.* Sniffer owns market
-observation and features; OINK CORP owns research and (eventually) the live
-Long/Short rankings that produce Truffles; Warhog will own execution. See
+*Sniffer senses. OINK CORP learns and discovers. The human decides.*
+Sniffer owns market observation and features; OINK CORP owns research and
+(eventually) the live Long/Short rankings that produce Truffles; the human
+decides what to do with them. See
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for where this is headed.
 
 ## Repository structure
@@ -143,18 +148,17 @@ timeframe: 5m"), higher-timeframe candles fetched from the exchange
 directly (they're always derived locally from 5m), historical frame
 backfill/reconstruction (frames are only ever produced live, going
 forward), `rsi_14_24h`/`volatility_5m`/`relative_volume_24h` (deliberately
-not part of this feature set yet), ranking, scoring, Truffles, or trading
-logic. Warhog and OINK CORP are still reachable in the UI only as a
-deliberate "in progress" page. Vitals (system health)'s SYSTEM section is
+not part of this feature set yet), ranking, scoring, or Truffles — and
+there is no trade execution of any kind, by design. OINK CORP is reachable
+in the UI only as a deliberate "in progress" page. Vitals (system health)'s SYSTEM section is
 real, every row in MARKET is real ("Bybit connectivity"/"Symbols tracked"
 from REST, "Market data"/"Last market update"/"Data freshness" from the
 live WebSocket collector, "Historical coverage" from the history
 reconciler's persisted progress, "Latest market frame"/"Frame completeness"
 from the frame synchronizer's most recently finalized snapshot), and in
-🐽 SNIFFER, "Status"/"Last scan"/"Coins analyzed" are real too. 🐗 WARHOG
-and 🧬 OINK CORP (whose rows include "Latest ranking"/"🍄 Truffles found" —
-rankings are OINK CORP's) are laid out for the future but every value is
-still "N/A" — nothing is simulated.
+🐽 SNIFFER, "Status"/"Last scan"/"Coins analyzed" are real too, as are
+🧬 OINK CORP's research-data continuity rows. Vitals shows no rows for
+capabilities that don't exist yet — nothing is simulated.
 
 ## Prerequisites
 
@@ -256,10 +260,10 @@ signed, `httpOnly` cookie — it survives a page refresh and is enforced on
 both the frontend (redirects) and the backend (every protected endpoint
 independently verifies it).
 
-From there you can navigate to Home, Sniffer, Warhog, OINK CORP, and Vitals.
+From there you can navigate to Home, Sniffer, OINK CORP, and Vitals.
 Sniffer shows Market Data: the latest frame's Sniffs for every tracked
-symbol, plus a per-symbol page. Warhog and OINK CORP each show an
-intentional "in progress" page.
+symbol, plus a per-symbol page. OINK CORP shows an intentional "in
+progress" page.
 Vitals shows a SYSTEM section with live operational status (API liveness,
 API readiness, database connectivity, uptime, environment, backend version)
 and a fully-live MARKET section: "Bybit connectivity"/"Symbols tracked"
@@ -269,9 +273,8 @@ the MARKET history reconciler, and "Latest market frame"/"Frame
 completeness" come from the MARKET frame synchronizer — all three have been
 running in the background since the API started; Vitals just reads their
 status, it never triggers any of them. 🐽 SNIFFER reports Sniffer's latest
-analysis; 🐗 WARHOG/🧬 OINK CORP still preview what Vitals will eventually
-report on: every row there is an honest "N/A", never a fabricated value,
-since none of that infrastructure exists yet.
+analysis, and 🧬 OINK CORP its research-data continuity (last preserved
+day, failing/waiting days, datasets not yet backed up).
 
 ## 6. Run tests
 

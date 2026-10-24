@@ -5,23 +5,32 @@ Truffler is being built toward, and the **actual state** of the current
 milestone. Don't confuse the two — much of what's below is not implemented
 yet, by design. Sections describing future design say so explicitly.
 
-## The future system
+## Product vision
 
-> **Sniffer senses. OINK CORP thinks. Warhog acts.**
+Market Truffler is an **autonomous market-intelligence and
+opportunity-discovery platform** for cryptocurrency markets — not a trading
+bot. It observes the market, investigates which conditions relate to what
+happens next, accumulates evidence, and turns that knowledge into
+explainable Long and Short opportunity rankings that help a human trader
+decide what is worth investigating. Its central output is knowledge
+translated into market intelligence, never a trade: **execution is outside
+the product boundary.**
 
-Three product areas form the trading pipeline, plus one operational area
-that observes all of them. These are *logical* product boundaries — modules
-inside the existing `apps/api` and `apps/web` applications — not separate
-services, databases, containers, or deployment units.
+> **Sniffer senses. OINK CORP learns and discovers. The human decides.**
+
+Two product domains and one operational domain. These are *logical*
+boundaries — modules inside the existing `apps/api` and `apps/web`
+applications — not separate services, databases, containers, or deployment
+units.
 
 ```
                          BYBIT
                            │
                            ▼
-        🐽 SNIFFER — SENSES  (implemented)
+        🐽 SNIFFER — MARKET SENSING  (implemented)
   market data, history, integrity, completeness,
   Market Frames, features ("Sniffs")
-                           │  point-in-time observations
+                           │  point-in-time market observations
               ┌────────────┴─────────────┐
               ▼                          ▼
   🧬 OINK CORP — RESEARCH       🧬 OINK CORP — RANKING
@@ -29,15 +38,14 @@ services, databases, containers, or deployment units.
    implemented)                   not implemented)
   heuristics → hypotheses        approved Champion model
   → experiments → evaluation     → Long / Short Scores
-  → Challenger models            → Rank → Qualification
-              │                          ▲      │
-              └── human-approved ────────┘      ▼
-                  promotion                🍄 Truffles
-                                                │
+  → research knowledge           → Rank → Qualification
+  → Challenger models                    ▲      │
+              │                          │      ▼
+              └── human-approved ────────┘  🍄 Truffles
+                  promotion                     │
                                                 ▼
-                                 🐗 WARHOG — ACTS (not implemented)
-                       entries, sizing, Martingale-style position
-                       management, hedging, exits, orders, fills
+                                          HUMAN TRADER
+                                    (outside the product)
 
           🩺 VITALS — observes the health of all of the above
 ```
@@ -50,44 +58,72 @@ storage, integrity and completeness, Market Frames, feature computation
 (Sniffs), historical feature reconstruction (the same `FeatureEngine`,
 reused by OINK CORP's replay), and Market Data inspection in the UI.
 ("MARKET", used in section names below and in Vitals, is Sniffer's
-market-data layer.) Sniffer produces observations and measurements only. It does not decide
-whether a coin is a desirable Long or Short, and it does not own research,
-model evaluation, Champion/Challenger management, or rankings.
+market-data layer.) Sniffer produces observations and measurements only. It
+never interprets whether a coin is an attractive Long or Short, and it does
+not own research, model evaluation, Champion/Challenger management, or
+rankings.
 
-**🧬 OINK CORP — thinks.** Everything between observations and trading
-opportunities, in two operationally isolated halves:
+**🧬 OINK CORP — learns and discovers.** Everything that turns observations
+into intelligence, in two operationally isolated halves:
 
-- **Research** (offline): investigates which market characteristics,
-  conditions and relationships identify attractive Long/Short
-  opportunities — from human heuristics and, eventually, from its own
-  hypotheses — under one shared evaluation standard. Produces Challenger
-  models. Partially implemented: historical replay + labeled research
-  datasets (see "OINK CORP: historical Sniff replay and research
-  datasets").
+- **Research** (offline): human-guided research from trader heuristics
+  and, eventually, autonomous hypothesis discovery — both held to one
+  evaluation standard — through reproducible experiments, independent
+  evaluation, accumulated research knowledge, hypothesis refinement, and
+  Challenger models. Partially implemented: historical replay, labeled
+  research datasets, research-data continuity, and manually written
+  experiments judged by the independent Evaluator (see the OINK CORP
+  sections below).
 - **Ranking** (live): consumes current Sniffer observations and evaluates
-  them with the explicitly approved Champion model, producing Long/Short
-  Scores, Ranks and qualified opportunities (🍄 Truffles). Deterministic;
-  never depends on an LLM; never runs experiments; never incorporates an
-  unvalidated hypothesis. Not implemented — no model has been approved.
+  them with the explicitly approved Champion model, producing explainable
+  Long/Short Scores, Ranks and qualified opportunities (🍄 Truffles).
+  Deterministic; never depends on an LLM; never runs experiments; never
+  incorporates an unvalidated hypothesis. Not implemented — no model has
+  been approved.
 
 A failed or running experiment must never affect live ranking. See "OINK
 CORP: future design" below.
 
-**🐗 Warhog — acts.** Entries, position sizing, Martingale-style
-progression, active-position management, recovery, emergency behavior,
-hedging, exits, orders, fills, reconciliation. Consumes Truffles. Not
-implemented.
+**🩺 Vitals — observes system health.** Answers "is Market Truffler
+operating correctly?" It reports only real, implemented capabilities — a
+row exists when there is a real signal behind it, never as a placeholder
+or simulated value.
 
-**🩺 Vitals — observes system health.** Not part of the trading pipeline.
-Answers "is Market Truffler operating correctly?" Monitors real runtime
-components — and shows an honest "N/A", never a simulated value, for areas
-that don't exist yet. Partially implemented (see below).
+**Execution is outside the product.** No order routing, position
+management, exposure, P&L, hedging, or automated trading exists or is
+planned. Market Truffler identifies opportunities; humans decide how to
+use them.
+
+### Architectural principles
+
+- **Intelligence is the product.** The advantage comes from discovering,
+  validating, accumulating and applying market knowledge.
+- **Research is not ranking.** Research explores uncertain ideas; live
+  ranking applies only explicitly approved models.
+- **Observations are not judgments.** Sniffer measures market conditions;
+  OINK CORP interprets their significance.
+- **Evidence outranks intuition.** Human heuristics may set research
+  priorities but never bypass evaluation standards.
+- **Self-improvement must be measurable.** A future AI Researcher improves
+  only through reproducible experiments, independent evaluation and
+  accumulated evidence — never through unverified self-assessment.
+- **Execution is outside the product boundary.**
+- **Complexity must be earned.** No frameworks, agents, registries or
+  abstractions before a concrete requirement justifies them.
+
+**Product history.** Until 2026-10-24 the plan included a third product
+area, 🐗 Warhog, an execution engine for a Martingale-inspired strategy,
+and parts of OINK CORP's research direction were framed around that
+strategy. Warhog was permanently removed as a deliberate product decision;
+research now studies opportunity attractiveness independently of any
+trading strategy (see "Outcomes are strategy-agnostic" below). Older
+milestone notes in git history still mention it.
 
 Today: Sniffer is implemented end to end (23 Sniffs per instrument per
-Market Frame — see "Sniffer measures" below); OINK CORP has only its
-offline research foundation; Warhog does not exist. No ranking model,
-Score, Rank, Qualification or Truffle exists anywhere, and no Martingale
-parameters or execution architecture have been decided.
+Market Frame — see "Sniffer measures" below); OINK CORP has its offline
+research foundation (replay, datasets, continuity, experiments and the
+Evaluator). No ranking model, Score, Rank, Qualification or Truffle exists
+anywhere.
 
 ### Bybit connectivity and the market universe
 
@@ -1433,15 +1469,23 @@ above). Repeated experimentation against the same validation data
 overfits even without ML: validation reuse is disclosed today; protected
 holdout periods and enforced evaluation budgets are future work.
 
-#### Trading objectives are path-dependent
+#### Outcomes are strategy-agnostic
 
-Warhog's eventual strategy is Martingale-inspired, so an attractive
-opportunity depends on more than direction: adverse price movement,
-recovery potential, volatility, liquidity, drawdown, time to recovery,
-market regime and path-dependent risk. Fixed-horizon forward returns (the
-only labels today) are a useful starting point, not the definition of a
-good opportunity. Additional outcome labels belong beside them in
-`app.research`, versioned like the existing ones.
+OINK CORP studies opportunity attractiveness as a general market
+phenomenon, not as the input to any predetermined trading strategy.
+Potentially relevant outcomes include directional and market-relative
+forward returns, maximum favorable and adverse excursion, recovery,
+volatility behavior, trend continuation versus mean reversion, regime
+dependence, and robustness across market conditions. Path-dependent
+behavior stays in scope — it is a property of the opportunity, not of an
+execution plan — and research, not an assumed strategy, decides which
+outcomes prove useful. Fixed-horizon forward returns (the only labels
+today) are a starting point, not the definition of a good opportunity.
+Additional outcome labels belong beside them in `app.research`, versioned
+like the existing ones. (Before 2026-10-24 this section framed outcomes
+around a Martingale-inspired execution strategy; that framing was
+removed with Warhog — no dataset, label, spec or Evaluator rule ever
+depended on it.)
 
 #### Live ranking
 
@@ -1452,9 +1496,9 @@ OINK CORP Ranking Runtime — the approved Champion model, deterministic
         ▼
 Long Score / Short Score → Long Rank / Short Rank
         ▼
-Qualification → 🍄 Truffles (Green = Long, Red = Short)
+Qualification → 🍄 Truffles (Green = Long, Red = Short), each with its explanation
         ▼
-Warhog
+a human trader decides what, if anything, to do (outside the product)
 ```
 
 Settled concepts from earlier design work, now owned by OINK CORP Ranking:
@@ -1525,8 +1569,8 @@ once each has something real to show.
   proxies `/api/*` to the backend so the browser only ever talks to one
   origin. `/sniffer` is Sniffer's Market Data inspector (the Sniffs
   matrix) and `/sniffer/{symbol}` its per-symbol detail (see "Sniffer in
-  the UI: Market Data" above). `/oink-corp` and `/warhog` are honest
-  "in progress" pages.
+  the UI: Market Data" above). `/oink-corp` is an honest "in progress"
+  page.
 - **`apps/api`** (FastAPI, Pydantic, SQLAlchemy 2, Alembic): the backend.
   Owns the `User` model, session issuance/verification, and the
   database-touching endpoints (`/health`, `/ready`, `/api/me`,
@@ -1590,21 +1634,11 @@ once each has something real to show.
   Vitals' behalf (see "Fix Vitals page slowness" in git history for why
   that distinction matters). In 🐽 SNIFFER,
   "Status"/"Last scan"/"Coins analyzed" are real too, reflecting
-  Sniffer's own most recent analysis. Every row in 🐗 WARHOG and
-  🧬 OINK CORP — including OINK CORP's "Latest ranking"/"🍄 Truffles
-  found", since rankings are OINK CORP's — is hardcoded "N/A": there is no
-  live signal behind any of them yet, so none is invented.
-
-### Why no Warhog service exists yet
-
-The spec that has driven every milestone so far is explicit: don't create
-empty service scaffolding to match a future architecture. `apps/api` and
-`apps/web` remain the only two applications — Sniffer is a service module
-inside `apps/api` (`app/services/sniffer.py`), not a separate app or
-container, and Warhog becomes real (as a module, a separate app, or
-whatever its own requirements turn out to need) only when its first actual
-implementation begins. Until then it's a route in the frontend that renders
-an intentional "in progress" page.
+  Sniffer's own most recent analysis. 🧬 OINK CORP shows its research-
+  data continuity ("Research data", "Last preserved day", "Failing /
+  waiting days", "Unprotected datasets"). Vitals has no rows for
+  capabilities that don't exist yet (rankings, Truffles), so nothing is
+  invented.
 
 ## Request flow (auth)
 
