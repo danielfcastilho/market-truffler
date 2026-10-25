@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import type {
   CampaignDetail as CampaignDetailData,
   DataHealth as DataHealthData,
+  ResearchAlert,
   ExperimentDetail as ExperimentDetailData,
   ModelKnowledge as ModelKnowledgeData,
   RankingResearch as RankingResearchData,
@@ -157,7 +158,12 @@ export interface ResearchStatus {
   backup_status: "protected" | "unprotected" | "failing" | "not_configured" | "unknown";
   backup_checked_at: string | null;
   backup_error: string | null;
+  /** Prospective continuity alerts (worker-derived, plus worker_stale). */
+  alerts?: ResearchAlert[];
+  alerts_checked_at?: string | null;
+  alerts_stale?: boolean;
 }
+
 
 export async function getResearchStatus(): Promise<ResearchStatus | null> {
   try {
@@ -327,3 +333,5 @@ export async function getLiveRankings(symbol?: string): Promise<LiveRankingsResu
     return { status: "error", message: "rankings API unreachable" };
   }
 }
+
+export type { ResearchAlert };

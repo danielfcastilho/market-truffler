@@ -115,7 +115,31 @@ def research_status_from_file(path: Path, now: datetime, pass_interval: float) -
     unprotected = summary.get("unprotected_datasets") or 0
     backup = report.get("backup")
 
+    published = report.get("alerts") or {}
+    alerts = [a for a in published.get("active", []) if isinstance(a, dict)]
+    if not fresh:
+        # The worker cannot report its own silence: raised here, never stored.
+        alerts.insert(
+            0,
+            {
+                "id": "research_worker/-/worker_stale",
+                "registration_id": None,
+                "role": None,
+                "condition": "worker_stale",
+                "severity": "warning",
+                "explanation": "the research worker is not reporting; continuity, verification "
+                "and the alerts below are as of its last report",
+                "days": [],
+                "interval": None,
+                "first_observed": heartbeat.isoformat() if heartbeat else None,
+                "last_checked": now.isoformat(),
+                "state": "active",
+            },
+        )
     return ResearchStatus(
+        alerts=alerts,
+        alerts_checked_at=_parse(published.get("checked_at")),
+        alerts_stale=not fresh,
         status=status,
         reason=reason,
         reported_at=reported_at,

@@ -39,6 +39,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.temporal import DECISION_DELAY
 from app.domain.timeframes import BASE_DURATION, floor_to_boundary
 from app.repositories.sniffer_repository import SnifferRepository
 from app.services.collection_continuity import FINALIZE_ALLOWANCE
@@ -266,10 +267,10 @@ def _manifest_problems(name: str, manifest: dict[str, Any]) -> list[str]:
 
 def shard_inventory(data_dir: Path, worker: dict[str, Any] | None) -> dict[str, Any]:
     """Every dataset directory under the research data directory, from its
-    manifest alone. `verification` is the worker's last explicit
-    re-verification of that dataset when it ran one, else "not_checked" —
-    a manifest that parses is never called verified."""
-    reported = {d.get("name"): d for d in (worker or {}).get("datasets", []) if isinstance(d, dict)}
+    manifest alone. `verification` is the worker's scheduled verification
+    status (`app.research.integrity`), "never_checked" until it reports on
+    the dataset — a manifest that parses is never called verified."""
+    reported = ((worker or {}).get("verification") or {}).get("datasets") or {}
     items = []
     if data_dir.is_dir():
         for path in sorted(data_dir.iterdir()):
@@ -311,14 +312,15 @@ def shard_inventory(data_dir: Path, worker: dict[str, Any] | None) -> dict[str, 
                         "manifest_problems": _manifest_problems(path.name, manifest),
                     }
                 )
+            # The worker's scheduled verification (app.research.integrity);
+            # "never_checked" until it has reported on this dataset.
             check = reported.get(path.name) or {}
-            entry["verification"] = (
-                ("verified" if check["verified_now"] else "failed")
-                if "verified_now" in check
-                else "not_checked"
-            )
-            if check.get("verification_error"):
-                entry["verification_error"] = check["verification_error"]
+            entry["verification"] = check.get("status", "never_checked")
+            entry["verification_scope"] = check.get("scope")
+            entry["verified_at"] = check.get("checked_at")
+            entry["verification_overdue"] = bool(check.get("overdue"))
+            if check.get("error"):
+                entry["verification_error"] = check["error"]
             items.append(entry)
     return {"datasets": items, "overlaps": _overlaps(items)}
 
@@ -344,6 +346,97 @@ def _overlaps(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     {"datasets": [a, b], "kind": "duplicate" if (a0, a1) == (b0, b1) else "overlap"}
                 )
     return found
+
+
+def verification_summary(worker: dict[str, Any] | None) -> dict[str, Any]:
+    """The worker's scheduled verification, summarized (counts, last pass,
+    interval)."""
+    report = (worker or {}).get("verification")
+    if not isinstance(report, dict):
+        return {
+            "available": False,
+            "reason": "the research worker has not reported verification yet",
+        }
+    last = ((worker or {}).get("worker") or {}).get("last_verification") or {}
+    return {
+        "available": True,
+        "interval_hours": report.get("interval_hours"),
+        "last_checked_at": report.get("last_checked_at"),
+        "last_pass_at": last.get("at"),
+        "last_pass_checked": len(last.get("checked") or []),
+        "counts": report.get("counts") or {},
+        "scopes": {
+            "full": "sha256 of the whole file, schema and base-timeframe metadata, row count "
+            "(only frame_time is loaded)",
+            "content_hash_only": "sha256 of the bytes only — the dataset reaches into a reserved "
+            "prospective period, so its Parquet file is not parsed (status restricted)",
+        },
+    }
+
+
+def recent_continuity(
+    rows: list[tuple[datetime, str, int, int, str | None]],
+    now: datetime,
+    windows: tuple[tuple[str, timedelta], ...] = (
+        ("24h", timedelta(hours=24)),
+        ("7d", timedelta(days=7)),
+    ),
+) -> dict[str, Any]:
+    """Recent Frame coverage (collection continuity) and analysis
+    completion over rolling windows of the 5-minute grid. A window starts no
+    earlier than the first frame ever recorded and ends at the last due
+    boundary (the forming frame is excluded). Frames still inside their
+    normal analysis window (decision time + finalization allowance) are
+    `analysis_pending`, not unanalyzed. A proxy for collection, not process
+    uptime."""
+    on_grid = {r[0]: r for r in rows if floor_to_boundary(r[0], BASE_DURATION) == r[0]}
+    if not on_grid:
+        return {"available": False, "reason": "no frame has been recorded yet"}
+    first = min(on_grid)
+    end = floor_to_boundary(now - FINALIZE_ALLOWANCE, BASE_DURATION)
+    analysis_due = now - DECISION_DELAY - FINALIZE_ALLOWANCE
+    out = {}
+    for label, length in windows:
+        nominal = floor_to_boundary(now - length, BASE_DURATION)
+        if nominal < now - length:
+            nominal += BASE_DURATION
+        start = max(nominal, first)
+        expected = finalized = building = analyzed = eligible = pending = 0
+        t = start
+        while t <= end:
+            expected += 1
+            row = on_grid.get(t)
+            if row is not None and row[1] == "building":
+                building += 1
+            elif row is not None:
+                finalized += 1
+                if row[3] > 0:
+                    if row[4]:
+                        analyzed += 1
+                        eligible += 1
+                    elif t > analysis_due:
+                        pending += 1
+                    else:
+                        eligible += 1
+            t += BASE_DURATION
+        out[label] = {
+            "from": start.isoformat(),
+            "to": (end + BASE_DURATION).isoformat(),
+            # Starts later than the window because collection began within it.
+            "window_shortened": start > nominal,
+            "expected": expected,
+            "finalized": finalized,
+            "missing": expected - finalized,
+            "never_finalized": building,
+            "coverage": finalized / expected if expected else None,
+            "analysis": {
+                "finalized_with_members": eligible,
+                "analyzed": analyzed,
+                "pending": pending,
+                "completion": analyzed / eligible if eligible else None,
+            },
+        }
+    return {"available": True, "windows": out}
 
 
 def shard_continuity(worker: dict[str, Any] | None) -> dict[str, Any]:
@@ -475,8 +568,9 @@ async def data_health(
         return cached[1]
     now = now or datetime.now(UTC)
     repo = SnifferRepository(session)
-    frames = frame_coverage(await repo.frame_health_rows(), now, await repo.earliest_result_frame())
     worker = _worker_report(data_dir)
+    rows = await repo.frame_health_rows()
+    frames = frame_coverage(rows, now, await repo.earliest_result_frame())
     inventory = shard_inventory(data_dir, worker)
     continuity = shard_continuity(worker)
     ready = readiness(worker)
@@ -489,6 +583,9 @@ async def data_health(
         "computed_at": now.isoformat(),
         "cache_seconds": CACHE_SECONDS,
         "frames": frames,
+        "recent_continuity": recent_continuity(rows, now),
+        "verification": verification_summary(worker),
+        "alerts": ((worker or {}).get("alerts") or {}).get("active", []),
         "shards": inventory,
         "shard_continuity": continuity,
         "temporal_contract": contract_summary(frames, inventory),
@@ -496,8 +593,9 @@ async def data_health(
         "warnings": _warnings(frames, inventory, continuity, ready, age),
         "limitations": [
             "Data completeness describes collection, not scientific validity.",
-            "Dataset verification is the worker's last explicit re-verification; a manifest that "
-            "parses is not a verified dataset.",
+            "Dataset verification is the worker's scheduled check (integrity only, not "
+            "scientific validity); a manifest that parses is not a verified dataset.",
+            "Recent Frame coverage is a proxy for collection, not process uptime.",
             "Registration readiness is the research worker's last report (it runs every pass), "
             "not a live computation.",
             "Sniffer results older than their partition retention are reported as "

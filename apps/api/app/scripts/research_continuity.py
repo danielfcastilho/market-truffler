@@ -57,7 +57,9 @@ from app.research.continuity import (
     write_status,
 )
 from app.research.dataset import DatasetIntegrityError, generate_dataset
+from app.research.integrity import run_verification, verification_report
 from app.research.readiness import registration_readiness
+from app.research.research_alerts import derive_alerts, update_alerts
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger(__name__)
@@ -131,11 +133,35 @@ def _registrations(config: ContinuityConfig, now: datetime) -> list[dict[str, An
         ]
 
 
+def _verification_interval() -> timedelta:
+    return timedelta(hours=get_settings().research_verification_interval_hours)
+
+
+def _verify_due(config: ContinuityConfig, stop: asyncio.Event | None) -> list[str]:
+    """The pass's bounded share of scheduled verification (blocking file
+    I/O, run in a thread by the loop)."""
+    return run_verification(
+        config.data_dir,
+        config.continuity_dir,
+        now=datetime.now(UTC),
+        interval=_verification_interval(),
+        max_per_pass=get_settings().research_verification_max_per_pass,
+        should_stop=(lambda: stop.is_set()) if stop is not None else (lambda: False),
+    )
+
+
 async def _status(
-    config: ContinuityConfig, worker: dict[str, Any], *, verify: bool = False
+    config: ContinuityConfig,
+    worker: dict[str, Any],
+    *,
+    verify: bool = False,
+    track_alerts: bool = False,
 ) -> dict[str, Any]:
+    """The worker's report. `track_alerts` (the worker loop only) applies
+    this pass's alert conditions to the stored lifecycle; otherwise they are
+    reported as they stand, without being recorded."""
     now = datetime.now(UTC)
-    return await build_status(
+    report = await build_status(
         get_session_factory(),
         config,
         now=now,
@@ -144,6 +170,18 @@ async def _status(
         backup=backup_report(config.data_dir, configured=_backup_dir() is not None),
         registrations=_registrations(config, now),
     )
+    report["verification"] = verification_report(
+        config.data_dir, config.continuity_dir, now, _verification_interval()
+    )
+    conditions = derive_alerts(
+        report.get("registrations", []), report["days"], report["verification"]["datasets"]
+    )
+    report["alerts"] = (
+        update_alerts(config.continuity_dir, conditions, now)
+        if track_alerts
+        else {"checked_at": now.isoformat(), "active": conditions, "recently_resolved": []}
+    )
+    return report
 
 
 def _read_worker_field(config: ContinuityConfig) -> dict[str, Any]:
@@ -195,13 +233,15 @@ async def _one_pass(
         after_generation=backup,
     )
     worker["generating"] = None
+    checked = await asyncio.to_thread(_verify_due, config, stop)
+    worker["last_verification"] = {"at": datetime.now(UTC).isoformat(), "checked": checked}
     worker["last_pass_finished_at"] = datetime.now(UTC).isoformat()
     worker["last_pass_summary"] = (
         {"lock_held_elsewhere": True}
         if summary is None
         else {k: v for k, v in summary.items() if k != "decisions"}
     )
-    write_status(config, await _status(config, worker))
+    write_status(config, await _status(config, worker, track_alerts=True))
     logger.info("continuity_pass_complete", extra={"summary": worker["last_pass_summary"]})
 
 

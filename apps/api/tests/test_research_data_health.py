@@ -173,7 +173,11 @@ def test_the_inventory_reads_manifests_only_and_reports_what_is_absent(tmp_path)
     (nofile / "data.parquet").unlink()
     before = _tree_hash(tmp_path)
 
-    worker = {"datasets": [{"name": "shard_s15m_20261012", "verified_now": True}]}
+    worker = {
+        "verification": {
+            "datasets": {"shard_s15m_20261012": {"status": "verified", "scope": "full"}}
+        }
+    }
     out = health.shard_inventory(tmp_path, worker)
     by_name = {d["name"]: d for d in out["datasets"]}
 
@@ -184,7 +188,7 @@ def test_the_inventory_reads_manifests_only_and_reports_what_is_absent(tmp_path)
         [],
     )
     b = by_name["shard_s15m_20261013"]
-    assert b["verification"] == "not_checked"  # parsing a manifest is not verifying it
+    assert b["verification"] == "never_checked"  # parsing a manifest is not verifying it
     assert b["temporal_contract_version"] is None and b["generated_at"] is None
     assert by_name["shard_s15m_20261014"]["manifest"] == "missing"
     c = by_name["shard_s15m_20261015"]
@@ -363,7 +367,8 @@ async def test_the_endpoint_is_authenticated_read_only_and_never_opens_parquet(
     body = (await client.get("/api/research/data-health")).json()
     assert body["frames"]["available"] and body["frames"]["expected"] >= 6
     assert body["frames"]["missing"] == body["frames"]["expected"] - 6
-    assert body["shards"]["datasets"][0]["verification"] == "not_checked"
+    assert body["shards"]["datasets"][0]["verification"] == "never_checked"
+    assert body["verification"]["available"] is False  # the worker has not reported it
     assert body["readiness"]["available"] and body["readiness"]["registrations"] == []
     assert body["warnings"] and body["limitations"]
     again = (await client.get("/api/research/data-health")).json()

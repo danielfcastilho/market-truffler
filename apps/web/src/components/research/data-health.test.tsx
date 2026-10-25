@@ -58,8 +58,8 @@ const HEALTH: DataHealth = {
   },
   shards: {
     datasets: [
-      { name: "shard_s15m_20261012", kind: "daily_shard", manifest: "present", data_file_present: true, temporal_contract_version: null, manifest_problems: [], verification: "not_checked" },
-      { name: "shard_s15m_20261013", kind: "daily_shard", manifest: "missing", data_file_present: true, verification: "not_checked" },
+      { name: "shard_s15m_20261012", kind: "daily_shard", manifest: "present", data_file_present: true, temporal_contract_version: null, manifest_problems: [], verification: "never_checked" },
+      { name: "shard_s15m_20261013", kind: "daily_shard", manifest: "missing", data_file_present: true, verification: "never_checked" },
     ],
     overlaps: [],
   },
@@ -131,7 +131,7 @@ describe("DataHealthView", () => {
   it("never presents unchecked or missing metadata as verified or zero", () => {
     render(<DataHealthView health={HEALTH} />);
     const shard = document.querySelector('[data-dataset="shard_s15m_20261012"]') as HTMLElement;
-    expect(shard).toHaveTextContent("contract unrecorded · not verified this pass");
+    expect(shard).toHaveTextContent("contract unrecorded · never checked");
     expect(document.querySelector('[data-dataset="shard_s15m_20261013"]')).toHaveTextContent("manifest missing");
   });
 
@@ -149,5 +149,47 @@ describe("DataHealthView", () => {
     expect(screen.getByText("No research dataset exists.")).toBeInTheDocument();
     expect(screen.getByText(/Readiness unavailable: the research worker/)).toBeInTheDocument();
     expect(screen.getByText(/Shard continuity unavailable/)).toBeInTheDocument();
+  });
+
+  it("shows verification, recent continuity and a registration's actionable alerts", () => {
+    const health: DataHealth = {
+      ...HEALTH,
+      verification: {
+        available: true,
+        interval_hours: 24,
+        last_checked_at: "2026-10-25T03:00:00+00:00",
+        last_pass_at: "2026-10-25T03:00:00+00:00",
+        last_pass_checked: 2,
+        counts: { verified: 2, restricted: 1, failed: 1 },
+        scopes: {},
+      },
+      recent_continuity: {
+        available: true,
+        windows: {
+          "24h": { from: "2026-10-24T03:00:00+00:00", to: "2026-10-25T03:00:00+00:00", window_shortened: false, expected: 288, finalized: 280, missing: 8, never_finalized: 0, coverage: 280 / 288, analysis: { finalized_with_members: 280, analyzed: 279, pending: 1, completion: 279 / 280 } },
+          "7d": { from: "2026-10-23T20:00:00+00:00", to: "2026-10-25T03:00:00+00:00", window_shortened: true, expected: 400, finalized: 300, missing: 100, never_finalized: 0, coverage: 0.75, analysis: { finalized_with_members: 300, analyzed: 300, pending: 0, completion: 1 } },
+        },
+      },
+      alerts: [
+        { id: "truffle-x-v1/validation/shard_unrecoverable", registration_id: "truffle-x-v1", role: "validation", condition: "shard_unrecoverable", severity: "warning", explanation: "2 completed day(s) of this partition have no shard", days: ["2026-12-28"], interval: ["2026-12-28", "2026-12-29"], first_observed: null, last_checked: null, state: "active" },
+        { id: "oi-price-1h-prospective-v1/validation/awaiting_data", registration_id: "oi-price-1h-prospective-v1", role: "validation", condition: "awaiting_data", severity: "info", explanation: "awaiting window", days: [], interval: null, first_observed: null, last_checked: null, state: "active" },
+      ],
+    };
+    render(<DataHealthView health={health} />);
+    expect(screen.getByText(/2 verified · 1 restricted \(hash only\) · 1 failed/)).toBeInTheDocument();
+    expect(screen.getByText(/Integrity only/)).toBeInTheDocument();
+    const day = document.querySelector('[data-window="24h"]') as HTMLElement;
+    expect(day).toHaveTextContent("97.2%");
+    expect(day).toHaveTextContent("1 still within their analysis window");
+    expect(document.querySelector('[data-window="7d"]')).toHaveTextContent("Starts at the first recorded frame");
+    const truffle = document.querySelector('[data-registration="truffle-x-v1"]') as HTMLElement;
+    expect(within(truffle).getByLabelText("Continuity alerts")).toHaveTextContent("have no shard");
+    const existing = document.querySelector('[data-registration="oi-price-1h-prospective-v1"]') as HTMLElement;
+    expect(within(existing).queryByLabelText("Continuity alerts")).toBeNull(); // info is not actionable
+  });
+
+  it("says when verification has never been reported", () => {
+    render(<DataHealthView health={{ ...HEALTH, verification: { available: false, reason: "the research worker has not reported verification yet" } }} />);
+    expect(screen.getByText(/Verification unavailable: the research worker/)).toBeInTheDocument();
   });
 });

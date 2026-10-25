@@ -485,7 +485,7 @@ describe("buildVitalsSections", () => {
     ]);
     // OINK CORP shows only its real research-data signal — no ranking,
     // Truffle, or experiment rows until those capabilities exist.
-    expect(oinkCorp?.rows.map((r) => r.label)).toEqual(RESEARCH_LABELS);
+    expect(oinkCorp?.rows.map((r) => r.label)).toEqual([...RESEARCH_LABELS, "Prospective continuity"]);
     const labels = sections.flatMap((s) => s.rows.map((r) => r.label.toLowerCase()));
     for (const absent of ["ranking", "truffle", "position", "exposure", "p&l", "exchange"]) {
       expect(labels.some((l) => l.includes(absent))).toBe(false);
@@ -726,6 +726,35 @@ describe("researchRows", () => {
       research: { ...base, status: "unknown", reason: "worker not reporting" },
     });
     const oink = sections.find((s) => s.title === "🧬 OINK CORP");
-    expect(oink?.rows.map((r) => r.label)).toEqual(RESEARCH_LABELS);
+    expect(oink?.rows.map((r) => r.label)).toEqual([...RESEARCH_LABELS, "Prospective continuity"]);
+  });
+
+  it("surfaces actionable continuity alerts and keeps informational ones out", () => {
+    const alert = (severity: "critical" | "warning" | "info", condition: string) => ({
+      id: `reg-v1/validation/${condition}`,
+      registration_id: "reg-v1",
+      role: "validation",
+      condition,
+      severity,
+      explanation: "e",
+      days: ["2026-10-27"],
+      interval: ["2026-10-27", "2026-10-27"] as [string, string],
+      first_observed: "2026-10-27T00:00:00Z",
+      last_checked: "2026-10-28T00:00:00Z",
+      state: "active",
+    });
+    const section = (research: ResearchStatus) =>
+      buildVitalsSections({ health: "ok", ready: "ok", system: null, market: null, sniffer: null, research }).find(
+        (s) => s.title === "🧬 OINK CORP",
+      )!;
+    const quiet = section({ ...base, alerts: [alert("info", "awaiting_data")] });
+    expect(quiet.rows.at(-1)).toEqual({ label: "Prospective continuity", value: "No alerts", status: "ok" });
+    expect(quiet.alerts).toEqual([]);
+    const loud = section({ ...base, alerts: [alert("critical", "shard_integrity_failed"), alert("warning", "shard_unrecoverable"), alert("info", "awaiting_data")] });
+    expect(loud.rows.at(-1)).toEqual({ label: "Prospective continuity", value: "2 alert(s), 1 critical", status: "down" });
+    expect(loud.alerts?.map((a) => a.condition)).toEqual(["shard_integrity_failed", "shard_unrecoverable"]);
+    const stale = section({ ...base, alerts: [], alerts_stale: true });
+    expect(stale.rows.at(-1)?.value).toBe("Unknown — worker not reporting");
+    expect(section({ ...base }).rows.at(-1)?.status).toBe("unavailable");
   });
 });

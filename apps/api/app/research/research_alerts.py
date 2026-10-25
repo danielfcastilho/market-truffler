@@ -1,0 +1,223 @@
+"""Prospective research continuity alerts, derived by the research worker
+each pass from facts it already owns — never a second reading of the
+protocol:
+
+- its per-day shard decisions (`continuity.decide_day`: a day is only
+  judged once it is complete and its labels have matured, so a day in
+  progress, an immature day or a future window never alerts);
+- registration readiness (`app.research.readiness`, the protocol's own
+  verification and partition states);
+- scheduled integrity verification (`app.research.integrity`).
+
+Conditions, aggregated per registration partition (one alert per problem,
+listing its days — never one per day):
+
+- `registration_invalid` (critical): the registration does not verify;
+- `shard_integrity_failed` (critical): a shard of a partition day failed
+  verification;
+- `shard_unrecoverable` (warning): a completed partition day has no shard
+  and cannot get one (collection gap, sources expired);
+- `shard_generation_failing` (warning): a partition day's shard keeps
+  failing to generate;
+- `verification_overdue` (warning): a partition day's shard was not
+  re-verified within twice the interval;
+- `awaiting_data` (info): the partition is ahead (awaiting its window or
+  accumulating).
+
+Lifecycle (`continuity/alerts.json`, operational state): an alert's id is
+`<registration>/<role>/<condition>`; while its condition holds it stays
+active with its first-observed time; when it no longer holds it is
+resolved; if it returns it is active again with a new first-observed time
+and an incremented occurrence count. Alerts are only updated by a
+completed pass, so a restart never resolves anything by itself.
+"""
+
+import json
+import os
+from datetime import date, datetime
+from pathlib import Path
+from typing import Any
+
+from app.research.continuity import shard_name
+
+ALERTS_FILE = "alerts.json"
+MAX_RESOLVED = 50
+_UNRECOVERABLE = ("collection_gap", "source_expired")
+
+
+def _alert(
+    registration: str,
+    role: str | None,
+    condition: str,
+    severity: str,
+    explanation: str,
+    days: list[str] | None = None,
+) -> dict[str, Any]:
+    days = sorted(days or [])
+    return {
+        "id": f"{registration}/{role or '-'}/{condition}",
+        "registration_id": registration,
+        "role": role,
+        "condition": condition,
+        "severity": severity,
+        "explanation": explanation,
+        "days": days,
+        "interval": [days[0], days[-1]] if days else None,
+    }
+
+
+def derive_alerts(
+    registrations: list[dict[str, Any]],
+    days: list[dict[str, Any]],
+    verification: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """The conditions that hold now (no lifecycle), deterministic order."""
+    by_day = {str(d.get("day")): d for d in days}
+    out = []
+    for r in registrations:
+        rid = str(r.get("registration_id"))
+        if r.get("verification") != "verified":
+            out.append(
+                _alert(
+                    rid,
+                    None,
+                    "registration_invalid",
+                    "critical",
+                    "the registration does not verify: " + "; ".join(r.get("problems") or []),
+                )
+            )
+        for p in r.get("partitions", []):
+            role = str(p.get("role"))
+            start, end = date.fromisoformat(p["start"]), date.fromisoformat(p["end"])
+            window = [d for d, v in by_day.items() if start <= date.fromisoformat(d) < end]
+            lost = [d for d in window if by_day[d].get("status") in _UNRECOVERABLE]
+            failing = [
+                d
+                for d in window
+                if by_day[d].get("attempts")
+                and by_day[d].get("status") not in ("preserved", *_UNRECOVERABLE)
+            ]
+            shards = {d: verification.get(shard_name(date.fromisoformat(d))) for d in window}
+            corrupt = [d for d, v in shards.items() if v and v.get("status") == "failed"]
+            overdue = [d for d, v in shards.items() if v and v.get("overdue")]
+            if corrupt:
+                out.append(
+                    _alert(
+                        rid,
+                        role,
+                        "shard_integrity_failed",
+                        "critical",
+                        f"{len(corrupt)} shard(s) of this partition failed integrity verification",
+                        corrupt,
+                    )
+                )
+            if lost:
+                out.append(
+                    _alert(
+                        rid,
+                        role,
+                        "shard_unrecoverable",
+                        "warning",
+                        f"{len(lost)} completed day(s) of this partition have no shard and cannot "
+                        "get one; the evaluation will record them as missing",
+                        lost,
+                    )
+                )
+            if failing:
+                out.append(
+                    _alert(
+                        rid,
+                        role,
+                        "shard_generation_failing",
+                        "warning",
+                        f"{len(failing)} day(s) of this partition keep failing to generate",
+                        failing,
+                    )
+                )
+            if overdue:
+                out.append(
+                    _alert(
+                        rid,
+                        role,
+                        "verification_overdue",
+                        "warning",
+                        f"{len(overdue)} shard(s) were not re-verified within twice the interval",
+                        overdue,
+                    )
+                )
+            if p.get("phase") in ("awaiting_window", "accumulating"):
+                out.append(
+                    _alert(
+                        rid,
+                        role,
+                        "awaiting_data",
+                        "info",
+                        f"{p.get('phase', '').replace('_', ' ')}; eligible from "
+                        f"{str(p.get('eligible_from'))[:10]}",
+                    )
+                )
+    return out
+
+
+def _load(continuity_dir: Path) -> dict[str, Any]:
+    try:
+        value = json.loads((continuity_dir / ALERTS_FILE).read_text())
+        if isinstance(value, dict) and isinstance(value.get("active"), dict):
+            return value
+    except (OSError, ValueError):
+        pass
+    return {"active": {}, "resolved": [], "occurrences": {}}
+
+
+def update_alerts(
+    continuity_dir: Path, current: list[dict[str, Any]], now: datetime
+) -> dict[str, Any]:
+    """Apply one pass's conditions to the stored lifecycle and save it.
+    Returns the published view: active (sorted by severity, then id) and
+    recently resolved."""
+    stored = _load(continuity_dir)
+    active: dict[str, dict[str, Any]] = stored["active"]
+    occurrences: dict[str, int] = stored.get("occurrences", {})
+    resolved: list[dict[str, Any]] = stored.get("resolved", [])
+    seen = set()
+    for alert in current:
+        seen.add(alert["id"])
+        if alert["id"] in active:
+            active[alert["id"]] = {
+                **alert,
+                "first_observed": active[alert["id"]]["first_observed"],
+                "occurrence": active[alert["id"]].get("occurrence", 1),
+                "last_checked": now.isoformat(),
+                "state": "active",
+            }
+        else:
+            occurrences[alert["id"]] = occurrences.get(alert["id"], 0) + 1
+            active[alert["id"]] = {
+                **alert,
+                "first_observed": now.isoformat(),
+                "occurrence": occurrences[alert["id"]],
+                "last_checked": now.isoformat(),
+                "state": "active",
+            }
+    for alert_id in [a for a in active if a not in seen]:
+        resolved.append(
+            {**active.pop(alert_id), "state": "resolved", "resolved_at": now.isoformat()}
+        )
+    resolved = resolved[-MAX_RESOLVED:]
+    continuity_dir.mkdir(parents=True, exist_ok=True)
+    path = continuity_dir / ALERTS_FILE
+    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    tmp.write_text(
+        json.dumps(
+            {"active": active, "resolved": resolved, "occurrences": occurrences},
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    tmp.replace(path)
+    order = {"critical": 0, "warning": 1, "info": 2}
+    return {
+        "checked_at": now.isoformat(),
+        "active": sorted(active.values(), key=lambda a: (order.get(a["severity"], 3), a["id"])),
+        "recently_resolved": list(reversed(resolved[-10:])),
+    }

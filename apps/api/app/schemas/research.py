@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -53,3 +53,9 @@ class ResearchStatus(BaseModel):
     backup_status: Literal["protected", "unprotected", "failing", "not_configured", "unknown"]
     backup_checked_at: datetime | None = None
     backup_error: str | None = None
+    #: Prospective continuity alerts as the worker last evaluated them
+    #: (`app.research.research_alerts`), plus `research_worker_stale` when
+    #: the worker is not reporting (then the worker's list may be out of date).
+    alerts: list[dict[str, Any]] = []
+    alerts_checked_at: datetime | None = None
+    alerts_stale: bool = False

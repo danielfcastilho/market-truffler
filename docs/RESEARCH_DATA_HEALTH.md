@@ -98,6 +98,93 @@ still blocks evaluation. A registration that fails verification is
 reported and never repaired. Readiness writes no exposure event and opens
 no dataset.
 
+## Scheduled shard verification
+
+The research worker verifies every dataset once per
+`RESEARCH_VERIFICATION_INTERVAL_HOURS` (default 24). Each pass checks at
+most `RESEARCH_VERIFICATION_MAX_PER_PASS` (default 20), least recently
+checked first, in a thread so the heartbeat stays live. It never runs on a
+request. It reuses the existing verifiers (`app.research.integrity`):
+
+- **`full`:** `read_dataset(path, columns=["frame_time"])` checks the sha256
+  of the whole file against the manifest, the schema and base-timeframe
+  metadata, and the row count. Only `frame_time` is loaded, never a label.
+- **`content_hash_only`:** for a dataset whose outcome window reaches into
+  a reserved prospective period (`reservations.check_access` refuses it),
+  only its bytes are hashed against the manifest and the Parquet file is
+  never parsed. The result is `restricted`, never `verified`.
+
+Statuses:
+
+- `never_checked`;
+- `pending`: the manifest changed since the check, so the old result no
+  longer applies;
+- `verified`;
+- `restricted`;
+- `failed`, with the reason: missing file, hash, rows or schema;
+- `unavailable`: no readable manifest.
+
+A result older than twice the interval is flagged **overdue**. Results are
+operational state (`continuity/verification.json`), written one dataset at
+a time, so an interrupted pass loses only the dataset in progress. Nothing
+is ever written into a manifest or a dataset, repaired or deleted. **A
+verified shard is intact, not scientifically sufficient.**
+
+## Prospective continuity alerts
+
+Each pass, the worker derives alerts from its own facts
+(`app.research.research_alerts`):
+
+- its per-day shard decisions, which judge a day only once it is complete
+  and its labels have matured;
+- registration readiness;
+- verification.
+
+One alert per registration partition and condition (days aggregated):
+
+| condition | severity |
+| --- | --- |
+| `registration_invalid`: the registration does not verify | critical |
+| `shard_integrity_failed`: a partition day's shard failed verification | critical |
+| `shard_unrecoverable`: a completed partition day has no shard and cannot get one | warning |
+| `shard_generation_failing`: a partition day keeps failing to generate | warning |
+| `verification_overdue`: a partition day's shard was not re-verified in 2× the interval | warning |
+| `awaiting_data`: the partition is ahead (awaiting its window or accumulating) | info |
+
+Immature days, days in progress and future windows never produce warnings.
+
+**Lifecycle** (`continuity/alerts.json`):
+
+- An id is `<registration>/<role>/<condition>`.
+- It stays active, keeping its first-observed time, while the condition
+  holds, and resolves when it no longer does.
+- If it returns, it becomes active again with a new first-observed time and
+  an incremented occurrence count.
+- Only a completed worker pass updates alerts, so a restart resolves
+  nothing.
+- A silent worker cannot report itself: the API adds `worker_stale`
+  (warning) when the heartbeat is stale, and marks the list as possibly out
+  of date.
+
+**Where they show:** actionable alerts appear in Vitals → OINK CORP, as a
+"Prospective continuity" row plus the list. On the Data Health page they
+appear on the affected registration's card.
+
+## Recent collection continuity
+
+These are rolling 24-hour and 7-day windows on the same 5-minute grid. They
+end at the last due boundary, so the forming frame is excluded, and start no
+earlier than the first frame ever recorded (`window_shortened`). Each window
+reports two separate things:
+
+- **Frame coverage:** finalized frames ÷ expected frames.
+- **Analysis completion:** analyzed ÷ finalized frames with members. Frames
+  still inside their normal analysis window (decision time + 2 minutes) are
+  `pending`, not unanalyzed.
+
+Both are proxies for collection; neither is process uptime, which nothing
+records.
+
 ## Cost
 
 - Measured on 1,149 frame headers: about 0.3 s.
@@ -107,8 +194,11 @@ no dataset.
 
 ## Limitations
 
-- Readiness and dataset verification are only as fresh as the worker's
-  last pass (30 minutes).
+- Readiness, alerts and dataset verification are only as fresh as the
+  worker's last pass (30 minutes); a worker that stops is reported as
+  `worker_stale` after 5 minutes.
+- Verification reads each dataset file once per interval: about the file
+  size in I/O per day, outside live processing.
 - Sniffer results older than partition retention show as
   `analysis_unknown`.
 - Frame completeness describes collection, not the quality of the features

@@ -1032,8 +1032,31 @@ export interface ShardEntry {
   generated_at?: string | null;
   temporal_contract_version?: number | null;
   manifest_problems?: string[];
-  verification: "verified" | "failed" | "not_checked";
+  verification: VerificationStatus;
+  verification_scope?: string | null;
+  verified_at?: string | null;
+  verification_overdue?: boolean;
   verification_error?: string;
+}
+
+export type VerificationStatus =
+  | "never_checked"
+  | "pending"
+  | "verified"
+  | "restricted"
+  | "failed"
+  | "unavailable";
+
+export interface RecentWindow {
+  from: string;
+  to: string;
+  window_shortened: boolean;
+  expected: number;
+  finalized: number;
+  missing: number;
+  never_finalized: number;
+  coverage: number | null;
+  analysis: { finalized_with_members: number; analyzed: number; pending: number; completion: number | null };
 }
 
 export interface ReadinessPartition {
@@ -1065,6 +1088,19 @@ export interface DataHealth {
   computed_at: string;
   cache_seconds: number;
   frames: FrameCoverage;
+  recent_continuity?: { available: false; reason: string } | { available: true; windows: Record<string, RecentWindow> };
+  verification?:
+    | { available: false; reason: string }
+    | {
+        available: true;
+        interval_hours: number;
+        last_checked_at: string | null;
+        last_pass_at: string | null;
+        last_pass_checked: number;
+        counts: Partial<Record<VerificationStatus, number>>;
+        scopes: Record<string, string>;
+      };
+  alerts?: ResearchAlert[];
   shards: { datasets: ShardEntry[]; overlaps: { datasets: string[]; kind: string }[] };
   shard_continuity:
     | { available: false; reason: string }
@@ -1106,4 +1142,20 @@ export function phaseLabel(phase: string): string {
 
 export function formatPercent(fraction: number): string {
   return `${(fraction * 100).toFixed(1)}%`;
+}
+
+/** A prospective continuity alert (`app.research.research_alerts`). */
+export interface ResearchAlert {
+  id: string;
+  registration_id: string | null;
+  role: string | null;
+  condition: string;
+  severity: "critical" | "warning" | "info";
+  explanation: string;
+  days: string[];
+  interval: [string, string] | null;
+  first_observed: string | null;
+  last_checked: string | null;
+  state: string;
+  occurrence?: number;
 }

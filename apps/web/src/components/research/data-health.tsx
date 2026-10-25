@@ -6,7 +6,9 @@ import {
   type DailyCoverage,
   type DataHealth,
   type RegistrationReadiness,
+  type ResearchAlert,
   type ShardEntry,
+  type VerificationStatus,
 } from "@/lib/research";
 import { cn } from "@/lib/utils";
 
@@ -34,7 +36,9 @@ export function DataHealthView({ health }: { health: DataHealth }) {
         </section>
       )}
       <Overview health={health} />
-      <Readiness readiness={health.readiness} />
+      <RecentContinuity health={health} />
+      <Verification health={health} />
+      <Readiness readiness={health.readiness} alerts={health.alerts ?? []} />
       <Daily health={health} />
       <Shards health={health} />
       <details className="text-xs text-muted-foreground">
@@ -99,7 +103,85 @@ function Overview({ health }: { health: DataHealth }) {
   );
 }
 
-function Readiness({ readiness }: { readiness: DataHealth["readiness"] }) {
+function RecentContinuity({ health }: { health: DataHealth }) {
+  const recent = health.recent_continuity;
+  return (
+    <section aria-label="Recent collection continuity" className="space-y-2">
+      <h2 className="text-lg font-semibold">Recent collection continuity</h2>
+      {!recent ? (
+        <p className="text-sm text-muted-foreground">Unavailable from this server.</p>
+      ) : !recent.available ? (
+        <p className="text-sm text-muted-foreground">Unavailable: {recent.reason}</p>
+      ) : (
+        <div className="grid gap-3 md:grid-cols-2">
+          {Object.entries(recent.windows).map(([label, w]) => (
+            <div key={label} data-window={label} className="rounded-xl border border-border p-4 text-sm">
+              <p className="font-mono text-xs text-muted-foreground uppercase">Last {label}</p>
+              <p className="mt-1">
+                <span className="font-semibold">{w.coverage == null ? "—" : formatPercent(w.coverage)}</span>{" "}
+                Frame coverage · {w.finalized}/{w.expected} finalized, {w.missing} missing
+              </p>
+              <p>
+                <span className="font-semibold">
+                  {w.analysis.completion == null ? "—" : formatPercent(w.analysis.completion)}
+                </span>{" "}
+                analysis completion · {w.analysis.analyzed}/{w.analysis.finalized_with_members} analyzed
+                {w.analysis.pending > 0 && `, ${w.analysis.pending} still within their analysis window`}
+              </p>
+              {w.window_shortened && (
+                <p className="text-xs text-muted-foreground">
+                  Starts at the first recorded frame ({formatTimestamp(w.from)}).
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      <p className="text-xs text-muted-foreground">
+        Frame coverage is a proxy for collection, not process uptime; analysis completion counts only
+        finalized frames.
+      </p>
+    </section>
+  );
+}
+
+const VERIFICATION_LABEL: Record<VerificationStatus, string> = {
+  verified: "verified",
+  restricted: "restricted (hash only)",
+  failed: "failed",
+  pending: "pending re-check",
+  never_checked: "never checked",
+  unavailable: "unavailable",
+};
+
+function Verification({ health }: { health: DataHealth }) {
+  const v = health.verification;
+  return (
+    <section aria-label="Verification" className="space-y-2">
+      <h2 className="text-lg font-semibold">Shard verification</h2>
+      {!v || !v.available ? (
+        <p className="text-sm text-muted-foreground">Verification unavailable: {v?.reason ?? "not reported"}</p>
+      ) : (
+        <>
+          <p className="font-mono text-xs">
+            {(Object.keys(VERIFICATION_LABEL) as VerificationStatus[])
+              .filter((k) => v.counts[k])
+              .map((k) => `${v.counts[k]} ${VERIFICATION_LABEL[k]}`)
+              .join(" · ") || "No dataset."}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Every {v.interval_hours}h by the research worker · last check{" "}
+            {v.last_checked_at ? formatTimestamp(v.last_checked_at) : "never"} · last pass{" "}
+            {v.last_pass_at ? `${formatTimestamp(v.last_pass_at)} (${v.last_pass_checked} checked)` : "not yet"}.
+            Integrity only — a verified shard says nothing about scientific sufficiency.
+          </p>
+        </>
+      )}
+    </section>
+  );
+}
+
+function Readiness({ readiness, alerts }: { readiness: DataHealth["readiness"]; alerts: ResearchAlert[] }) {
   return (
     <section aria-label="Prospective readiness" className="space-y-3">
       <h2 className="text-lg font-semibold">Prospective evaluations</h2>
@@ -115,7 +197,11 @@ function Readiness({ readiness }: { readiness: DataHealth["readiness"] }) {
             evaluation runs.
           </p>
           {readiness.registrations.map((r) => (
-            <RegistrationCard key={r.registration_id ?? "error"} registration={r} />
+            <RegistrationCard
+              key={r.registration_id ?? "error"}
+              registration={r}
+              alerts={alerts.filter((a) => a.registration_id === r.registration_id && a.severity !== "info")}
+            />
           ))}
         </>
       )}
@@ -123,7 +209,13 @@ function Readiness({ readiness }: { readiness: DataHealth["readiness"] }) {
   );
 }
 
-function RegistrationCard({ registration }: { registration: RegistrationReadiness }) {
+function RegistrationCard({
+  registration,
+  alerts,
+}: {
+  registration: RegistrationReadiness;
+  alerts: ResearchAlert[];
+}) {
   return (
     <article className="space-y-2 rounded-xl border border-border p-4 text-sm" data-registration={registration.registration_id ?? ""}>
       <p className="flex flex-wrap items-baseline justify-between gap-2">
@@ -135,6 +227,16 @@ function RegistrationCard({ registration }: { registration: RegistrationReadines
           </span>
         </span>
       </p>
+      {alerts.length > 0 && (
+        <ul aria-label="Continuity alerts" className="space-y-1 text-xs">
+          {alerts.map((a) => (
+            <li key={a.id} data-severity={a.severity} className={a.severity === "critical" ? "text-destructive" : "text-amber-800 dark:text-amber-200"}>
+              {a.severity}: {a.explanation}
+              {a.interval && ` (${a.interval[0]} → ${a.interval[1]})`} — see Vitals
+            </li>
+          ))}
+        </ul>
+      )}
       {registration.problems.length > 0 && (
         <ul role="alert" className="list-disc pl-5 font-mono text-xs text-destructive">
           {registration.problems.map((p) => (
@@ -250,7 +352,8 @@ function Daily({ health }: { health: DataHealth }) {
 }
 
 function verificationLabel(s: ShardEntry): string {
-  return s.verification === "verified" ? "verified" : s.verification === "failed" ? "verification failed" : "not verified this pass";
+  const label = VERIFICATION_LABEL[s.verification] ?? s.verification;
+  return `${label}${s.verified_at ? ` ${formatTimestamp(s.verified_at)}` : ""}${s.verification_overdue ? " (overdue)" : ""}`;
 }
 
 function Shards({ health }: { health: DataHealth }) {

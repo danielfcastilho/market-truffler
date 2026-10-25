@@ -77,6 +77,11 @@ class Settings(BaseSettings):
     # every `research_pass_interval_seconds`.
     research_shards_start: datetime = datetime(2026, 10, 12, 15, 0, tzinfo=UTC)
     research_pass_interval_seconds: float = 1800.0
+    # Scheduled integrity verification of research datasets
+    # (app.research.integrity): each is re-checked once per interval, at
+    # most this many per worker pass.
+    research_verification_interval_hours: float = 24.0
+    research_verification_max_per_pass: int = 20
     # Independent backup of research records (app.research.backup): a path
     # inside the research container where the operator mounts storage that
     # is NOT the research data's disk. Empty = not configured (reported as

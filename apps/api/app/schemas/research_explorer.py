@@ -97,6 +97,10 @@ class DataHealth(BaseModel):
     computed_at: datetime
     cache_seconds: float
     frames: dict[str, Any]
+    recent_continuity: dict[str, Any] = {}
+    verification: dict[str, Any] = {}
+    #: The worker's active prospective continuity alerts.
+    alerts: list[dict[str, Any]] = []
     shards: dict[str, Any]
     shard_continuity: dict[str, Any]
     temporal_contract: dict[str, Any]

@@ -5,7 +5,12 @@ import {
   getSnifferStatus,
   getResearchStatus,
 } from "@/lib/server-api";
-import { buildVitalsSections, type VitalsInput, type VitalStatus } from "@/lib/vitals";
+import {
+  buildVitalsSections,
+  formatTimestampUtc,
+  type VitalsInput,
+  type VitalStatus,
+} from "@/lib/vitals";
 import { cn } from "@/lib/utils";
 import { PageContainer } from "@/components/page-container";
 
@@ -55,6 +60,33 @@ export default async function VitalsPage() {
                 </div>
               ))}
             </div>
+            {section.alerts && section.alerts.length > 0 && (
+              <ul aria-label={`${section.title} alerts`} className="mt-2 space-y-2">
+                {section.alerts.map((alert) => (
+                  <li
+                    key={alert.id}
+                    data-severity={alert.severity}
+                    className={cn(
+                      "rounded-md border p-2 text-xs",
+                      alert.severity === "critical"
+                        ? "border-destructive/60 text-destructive"
+                        : "border-amber-500/60 text-amber-800 dark:text-amber-200",
+                    )}
+                  >
+                    <p className="font-semibold">
+                      {alert.severity.toUpperCase()} · {alert.registration_id ?? "research worker"}
+                      {alert.role ? ` / ${alert.role}` : ""} · {alert.condition.replaceAll("_", " ")}
+                      {alert.interval ? ` · ${alert.interval[0]} → ${alert.interval[1]}` : ""}
+                    </p>
+                    <p className="text-muted-foreground">{alert.explanation}</p>
+                    <p className="text-muted-foreground">
+                      {alert.state} · first observed {alert.first_observed ? formatTimestampUtc(alert.first_observed) : "—"} · last
+                      checked {alert.last_checked ? formatTimestampUtc(alert.last_checked) : "—"}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         ))}
       </div>

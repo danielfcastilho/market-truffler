@@ -1,4 +1,10 @@
-import type { MarketStatus, ResearchStatus, SnifferStatus, SystemInfo } from "@/lib/server-api";
+import type {
+  MarketStatus,
+  ResearchAlert,
+  ResearchStatus,
+  SnifferStatus,
+  SystemInfo,
+} from "@/lib/server-api";
 
 export type VitalStatus = "ok" | "down" | "unavailable";
 
@@ -11,6 +17,8 @@ export interface VitalRow {
 export interface VitalSection {
   title: string;
   rows: VitalRow[];
+  /** Alerts shown under the rows (only OINK CORP has any). */
+  alerts?: ResearchAlert[];
 }
 
 export interface VitalsInput {
@@ -147,6 +155,25 @@ function unanalyzedFramesRow(sniffer: SnifferStatus | null): VitalRow {
   const count = sniffer?.frames_unanalyzed_24h;
   if (sniffer === null || count == null) return unavailableRow(label);
   return { label, value: String(count), status: count > 0 ? "down" : "ok" };
+}
+
+/**
+ * Prospective continuity alerts: problems that threaten a registered
+ * evaluation's data (informational "awaiting data" entries are not counted).
+ */
+function continuityAlertsRow(research: ResearchStatus | null): VitalRow {
+  const label = "Prospective continuity";
+  if (research === null || research.alerts === undefined) return unavailableRow(label);
+  const actionable = research.alerts.filter((a) => a.severity !== "info");
+  const critical = actionable.filter((a) => a.severity === "critical").length;
+  if (actionable.length === 0) {
+    return { label, value: research.alerts_stale ? "Unknown — worker not reporting" : "No alerts", status: research.alerts_stale ? "unavailable" : "ok" };
+  }
+  return {
+    label,
+    value: `${actionable.length} alert(s)${critical ? `, ${critical} critical` : ""}`,
+    status: "down",
+  };
 }
 
 /**
@@ -322,7 +349,8 @@ export function buildVitalsSections({
     },
     {
       title: "🧬 OINK CORP",
-      rows: researchRows(research ?? null),
+      rows: [...researchRows(research ?? null), continuityAlertsRow(research ?? null)],
+      alerts: (research?.alerts ?? []).filter((a) => a.severity !== "info"),
     },
   ];
 }
@@ -358,7 +386,7 @@ export function formatFreshness(totalSeconds: number): string {
   return `${formatUptime(seconds)} ago`;
 }
 
-function formatTimestampUtc(iso: string): string {
+export function formatTimestampUtc(iso: string): string {
   return `${new Date(iso).toISOString().slice(0, 19).replace("T", " ")} UTC`;
 }
 
