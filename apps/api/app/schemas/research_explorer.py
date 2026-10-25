@@ -99,6 +99,9 @@ class DataHealth(BaseModel):
     frames: dict[str, Any]
     recent_continuity: dict[str, Any] = {}
     verification: dict[str, Any] = {}
+    #: Independent backup: configured / completed / verified / recovery
+    #: tested, as the worker last reported (never the destination path).
+    backups: dict[str, Any] = {}
     #: The worker's active prospective continuity alerts.
     alerts: list[dict[str, Any]] = []
     shards: dict[str, Any]

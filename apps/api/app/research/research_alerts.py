@@ -34,7 +34,7 @@ completed pass, so a restart never resolves anything by itself.
 
 import json
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -156,6 +156,120 @@ def derive_alerts(
                         f"{str(p.get('eligible_from'))[:10]}",
                     )
                 )
+    return out
+
+
+#: A backup older than this (no fully successful run since) is overdue.
+BACKUP_OVERDUE = timedelta(hours=36)
+
+
+def derive_backup_alerts(
+    backup: dict[str, Any] | None, now: datetime, recovery_interval: timedelta
+) -> list[dict[str, Any]]:
+    """Backup and recovery-test conditions (`app.research.backup`), as
+    global alerts (registration `research_backup`). `backup` is the worker's
+    backup summary, None when no destination is configured."""
+    rid = "research_backup"
+    if backup is None:
+        return [
+            _alert(
+                rid,
+                None,
+                "backup_not_configured",
+                "warning",
+                "no independent backup destination is configured: research datasets, "
+                "registrations and exposure logs exist on this host only",
+            )
+        ]
+    out = []
+    last_success = backup.get("last_success_at")
+    if backup.get("error"):
+        out.append(
+            _alert(
+                rid,
+                None,
+                "backup_destination_unavailable",
+                "warning" if last_success else "critical",
+                "the backup destination cannot be used"
+                + ("" if last_success else " and no verified backup exists")
+                + f": {backup['error']}",
+            )
+        )
+    if backup.get("integrity_errors"):
+        out.append(
+            _alert(
+                rid,
+                None,
+                "backup_integrity_failed",
+                "critical",
+                f"{len(backup['integrity_errors'])} item(s) do not match their checksums "
+                "(source or copy): " + ", ".join(sorted(backup["integrity_errors"])[:5]),
+            )
+        )
+    other = sorted(set(backup.get("errors") or {}) - set(backup.get("integrity_errors") or []))
+    if other:
+        out.append(
+            _alert(
+                rid,
+                None,
+                "backup_failed",
+                "warning",
+                f"{len(other)} item(s) could not be backed up",
+            )
+        )
+    if not backup.get("error") and backup.get("unprotected"):
+        out.append(
+            _alert(
+                rid,
+                None,
+                "backup_incomplete",
+                "warning",
+                f"{len(backup['unprotected'])} research item(s) have no verified copy yet",
+            )
+        )
+    if backup.get("checked_at") and (
+        last_success is None or now - datetime.fromisoformat(last_success) > BACKUP_OVERDUE
+    ):
+        out.append(
+            _alert(
+                rid, None, "backup_overdue", "warning", "no fully successful backup within 36 hours"
+            )
+        )
+    test = backup.get("recovery_test")
+    if test is None:
+        out.append(
+            _alert(rid, None, "recovery_untested", "warning", "no recovery test has run yet")
+        )
+    elif test.get("status") == "failed":
+        out.append(
+            _alert(
+                rid,
+                None,
+                "recovery_test_failed",
+                "critical",
+                f"{len(test.get('failures') or {})} restored item(s) were missing or corrupt",
+            )
+        )
+    elif test.get("status") != "passed":
+        out.append(
+            _alert(
+                rid,
+                None,
+                "recovery_test_unavailable",
+                "warning",
+                f"the last recovery test could not run: {test.get('error')}",
+            )
+        )
+    elif now - datetime.fromisoformat(test["tested_at"]) > 3 * recovery_interval:
+        out.append(
+            _alert(
+                rid,
+                None,
+                "recovery_test_overdue",
+                "warning",
+                "the last passing recovery test is old",
+            )
+        )
     return out
 
 

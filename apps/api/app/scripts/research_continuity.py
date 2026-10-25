@@ -14,6 +14,8 @@
                             with --verify-all), under the generation lock
     --restore NAME          restore one record (`<dataset>` or
                             `runs/<experiment>/<run>`) from the verified backup
+    --recovery-test         restore the verified backup into an isolated temporary
+                            directory, check every file, delete it (non-destructive)
 
 The worker never runs migrations: it waits until the database's Alembic
 revision equals this image's head (the api container migrates on start).
@@ -37,7 +39,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.core.config import get_settings
 from app.db.session import _to_async_url, get_engine, get_session_factory
-from app.research.backup import backup_report, restore_item, run_backup
+from app.research.backup import (
+    backup_report,
+    recovery_test,
+    recovery_test_due,
+    restore_item,
+    run_backup,
+)
 from app.research.continuity import (
     EXIT_ALREADY_PRESERVED,
     EXIT_INTEGRITY,
@@ -59,7 +67,7 @@ from app.research.continuity import (
 from app.research.dataset import DatasetIntegrityError, generate_dataset
 from app.research.integrity import run_verification, verification_report
 from app.research.readiness import registration_readiness
-from app.research.research_alerts import derive_alerts, update_alerts
+from app.research.research_alerts import derive_alerts, derive_backup_alerts, update_alerts
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger(__name__)
@@ -133,6 +141,10 @@ def _registrations(config: ContinuityConfig, now: datetime) -> list[dict[str, An
         ]
 
 
+def _recovery_interval() -> timedelta:
+    return timedelta(hours=get_settings().research_recovery_test_interval_hours)
+
+
 def _verification_interval() -> timedelta:
     return timedelta(hours=get_settings().research_verification_interval_hours)
 
@@ -175,7 +187,7 @@ async def _status(
     )
     conditions = derive_alerts(
         report.get("registrations", []), report["days"], report["verification"]["datasets"]
-    )
+    ) + derive_backup_alerts(report.get("backup"), now, _recovery_interval())
     report["alerts"] = (
         update_alerts(config.continuity_dir, conditions, now)
         if track_alerts
@@ -234,6 +246,16 @@ async def _one_pass(
     )
     worker["generating"] = None
     checked = await asyncio.to_thread(_verify_due, config, stop)
+    destination = _backup_dir()
+    if destination is not None and recovery_test_due(
+        config.data_dir, datetime.now(UTC), _recovery_interval()
+    ):
+        # Restores into its own temporary directory, never the data directory.
+        result = await asyncio.to_thread(recovery_test, config.data_dir, destination)
+        logger.info(
+            "research_recovery_test",
+            extra={"status": result["status"], "items": result["items_tested"]},
+        )
     worker["last_verification"] = {"at": datetime.now(UTC).isoformat(), "checked": checked}
     worker["last_pass_finished_at"] = datetime.now(UTC).isoformat()
     worker["last_pass_summary"] = (
@@ -415,6 +437,7 @@ def main() -> None:
     mode.add_argument("--generate-day", metavar="DAY")
     mode.add_argument("--backup", action="store_true")
     mode.add_argument("--restore", metavar="NAME")
+    mode.add_argument("--recovery-test", action="store_true")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--verify-all", action="store_true")
     parser.add_argument("--data-dir", type=Path)
@@ -453,6 +476,13 @@ def main() -> None:
             _locked(lambda: restore_item(destination, config.data_dir, args.restore))
         )
         print(f"restored and verified: {restored}")
+    elif args.recovery_test:
+        destination = _backup_dir()
+        if destination is None:
+            parser.error("RESEARCH_BACKUP_DIR is not set: no backup destination is configured")
+        result = recovery_test(config.data_dir, destination)
+        print(json.dumps(result, indent=2))
+        sys.exit(0 if result["status"] == "passed" else 1)
     elif args.spec_refs:
         first, last = (date.fromisoformat(v) for v in args.spec_refs)
         print(json.dumps(spec_refs(config, first, last), indent=2))

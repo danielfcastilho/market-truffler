@@ -36,6 +36,7 @@ import json
 import logging
 import os
 import shutil
+import tempfile
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -44,7 +45,7 @@ from uuid import uuid4
 
 from app.research.continuity import CONTINUITY_DIRNAME, _write_json_atomic
 from app.research.dataset import file_sha256, read_dataset
-from app.research.reservations import EVALUATIONS_DIRNAME
+from app.research.reservations import EVALUATIONS_DIRNAME, ReservedDataError, check_access
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,11 @@ MARKER = ".market-truffler-backup"
 CHECKSUMS = "BACKUP_CHECKSUMS.json"
 REPORT = "backup.json"
 REVERIFY_INTERVAL = timedelta(hours=24)
+RECOVERY_REPORT = "recovery_test.json"
+#: A recovery test restores every protected item while the archive is
+#: below this size; above it, a bounded representative sample (reported as
+#: such, never as a full disaster-recovery test).
+FULL_RECOVERY_MAX_BYTES = 2 * 1024**3
 RUNS_DIRNAME = "runs"
 
 
@@ -207,7 +213,12 @@ def run_backup(
         "checked_at": now.isoformat(),
         "items": {},
         "errors": {},
+        # Items whose copy (or source) does not match its checksums — the
+        # integrity failures, as opposed to I/O errors.
+        "integrity_errors": [],
         "error": None,
+        # Carried forward: the last run that copied and verified everything.
+        "last_success_at": last.get("last_success_at") if previous else None,
     }
     try:
         check_destination(data_dir, destination)
@@ -238,7 +249,18 @@ def run_backup(
             report["items"][name] = {"verified_at": now.isoformat(), "files": hashes}
         except (BackupIntegrityError, OSError, ValueError) as exc:
             report["errors"][name] = str(exc)
+            if isinstance(exc, BackupIntegrityError):
+                report["integrity_errors"].append(name)
             logger.warning("research_backup_item_failed", extra={"item": name, "error": str(exc)})
+    report["items_in_scope"] = len(report["items"]) + len(report["errors"])
+    report["bytes"] = sum(
+        (data_dir / name / f).stat().st_size
+        for name, item in report["items"].items()
+        for f in item.get("files", {})
+        if (data_dir / name / f).exists()
+    )
+    if not report["errors"]:
+        report["last_success_at"] = now.isoformat()
     _write_json_atomic(_report_path(data_dir), report)
     return report
 
@@ -249,12 +271,22 @@ def backup_report(data_dir: Path, configured: bool) -> dict[str, Any] | None:
     if not configured:
         return None
     report = load_report(data_dir)
+    in_scope = [str(p) for p in research_items(data_dir)]
+    protected = sorted(report.get("items", {}))
     return {
         "destination": report.get("destination"),
+        # Only the kind is shown to users, never the path.
+        "destination_kind": "operator-initialized mount",
         "checked_at": report.get("checked_at"),
+        "last_success_at": report.get("last_success_at"),
         "error": report.get("error"),
         "errors": report.get("errors", {}),
-        "protected": sorted(report.get("items", {})),
+        "integrity_errors": report.get("integrity_errors", []),
+        "protected": protected,
+        "items_in_scope": len(in_scope),
+        "unprotected": sorted(set(in_scope) - set(protected)),
+        "bytes": report.get("bytes"),
+        "recovery_test": load_recovery_test(data_dir),
     }
 
 
@@ -277,9 +309,136 @@ def restore_item(destination: Path, data_dir: Path, name: str) -> Path:
         if _file_hashes(tmp) != hashes:
             raise BackupIntegrityError(f"{name}: restored files differ from the backup")
         if (tmp / "manifest.json").exists() and (tmp / "data.parquet").exists():
-            read_dataset(tmp)
+            _validate_dataset(data_dir, tmp, name)
         tmp.rename(target)
     except BaseException:
         shutil.rmtree(tmp, ignore_errors=True)
         raise
     return target
+
+
+def _reserved(data_dir: Path, name: str, manifest: dict[str, Any]) -> bool:
+    try:
+        check_access(data_dir, [(name, manifest)], None)
+        return False
+    except ReservedDataError:
+        return True  # reserved, or reservations unreadable: fail closed
+
+
+def _validate_dataset(data_dir: Path, path: Path, name: str) -> str:
+    """Validate a restored dataset without reading protected outcomes:
+    `read_dataset` (whole-file hash against the manifest, schema checks)
+    loading only `frame_time`; for a dataset reaching into a reserved
+    prospective period, only the bytes are hashed against the manifest and
+    the file is not parsed. Returns the scope used."""
+    manifest = json.loads((path / "manifest.json").read_text())
+    if _reserved(data_dir, name, manifest):
+        if file_sha256(path / "data.parquet") != manifest.get("data_sha256"):
+            raise BackupIntegrityError(f"{name}: data.parquet doesn't match its manifest")
+        return "content_hash_only"
+    read_dataset(path, columns=["frame_time"])
+    return "full"
+
+
+# -- recovery test ---------------------------------------------------------------------------
+
+
+def load_recovery_test(data_dir: Path) -> dict[str, Any] | None:
+    try:
+        report = json.loads((data_dir / CONTINUITY_DIRNAME / RECOVERY_REPORT).read_text())
+        return report if isinstance(report, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def recovery_test(
+    data_dir: Path,
+    destination: Path,
+    *,
+    now: datetime | None = None,
+    scratch: Path | None = None,
+    max_bytes: int = FULL_RECOVERY_MAX_BYTES,
+) -> dict[str, Any]:
+    """Restore protected items from the backup into an isolated temporary
+    directory (never the data directory), check each restored item's files
+    against the backup's checksums *and* the live source's hashes recorded
+    by the last backup run, validate restored datasets without reading
+    protected outcomes, then delete the temporary directory. Persists and
+    returns the result. Non-destructive: nothing outside its own temporary
+    directory is written, except the result file."""
+    now = now or datetime.now(UTC)
+    backup = load_report(data_dir)
+    items: dict[str, dict[str, Any]] = backup.get("items", {})
+    result: dict[str, Any] = {
+        "tested_at": now.isoformat(),
+        "destination": str(destination),
+        "scope": "full",
+        "items_tested": 0,
+        "items_protected": len(items),
+        "bytes_restored": 0,
+        "restricted_items": 0,
+        "failures": {},
+        "error": None,
+    }
+    try:
+        check_destination(data_dir, destination)
+        if backup.get("destination") != str(destination) or not items:
+            raise BackupError("no verified backup run exists for this destination yet")
+    except BackupError as exc:
+        result["error"] = str(exc)
+        result["status"] = "unavailable"
+        _write_json_atomic(data_dir / CONTINUITY_DIRNAME / RECOVERY_REPORT, result)
+        return result
+
+    names = sorted(items)
+    sizes = {
+        n: sum(
+            (destination / n / f).stat().st_size
+            for f in items[n].get("files", {})
+            if (destination / n / f).exists()
+        )
+        for n in names
+    }
+    if sum(sizes.values()) > max_bytes:
+        # Representative: every registration and exposure event, then other
+        # items in name order until the bound.
+        result["scope"] = "representative"
+        chosen, total = [], 0
+        for n in sorted(
+            names, key=lambda n: (not n.startswith(EVALUATIONS_DIRNAME), n), reverse=False
+        ):
+            if n.startswith(EVALUATIONS_DIRNAME) or total + sizes[n] <= max_bytes:
+                chosen.append(n)
+                total += sizes[n]
+        names = chosen
+    root = Path(tempfile.mkdtemp(prefix="market-truffler-recovery-test-", dir=scratch))
+    try:
+        for name in names:
+            target = root / name
+            try:
+                hashes = verify_copy(destination / name, items[name].get("files"))
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(
+                    destination / name, target, ignore=shutil.ignore_patterns(CHECKSUMS)
+                )
+                if _file_hashes(target) != hashes:
+                    raise BackupIntegrityError(f"{name}: restored files differ from the backup")
+                if (target / "manifest.json").exists() and (target / "data.parquet").exists():
+                    if _validate_dataset(data_dir, target, name) == "content_hash_only":
+                        result["restricted_items"] += 1
+                result["bytes_restored"] += sizes[name]
+            except (BackupIntegrityError, OSError, ValueError) as exc:
+                result["failures"][name] = str(exc)
+            result["items_tested"] += 1
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+    result["status"] = "failed" if result["failures"] else "passed"
+    _write_json_atomic(data_dir / CONTINUITY_DIRNAME / RECOVERY_REPORT, result)
+    return result
+
+
+def recovery_test_due(data_dir: Path, now: datetime, interval: timedelta) -> bool:
+    last = load_recovery_test(data_dir)
+    if last is None or last.get("status") != "passed":
+        return True
+    return now - datetime.fromisoformat(last["tested_at"]) >= interval

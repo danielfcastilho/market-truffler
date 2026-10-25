@@ -192,4 +192,40 @@ describe("DataHealthView", () => {
     render(<DataHealthView health={{ ...HEALTH, verification: { available: false, reason: "the research worker has not reported verification yet" } }} />);
     expect(screen.getByText(/Verification unavailable: the research worker/)).toBeInTheDocument();
   });
+
+  it("reports backup protection as not configured instead of protected", () => {
+    render(<DataHealthView health={{ ...HEALTH, backups: { available: true, configured: false, reason: "no independent backup destination is configured (RESEARCH_BACKUP_DIR)" } }} />);
+    const section = screen.getByRole("region", { name: "Research backups" });
+    expect(within(section).getByRole("alert")).toHaveTextContent("Not protected");
+  });
+
+  it("shows verified backup and recovery-test states separately", () => {
+    render(
+      <DataHealthView
+        health={{
+          ...HEALTH,
+          backups: {
+            available: true,
+            configured: true,
+            destination_kind: "operator-initialized mount",
+            last_attempt_at: "2026-10-25T02:00:00+00:00",
+            last_success_at: "2026-10-25T02:00:00+00:00",
+            destination_error: null,
+            items_in_scope: 9,
+            protected: 8,
+            unprotected: 1,
+            bytes: 22_000_000,
+            failed_items: 1,
+            integrity_failures: 0,
+            recovery_test: { status: "passed", tested_at: "2026-10-25T02:01:00+00:00", scope: "full", items_tested: 8, restricted_items: 0, failures: 0, error: null },
+          },
+        }}
+      />,
+    );
+    const section = screen.getByRole("region", { name: "Research backups" });
+    expect(section).toHaveTextContent("8/9 items verified");
+    expect(section).toHaveTextContent("passed");
+    expect(section).toHaveTextContent("0 integrity · 1 other");
+    expect(within(section).queryByRole("button")).toBeNull(); // no restore action
+  });
 });

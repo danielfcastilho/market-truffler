@@ -38,6 +38,7 @@ export function DataHealthView({ health }: { health: DataHealth }) {
       <Overview health={health} />
       <RecentContinuity health={health} />
       <Verification health={health} />
+      <Backups health={health} />
       <Readiness readiness={health.readiness} alerts={health.alerts ?? []} />
       <Daily health={health} />
       <Shards health={health} />
@@ -177,6 +178,62 @@ function Verification({ health }: { health: DataHealth }) {
           </p>
         </>
       )}
+    </section>
+  );
+}
+
+function ageHours(iso: string | null | undefined, now: string): string {
+  if (!iso) return "—";
+  const hours = (new Date(now).getTime() - new Date(iso).getTime()) / 3_600_000;
+  return hours < 1 ? "under 1h" : `${Math.round(hours)}h`;
+}
+
+function Backups({ health }: { health: DataHealth }) {
+  const b = health.backups;
+  return (
+    <section aria-label="Research backups" className="space-y-2">
+      <h2 className="text-lg font-semibold">Research backups</h2>
+      {!b ? (
+        <p className="text-sm text-muted-foreground">Unavailable from this server.</p>
+      ) : !b.available ? (
+        <p className="text-sm text-muted-foreground">Unavailable: {b.reason}</p>
+      ) : !b.configured ? (
+        <p role="alert" className="text-sm text-destructive">
+          Not protected — {b.reason}. Datasets, registrations and exposure logs exist on this host only.
+        </p>
+      ) : (
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-xs md:grid-cols-4">
+          <dt className="text-muted-foreground">configured</dt>
+          <dd>{b.destination_error ? `unavailable: ${b.destination_error}` : (b.destination_kind ?? "yes")}</dd>
+          <dt className="text-muted-foreground">last attempt</dt>
+          <dd>{b.last_attempt_at ? formatTimestamp(b.last_attempt_at) : "never"}</dd>
+          <dt className="text-muted-foreground">last verified backup</dt>
+          <dd>
+            {b.last_success_at
+              ? `${formatTimestamp(b.last_success_at)} (${ageHours(b.last_success_at, health.computed_at)} ago)`
+              : "none yet"}
+          </dd>
+          <dt className="text-muted-foreground">coverage</dt>
+          <dd className={b.unprotected ? "text-destructive" : undefined}>
+            {b.protected}/{b.items_in_scope ?? "?"} items verified
+            {b.bytes != null && ` · ${(b.bytes / 1_048_576).toFixed(1)} MiB`}
+          </dd>
+          <dt className="text-muted-foreground">failures</dt>
+          <dd className={b.integrity_failures || b.failed_items ? "text-destructive" : undefined}>
+            {b.integrity_failures} integrity · {b.failed_items - b.integrity_failures} other
+          </dd>
+          <dt className="text-muted-foreground">recovery test</dt>
+          <dd className={b.recovery_test?.status === "failed" ? "text-destructive" : undefined}>
+            {!b.recovery_test
+              ? "never run"
+              : `${b.recovery_test.status} ${formatTimestamp(b.recovery_test.tested_at)} · ${b.recovery_test.scope}, ${b.recovery_test.items_tested} items (${b.recovery_test.restricted_items} hash-only)`}
+          </dd>
+        </dl>
+      )}
+      <p className="text-xs text-muted-foreground">
+        Configured → completed → verified → recovery tested are separate states. Restores are an
+        explicit operator procedure (docs/OPERATIONS.md), never run from here.
+      </p>
     </section>
   );
 }

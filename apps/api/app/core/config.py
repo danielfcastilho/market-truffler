@@ -82,6 +82,9 @@ class Settings(BaseSettings):
     # most this many per worker pass.
     research_verification_interval_hours: float = 24.0
     research_verification_max_per_pass: int = 20
+    # Isolated recovery test of the independent backup (app.research.backup):
+    # once per interval, only when a destination is configured.
+    research_recovery_test_interval_hours: float = 24.0
     # Independent backup of research records (app.research.backup): a path
     # inside the research container where the operator mounts storage that
     # is NOT the research data's disk. Empty = not configured (reported as

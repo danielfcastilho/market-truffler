@@ -374,6 +374,49 @@ def verification_summary(worker: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def backup_summary(worker: dict[str, Any] | None) -> dict[str, Any]:
+    """The independent backup as the worker last reported it
+    (`app.research.backup`), in four separate states: configured (a
+    destination is set), completed (last attempt), verified (copies passed
+    their checksums — the last fully successful run), recovery tested. The
+    destination path is never included."""
+    if worker is None:
+        return {"available": False, "reason": "the research worker has not reported yet"}
+    backup = worker.get("backup")
+    if not isinstance(backup, dict):
+        return {
+            "available": True,
+            "configured": False,
+            "reason": "no independent backup destination is configured (RESEARCH_BACKUP_DIR)",
+        }
+    test = backup.get("recovery_test") or None
+    return {
+        "available": True,
+        "configured": True,
+        "destination_kind": backup.get("destination_kind"),
+        "last_attempt_at": backup.get("checked_at"),
+        "last_success_at": backup.get("last_success_at"),
+        "destination_error": backup.get("error"),
+        "items_in_scope": backup.get("items_in_scope"),
+        "protected": len(backup.get("protected") or []),
+        "unprotected": len(backup.get("unprotected") or []),
+        "bytes": backup.get("bytes"),
+        "failed_items": len(backup.get("errors") or {}),
+        "integrity_failures": len(backup.get("integrity_errors") or []),
+        "recovery_test": None
+        if test is None
+        else {
+            "status": test.get("status"),
+            "tested_at": test.get("tested_at"),
+            "scope": test.get("scope"),
+            "items_tested": test.get("items_tested"),
+            "restricted_items": test.get("restricted_items"),
+            "failures": len(test.get("failures") or {}),
+            "error": test.get("error"),
+        },
+    }
+
+
 def recent_continuity(
     rows: list[tuple[datetime, str, int, int, str | None]],
     now: datetime,
@@ -585,6 +628,7 @@ async def data_health(
         "frames": frames,
         "recent_continuity": recent_continuity(rows, now),
         "verification": verification_summary(worker),
+        "backups": backup_summary(worker),
         "alerts": ((worker or {}).get("alerts") or {}).get("active", []),
         "shards": inventory,
         "shard_continuity": continuity,

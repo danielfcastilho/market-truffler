@@ -123,6 +123,9 @@ restart unhealthy containers). `api` is healthy when `/health` answers;
 |---|---|---|---|
 | Research datasets (Parquet + manifest) | `research/oink_corp/data/` | **only once `RESEARCH_BACKUP_DIR` is configured** — currently **not** | **No**: built from frames, which expire with retention |
 | Experiment run records | `research/oink_corp/data/runs/` | same | No (results of past runs) |
+| Prospective registrations and their exposure events | `research/oink_corp/data/evaluations/` | same | **No** — a registration's `registered_at` and exposure log cannot be recreated honestly |
+| Campaigns, experiment specs, ranking candidates, qualification specs, knowledge ledgers (campaign and model) | `research/oink_corp/{campaigns,experiments,ranking,knowledge}/` | Git — protected once committed **and pushed** (all pushed as of 2026-10-25) | From the Git remote |
+| Worker operational state (`continuity/`: status, retry state, verification, alerts, backup reports) | `research/oink_corp/data/continuity/` | no (excluded on purpose) | Yes — re-derived by the next pass |
 | Candles | PostgreSQL | no | Yes — re-fetched from Bybit by the history reconciler (30-day window) |
 | Open Interest, funding | PostgreSQL | no | Yes within the retention window — the reconcilers fetched the full window on first start and refilled 10-day-old OI gaps (2026-10-24) |
 | Market Frames, frame members, Sniffer results | PostgreSQL | no | **No** — frames are never backfilled. What matters for research is preserved in the daily shards |
@@ -143,6 +146,63 @@ optionally, (2) a periodic `pg_dump` of the small tables that are not
 reconstructable (`market_frames` ≈ 4 MB, `instruments`, `users`) to the same
 destination — not implemented; whole-database backup is not worth it while
 its bulk can be re-fetched from Bybit.
+
+### Four separate states
+
+- **Configured:** `RESEARCH_BACKUP_DIR` points at a marker-initialized
+  destination.
+- **Completed:** the last backup run attempted every item (Data Health:
+  "last attempt").
+- **Verified:** every in-scope item's copy matched its checksums ("last
+  verified backup", i.e. the last run with no item error). A copied file is
+  never called verified before its hash is compared, and copies are
+  re-verified daily.
+- **Recovery tested:** the backup was restored into an isolated temporary
+  directory and every file checked. This runs daily when configured, or on
+  demand with `--recovery-test`.
+
+They are reported separately in Data Health → Research backups, and as
+alerts in Vitals → OINK CORP:
+
+| alert | severity |
+| --- | --- |
+| `backup_not_configured` | warning |
+| `backup_destination_unavailable` | warning; critical if no verified backup exists |
+| `backup_failed`: an item could not be copied | warning |
+| `backup_incomplete`: items without a verified copy | warning |
+| `backup_overdue`: no fully successful run in 36 h | warning |
+| `backup_integrity_failed`: a source or copy doesn't match its checksums | critical |
+| `recovery_untested` / `recovery_test_unavailable` / `recovery_test_overdue` | warning |
+| `recovery_test_failed`: restored items missing or corrupt | critical |
+
+The alerts use the same stable ids and lifecycle as the continuity alerts:
+active while true, resolved automatically, and unaffected by restarts.
+
+**Recovery test.** `--recovery-test` runs the same check on demand; the
+worker also runs it daily (`RESEARCH_RECOVERY_TEST_INTERVAL_HOURS`). For
+each protected item it:
+
+1. verifies the copy against its `BACKUP_CHECKSUMS.json` and the source
+   hashes the last backup recorded;
+2. restores it into a fresh `market-truffler-recovery-test-*` temporary
+   directory, never the data directory;
+3. re-hashes the restored files;
+4. validates restored datasets (`read_dataset`, loading only `frame_time`;
+   a dataset reaching into a reserved prospective period is checked by hash
+   only and never parsed);
+5. deletes the temporary directory.
+
+It covers the whole archive while it is under 2 GiB. Above that it runs a
+**representative** test: every registration and exposure event plus other
+items up to the bound, labelled as such and never as a full
+disaster-recovery test.
+
+**Protected data.** Backup, recovery test and restore copy and hash bytes;
+they never read outcome labels of reserved datasets, write exposure events,
+or modify registrations, ledgers or manifests. The destination holds the
+same protected files as the data directory. Mount it only into the
+`research` container, keep it as private as the data directory, and never
+expose it through another service.
 
 ### Activate independent backup
 
@@ -192,6 +252,35 @@ Rehearsed on 2026-10-24 against copies of all real records (3 datasets, 3
 run records): backup verified, a second run re-verified without rewriting
 anything, a dataset and a run record restored byte-identical to production.
 No real backup exists until step 5 above has run.
+
+### Disaster recovery (data disk lost)
+
+Scientific state is a set of related artifacts. A dataset without its
+registration, manifest or exposure history is not a recoverable study.
+
+1. **Find the latest valid backup.** Mount the backup drive and check its
+   `.market-truffler-backup` marker. Its `BACKUP_CHECKSUMS.json` files
+   verify each copy independently of the lost disk.
+2. **Restore into isolation first.** Mount the backup as in "Activate", set
+   `--data-dir` to a new empty directory (not `research/oink_corp/data`),
+   and `--restore` every item into it. Each restore verifies checksums and
+   refuses to replace anything.
+3. **Verify** with `--status --verify-all --data-dir <that directory>` and
+   `--recovery-test`.
+4. **Check the scientific set.**
+   - Every `evaluations/<id>/registration` is present with all of its
+     `events/NNNNNN`. The exposure log must be complete: a missing event
+     can make a used period look unexposed.
+   - The specs and knowledge ledgers they reference come from Git:
+     `git pull`, then `prospective_evaluation --verify` /
+     `truffle_evaluation --verify` / `knowledge_ledger --verify` /
+     `model_knowledge --verify`.
+5. **Only then move** the verified directory into place as
+   `research/oink_corp/data/`, with the stack stopped. Never copy over an
+   existing data directory; nothing automated does this.
+6. **Resume:** `docker compose up -d`. The worker re-derives its
+   operational state; frames lost with the database are not recoverable,
+   and Data Health will show those gaps.
 
 ## Always-on hosting
 

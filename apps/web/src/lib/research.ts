@@ -1101,6 +1101,32 @@ export interface DataHealth {
         scopes: Record<string, string>;
       };
   alerts?: ResearchAlert[];
+  backups?:
+    | { available: false; reason: string }
+    | { available: true; configured: false; reason: string }
+    | {
+        available: true;
+        configured: true;
+        destination_kind: string | null;
+        last_attempt_at: string | null;
+        last_success_at: string | null;
+        destination_error: string | null;
+        items_in_scope: number | null;
+        protected: number;
+        unprotected: number;
+        bytes: number | null;
+        failed_items: number;
+        integrity_failures: number;
+        recovery_test: {
+          status: string;
+          tested_at: string;
+          scope: string;
+          items_tested: number;
+          restricted_items: number;
+          failures: number;
+          error: string | null;
+        } | null;
+      };
   shards: { datasets: ShardEntry[]; overlaps: { datasets: string[]; kind: string }[] };
   shard_continuity:
     | { available: false; reason: string }

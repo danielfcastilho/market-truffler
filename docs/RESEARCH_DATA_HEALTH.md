@@ -185,6 +185,19 @@ reports two separate things:
 Both are proxies for collection; neither is process uptime, which nothing
 records.
 
+## Research backups
+
+Data Health → Research backups reports four separate states, without the
+destination path:
+
+- configured;
+- last attempt;
+- last verified backup, with its age and coverage;
+- recovery test, with its scope.
+
+Scope, alerts, the recovery test and the disaster-recovery procedure are
+in [OPERATIONS.md](OPERATIONS.md#backups).
+
 ## Cost
 
 - Measured on 1,149 frame headers: about 0.3 s.
