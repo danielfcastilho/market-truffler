@@ -174,3 +174,118 @@ describe("RankingContext", () => {
     expect(screen.getAllByText(/Not ranked — missing oi_change_1h in this frame/).length).toBe(2);
   });
 });
+
+const SPEC = {
+  qualification_id: "long-reversal-oi-truffle-v1",
+  name: "Long Truffle",
+  spec_hash: "b".repeat(64),
+  ranking_candidate: "long-price-reversal-oi-v1",
+  direction: "long" as const,
+  policy: "relative",
+  description: "d",
+  min_frame_completeness: 0.95,
+  conditions: [
+    { id: "return_tail", feature: "return_1h", measure: "percentile" as const, at_most: 0.05, at_least: null, rationale: "r" },
+    { id: "oi_fell", feature: "oi_change_1h", measure: "value" as const, at_most: 0, at_least: null, rationale: "r" },
+  ],
+  status: "experimental",
+};
+
+function withTruffles(): LiveRankings {
+  const long = DATA.long!;
+  return {
+    ...DATA,
+    long: {
+      ...long,
+      // Rank 1 is NOT a Truffle; rank 2 is.
+      rows: long.rows.map((r, i) => ({
+        ...r,
+        qualification:
+          i === 1
+            ? { qualified: true, failed: [], missing: [] }
+            : { qualified: false, failed: ["return_tail"], missing: i === 2 ? ["oi_fell"] : [] },
+      })),
+      qualification: {
+        status: "evaluated",
+        reason: null,
+        spec: SPEC,
+        evaluated: 3,
+        qualified: 1,
+        truffles: [{ rank: 2, symbol: "ADAUSDT", score: 1.1 }],
+      },
+      diagnostics: {
+        available: true,
+        frame_time: "2026-10-24T20:55:00+00:00",
+        candidate_id: "long-price-reversal-oi-v1",
+        spec_hash: "a".repeat(64),
+        temporal_contract_version: 2,
+        limitations: ["descriptive"],
+        eligible: 3,
+        distribution: {
+          min: 0.6,
+          max: 1.3,
+          mean: 1,
+          median: 1.1,
+          std: 0.29,
+          spread: 0.7,
+          percentiles: { p10: 0.7, p25: 0.85, p75: 1.2, p90: 1.26, p99: 1.3 },
+          histogram: { low: 0.6, high: 1.3, counts: [1, 0, 2] },
+        },
+        separation: { k: 10, top1_minus_top2: 0.2, top1_minus_top10: null, top_k_mean_minus_rest_mean: null, near_top_fraction: 0.1, near_top_count: 1 },
+        stability: { available: false, reason: "insufficient history: the previous frame has no Sniffer analysis", previous_frame_time: "2026-10-24T20:50:00+00:00", k: 10 },
+      },
+    },
+    short: {
+      ...DATA.short!,
+      qualification: { status: "evaluated", reason: null, spec: { ...SPEC, direction: "short", qualification_id: "short-q" }, evaluated: 2, qualified: 0, truffles: [] },
+    },
+  };
+}
+
+describe("Experimental Truffles", () => {
+  it("lists Truffles per direction, marks only qualified rows, and states zero naturally", () => {
+    render(<RankingBoard result={{ status: "ok", data: withTruffles() }} />);
+    const long = document.querySelector('[data-truffles="long"]') as HTMLElement;
+    expect(within(long).getByRole("link", { name: /ADAUSDT/ })).toBeInTheDocument();
+    expect(long).toHaveTextContent("1");
+    const short = document.querySelector('[data-truffles="short"]') as HTMLElement;
+    expect(within(short).getByText("No experimental Short Truffles qualified in this frame.")).toBeInTheDocument();
+    const rows = screen.getAllByRole("row");
+    const top = rows.find((r) => r.getAttribute("data-symbol") === "ZECUSDT")!;
+    const ada = rows.find((r) => r.getAttribute("data-symbol") === "ADAUSDT")!;
+    expect(within(top).queryByText(/Truffle/)).toBeNull(); // rank 1, not a Truffle
+    expect(within(ada).getByText("🟢 Truffle")).toBeInTheDocument();
+    expect(screen.getByText(/do not establish predictive validity/)).toBeInTheDocument();
+  });
+
+  it("explains why a row did not qualify, including missing inputs", () => {
+    render(<RankingBoard result={{ status: "ok", data: withTruffles() }} />);
+    const btc = screen.getAllByRole("row").find((r) => r.getAttribute("data-symbol") === "BTCUSDT")!;
+    fireEvent.click(within(btc).getByRole("button", { name: "Why?" }));
+    expect(screen.getByText("Not a Truffle")).toBeInTheDocument();
+    expect(document.querySelector('[data-outcome="failed"]')).toHaveTextContent(/percentile ≤ 0.05/);
+    expect(document.querySelector('[data-outcome="missing"]')).toHaveTextContent("input missing");
+  });
+
+  it("distinguishes withheld and unavailable qualification from zero Truffles", () => {
+    const data = withTruffles();
+    const withheld = {
+      ...data,
+      long: { ...data.long!, qualification: { ...data.long!.qualification!, status: "withheld" as const, reason: "stale ranking: late", truffles: [], qualified: null } },
+      short: { ...data.short!, qualification: { status: "unavailable" as const, reason: "qualification x not found", spec: null, truffles: [] } },
+    };
+    render(<RankingBoard result={{ status: "ok", data: withheld }} />);
+    expect(screen.getByText("Withheld — stale ranking: late")).toBeInTheDocument();
+    expect(screen.getByText("Unavailable: qualification x not found")).toBeInTheDocument();
+    expect(screen.queryByText(/No experimental .* Truffles qualified/)).toBeNull();
+  });
+
+  it("shows compact diagnostics, including insufficient stability history", () => {
+    render(<RankingBoard result={{ status: "ok", data: withTruffles() }} />);
+    const panel = screen.getByTestId("ranking-diagnostics");
+    expect(panel).toHaveTextContent("Ranking diagnostics · 3 eligible");
+    expect(panel).toHaveTextContent("+0.200"); // #1 − #2
+    expect(panel).toHaveTextContent("insufficient history");
+    expect(panel).toHaveTextContent("not expected profitability");
+  });
+});

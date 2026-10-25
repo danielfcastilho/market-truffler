@@ -1,0 +1,41 @@
+{
+  "spec_version": 1,
+  "qualification_id": "long-reversal-oi-truffle-v1",
+  "name": "Long Truffle — sharp 1h fall with falling Open Interest",
+  "ranking_candidate": "long-price-reversal-oi-v1",
+  "direction": "long",
+  "status": "experimental",
+  "policy": "relative",
+  "description": "Highlights a coin only when it is an extreme case of the Long model's own thesis in this frame: among the weakest 1h returns of the ranked universe, it actually fell, and its Open Interest is among the most-declining and actually fell. Relative to the frame by construction: it says nothing about absolute opportunity quality. Thresholds are round numbers written down before any evaluation, not optimized.",
+  "min_frame_completeness": 0.95,
+  "conditions": [
+    {
+      "id": "return_tail",
+      "feature": "return_1h",
+      "measure": "percentile",
+      "at_most": 0.05,
+      "rationale": "The model's primary term (weight -1): within the weakest 5% of 1h returns this frame."
+    },
+    {
+      "id": "return_fell",
+      "feature": "return_1h",
+      "measure": "value",
+      "at_most": 0.0,
+      "rationale": "A reversal thesis needs an actual fall, not merely a relatively weak coin in a rising market."
+    },
+    {
+      "id": "oi_tail",
+      "feature": "oi_change_1h",
+      "measure": "percentile",
+      "at_most": 0.2,
+      "rationale": "The model's secondary term (weight -0.5): within the most-declining 20% of 1h Open Interest changes; looser than the primary term, as its weight is half."
+    },
+    {
+      "id": "oi_fell",
+      "feature": "oi_change_1h",
+      "measure": "value",
+      "at_most": 0.0,
+      "rationale": "Open Interest actually did not grow over the hour."
+    }
+  ]
+}

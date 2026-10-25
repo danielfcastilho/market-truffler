@@ -112,7 +112,8 @@ async def sniffer_rankings(
     """Experimental Long and Short rankings of the latest analyzed frame, in
     one snapshot (both directions always rank the same frame). Read-only,
     computed from Sniffer features with the configured ranking candidates —
-    not validated, not trading signals. `symbol` keeps only that coin's row
+    not validated, not trading signals — with each direction's descriptive
+    diagnostics and experimental Truffle qualification. `symbol` keeps only that coin's row
     and exclusion (ranked over the whole frame first)."""
     settings = get_settings()
     result = await live_rankings(
@@ -122,6 +123,9 @@ async def sniffer_rankings(
         short_candidate=settings.live_ranking_short_candidate,
         now=datetime.now(UTC),
         symbol=symbol.upper() if symbol else None,
+        qualifications_dir=Path(settings.research_ranking_dir) / "qualifications",
+        long_qualification=settings.live_truffle_long_qualification,
+        short_qualification=settings.live_truffle_short_qualification,
     )
     return LiveRankings.model_validate(result)
 

@@ -96,6 +96,12 @@ class Settings(BaseSettings):
     # direction unavailable — nothing is substituted.
     live_ranking_long_candidate: str = "long-price-reversal-oi-v1"
     live_ranking_short_candidate: str = "short-price-reversal-oi-v1"
+    # Experimental Truffle qualification (app.ranking.qualification): specs
+    # under `<research_ranking_dir>/qualifications/`, each naming the
+    # candidate it applies to. Missing or mismatched -> that direction's
+    # qualification is unavailable, never substituted.
+    live_truffle_long_qualification: str = "long-reversal-oi-truffle-v1"
+    live_truffle_short_qualification: str = "short-reversal-oi-truffle-v1"
 
     @property
     def allowed_origins_list(self) -> list[str]:

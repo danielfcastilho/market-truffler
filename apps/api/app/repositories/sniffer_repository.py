@@ -5,6 +5,7 @@ shapes this returns and `app.services.sniffer` for orchestration.
 """
 
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import Select, exists, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -110,6 +111,44 @@ class SnifferRepository:
     async def count_unanalyzed_frames(self, since: datetime, until: datetime) -> int:
         stmt = select(func.count()).select_from(self._unanalyzed(since, until).subquery())
         return int((await self._session.execute(stmt)).scalar_one())
+
+    async def latest_marker(self) -> tuple[datetime, datetime, str | None] | None:
+        """(frame_time, calculated_at, analysis) of the latest analyzed frame
+        — enough to tell whether a cached computation over it is current,
+        without loading its results."""
+        latest = (
+            await self._session.execute(select(func.max(SnifferResult.frame_time)))
+        ).scalar_one_or_none()
+        if latest is None:
+            return None
+        row = (
+            await self._session.execute(
+                select(SnifferResult.calculated_at, SnifferResult.analysis)
+                .where(SnifferResult.frame_time == latest)
+                .limit(1)
+            )
+        ).one()
+        return latest, row[0], row[1]
+
+    async def get_metrics_for_frame(
+        self, frame_time: datetime, metrics: list[str]
+    ) -> tuple[str | None, dict[str, dict[str, Decimal | None]]] | None:
+        """Only `metrics` of one analyzed frame, as (analysis, {symbol:
+        {metric: value}}) — or None if the frame was never analyzed."""
+        stmt = (
+            select(
+                Instrument.symbol, SnifferResult.metric, SnifferResult.value, SnifferResult.analysis
+            )
+            .join(Instrument, Instrument.id == SnifferResult.instrument_id)
+            .where(SnifferResult.frame_time == frame_time, SnifferResult.metric.in_(metrics))
+        )
+        rows = (await self._session.execute(stmt)).all()
+        if not rows:
+            return None
+        by_symbol: dict[str, dict[str, Decimal | None]] = {}
+        for symbol, metric, value, _ in rows:
+            by_symbol.setdefault(symbol, {})[metric] = value
+        return rows[0][3], by_symbol
 
     async def _load(self, frame_time: datetime) -> SnifferFrameResult | None:
         stmt = (

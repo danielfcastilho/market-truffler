@@ -1974,6 +1974,14 @@ Settled concepts from earlier design work, now owned by OINK CORP Ranking:
   The threshold is undecided — it is a research question. Top 10 is a
   cap, never a fill target: zero qualifiers means zero Truffles, never a
   lowered bar.
+  *Implemented so far (experimental, for the unvalidated live models, not
+  a Champion):* a separate, versioned qualification spec per direction
+  whose conditions are cross-sectional tails and signs of the model's own
+  features, with no rank condition and no rank cap. The live scores are
+  sums of within-frame percentiles, so a fixed score threshold would only
+  restate a percentile. Zero Truffles stays a valid outcome. See
+  [TRUFFLE_QUALIFICATION.md](TRUFFLE_QUALIFICATION.md), which also
+  documents the ranking diagnostics.
 - **A Truffle** is a qualified symbol/direction — a classification, not
   another metric.
 - **Explainability is mandatory; weights are optional.** A model must

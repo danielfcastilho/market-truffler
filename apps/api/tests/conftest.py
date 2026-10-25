@@ -71,3 +71,14 @@ def _clear_settings_cache():
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_ranking_snapshots():
+    """Live rankings cache snapshots per analyzed frame; every test has its
+    own database, so it must not see another test's snapshot."""
+    from app.services import live_rankings
+
+    live_rankings._SNAPSHOTS.clear()
+    yield
+    live_rankings._SNAPSHOTS.clear()

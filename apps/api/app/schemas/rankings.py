@@ -16,6 +16,8 @@ class RankingFrame(BaseModel):
     analyzed_at: datetime
     # "live" | "recovery" | None (before analysis provenance was recorded).
     analysis: str | None = None
+    #: 2 for results carrying analysis provenance, 1 for older ones.
+    temporal_contract_version: int | None = None
     age_seconds: float
     stale: bool
     stale_reason: str | None
@@ -31,8 +33,17 @@ class DirectionRanking(BaseModel):
     #: Instruments outside the decision universe, with the features they lack.
     excluded: list[dict[str, Any]] = []
     degenerate_features: list[str] = []
-    #: Backend order: rank 1 = most attractive in this direction.
+    #: Backend order: rank 1 = most attractive in this direction. Each row
+    #: carries `qualification` ({qualified, failed, missing}; with `checks`
+    #: on a symbol slice), or None when qualification is withheld.
     rows: list[dict[str, Any]]
+    #: Descriptive score distribution, separation and stability
+    #: (`app.ranking.diagnostics`) — not opportunity quality.
+    diagnostics: dict[str, Any] | None = None
+    #: Experimental Truffle qualification (`app.ranking.qualification`):
+    #: status "evaluated" (possibly zero Truffles), "withheld" (stale or
+    #: incomplete frame) or "unavailable".
+    qualification: dict[str, Any] | None = None
 
 
 class LiveRankings(BaseModel):
@@ -41,3 +52,5 @@ class LiveRankings(BaseModel):
     frame: RankingFrame | None = None
     long: DirectionRanking | None = None
     short: DirectionRanking | None = None
+    #: Symbols that are Truffles for Long and for Short in this frame.
+    truffles_in_both_directions: list[str] = []

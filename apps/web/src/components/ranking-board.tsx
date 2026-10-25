@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { Fragment, useMemo, useState } from "react";
 
+import { RankingDiagnosticsPanel } from "@/components/ranking-diagnostics";
+import { QualificationExplanation, TruffleOverview } from "@/components/truffle-overview";
 import { Input } from "@/components/ui/input";
 import {
   featureClassName,
@@ -10,6 +12,7 @@ import {
   formatFeature,
   formatScore,
   transformLabel,
+  truffleEmoji,
   type DirectionRanking,
   type LiveModel,
   type RankDirection,
@@ -80,6 +83,8 @@ export function RankingBoard({
         profit, and nothing here is a trading signal.
       </p>
 
+      <TruffleOverview data={data} />
+
       <div className="flex flex-wrap items-center gap-3">
         <div role="group" aria-label="Direction" className="inline-flex rounded-lg border border-border p-0.5">
           {(["long", "short"] as const).map((d) => (
@@ -117,6 +122,7 @@ export function RankingBoard({
         </div>
       ) : (
         <>
+          <RankingDiagnosticsPanel diagnostics={ranking.diagnostics} />
           <ModelPanel model={ranking.model!} ranking={ranking} />
           <RankingTable ranking={ranking} direction={direction} query={query} />
         </>
@@ -235,6 +241,19 @@ function RankingTable({
                   >
                     {row.symbol}
                   </Link>
+                  {row.qualification?.qualified && (
+                    <span
+                      className={cn(
+                        "ml-2 rounded-md px-1.5 py-0.5 text-[11px] font-semibold",
+                        direction === "long"
+                          ? "bg-primary/15 text-primary"
+                          : "bg-destructive/15 text-destructive",
+                      )}
+                      title="Experimental Truffle: meets this direction's qualification spec"
+                    >
+                      {truffleEmoji(direction)} Truffle
+                    </span>
+                  )}
                 </td>
                 <td className="px-3 py-2 text-right font-medium">{formatScore(row.score)}</td>
                 {CONTEXT.map((f) => (
@@ -261,8 +280,9 @@ function RankingTable({
               </tr>
               {open === row.symbol && (
                 <tr>
-                  <td colSpan={4 + CONTEXT.length} className="bg-muted/30 px-3 py-3">
+                  <td colSpan={4 + CONTEXT.length} className="space-y-3 bg-muted/30 px-3 py-3">
                     <ScoreBreakdown row={row} />
+                    <QualificationExplanation row={row} qualification={ranking.qualification} />
                   </td>
                 </tr>
               )}

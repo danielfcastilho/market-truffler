@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { ScoreBreakdown } from "@/components/ranking-board";
+import { QualificationExplanation } from "@/components/truffle-overview";
 import { formatScore, type DirectionRanking, type RankDirection } from "@/lib/rankings";
 import type { LiveRankingsResult } from "@/lib/server-api";
 import { formatFrameTimeUtc } from "@/lib/sniffer-format";
@@ -86,6 +87,7 @@ function DirectionCard({
             Score <span className="font-semibold">{formatScore(row.score)}</span>
           </p>
           <ScoreBreakdown row={row} />
+          <QualificationExplanation row={row} qualification={ranking.qualification} />
         </>
       ) : (
         <p className="font-mono text-sm text-muted-foreground">

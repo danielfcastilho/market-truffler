@@ -5,6 +5,9 @@ candidates (see `apps/api/app/research/ranking.py`).
 
 - `candidates/` — ranking models (`linear_weighted_v1`): direction, features,
   cross-sectional transforms and **manually chosen** weights.
+- `qualifications/` — experimental Truffle qualification specs used by the
+  live Sniffer rankings (not research results; see
+  `docs/TRUFFLE_QUALIFICATION.md`). Each names the candidate it applies to.
 - `studies/` — registered comparisons: candidate, reference, datasets, label,
   top K. The primary metric is fixed by the ranking evaluator (top-K excess
   utility; paired difference against the reference).
