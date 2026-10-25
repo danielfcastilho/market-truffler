@@ -106,7 +106,14 @@ function Overview({ health }: { health: DataHealth }) {
       <Stat
         label="Research datasets"
         value={String(shards.length)}
-        note={shards.length === 0 ? "No research shard exists yet." : `${shards.filter((s) => s.kind === "daily_shard").length} daily shards`}
+        note={
+          shards.length === 0
+            ? "No research shard exists yet."
+            : `${shards.filter((s) => s.kind === "daily_shard").length} daily shards` +
+              (shards.some((s) => s.observation_source === "reconstructed")
+                ? ` · ${shards.filter((s) => s.observation_source === "reconstructed").length} reconstructed (exploratory only)`
+                : "")
+        }
       />
     </section>
   );
@@ -460,7 +467,14 @@ function Shards({ health }: { health: DataHealth }) {
             <li key={s.name} data-dataset={s.name} className="rounded-lg border border-border p-3 text-xs">
               <details>
                 <summary className="flex cursor-pointer flex-wrap justify-between gap-2 font-mono">
-                  <span className="font-medium">{s.name}</span>
+                  <span className="font-medium">
+                    {s.name}
+                    {s.observation_source === "reconstructed" && (
+                      <span className="ml-2 font-sans font-normal text-amber-800 dark:text-amber-200">
+                        reconstructed · exploratory only
+                      </span>
+                    )}
+                  </span>
                   <span className="text-muted-foreground">
                     {s.manifest !== "present"
                       ? `manifest ${s.manifest}`

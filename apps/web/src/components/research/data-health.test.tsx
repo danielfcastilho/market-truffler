@@ -258,3 +258,13 @@ describe("DataHealthView layout", () => {
     expect(details.contains(heading)).toBe(false);
   });
 });
+
+describe("reconstructed datasets", () => {
+  it("are labelled exploratory-only wherever datasets are counted or listed", () => {
+    const recon = { ...HEALTH.shards.datasets[0], name: "recon_s15m_20260928", kind: "dataset" as const, observation_source: "reconstructed" };
+    render(<DataHealthView health={{ ...HEALTH, shards: { ...HEALTH.shards, datasets: [...HEALTH.shards.datasets, recon] } }} />);
+    expect(screen.getByText(/1 reconstructed \(exploratory only\)/)).toBeInTheDocument();
+    const row = document.querySelector('[data-dataset="recon_s15m_20260928"]') as HTMLElement;
+    expect(within(row).getByText("reconstructed · exploratory only")).toBeInTheDocument();
+  });
+});

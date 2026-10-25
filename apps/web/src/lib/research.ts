@@ -1030,6 +1030,8 @@ export interface ShardEntry {
   last_frame_time?: string | null;
   row_count?: number | null;
   generated_at?: string | null;
+  /** "reconstructed" (exploratory only, never pooled with live data) or "live_frames". */
+  observation_source?: string | null;
   temporal_contract_version?: number | null;
   manifest_problems?: string[];
   verification: VerificationStatus;

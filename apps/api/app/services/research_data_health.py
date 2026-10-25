@@ -306,6 +306,9 @@ def shard_inventory(data_dir: Path, worker: dict[str, Any] | None) -> dict[str, 
                         "sample_interval_minutes": manifest.get("sample_interval_minutes"),
                         "generated_at": manifest.get("generated_at"),
                         "generation_mode": manifest.get("generation_mode"),
+                        # "reconstructed" (app.research.reconstruction) or
+                        # live-observed; the two are never pooled.
+                        "observation_source": manifest.get("observation_source", "live_frames"),
                         # Absent = produced before the field existed (contract v1:
                         # OI/funding availability unverified) — reported as such.
                         "temporal_contract_version": manifest.get("temporal_contract_version"),
@@ -326,6 +329,9 @@ def shard_inventory(data_dir: Path, worker: dict[str, Any] | None) -> dict[str, 
 
 
 def _overlaps(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Datasets of one observation source covering the same time. A
+    reconstructed dataset overlapping a live-observed one is by design
+    (they are never loaded together) and is not reported."""
     spans = []
     for item in items:
         try:
@@ -334,14 +340,15 @@ def _overlaps(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     datetime.fromisoformat(item["first_frame_time"]),
                     datetime.fromisoformat(item["last_frame_time"]),
                     item["name"],
+                    item.get("observation_source", "live_frames"),
                 )
             )
         except (KeyError, TypeError, ValueError):
             continue
     found = []
-    for i, (a0, a1, a) in enumerate(spans):
-        for b0, b1, b in spans[i + 1 :]:
-            if a0 <= b1 and b0 <= a1:
+    for i, (a0, a1, a, a_source) in enumerate(spans):
+        for b0, b1, b, b_source in spans[i + 1 :]:
+            if a_source == b_source and a0 <= b1 and b0 <= a1:
                 found.append(
                     {"datasets": [a, b], "kind": "duplicate" if (a0, a1) == (b0, b1) else "overlap"}
                 )

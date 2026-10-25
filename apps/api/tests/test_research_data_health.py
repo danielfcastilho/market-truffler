@@ -198,6 +198,20 @@ def test_the_inventory_reads_manifests_only_and_reports_what_is_absent(tmp_path)
     assert _tree_hash(tmp_path) == before  # read-only
 
 
+def test_a_reconstructed_dataset_overlapping_a_live_one_is_not_a_defect(tmp_path):
+    _dataset(tmp_path, "research_a")
+    _dataset(tmp_path, "recon_a", observation_source="reconstructed")
+    _dataset(tmp_path, "recon_b", observation_source="reconstructed")
+    inventory = health.shard_inventory(tmp_path, None)
+    assert [o["datasets"] for o in inventory["overlaps"]] == [["recon_a", "recon_b"]]
+    sources = {d["name"]: d["observation_source"] for d in inventory["datasets"]}
+    assert sources == {
+        "recon_a": "reconstructed",
+        "recon_b": "reconstructed",
+        "research_a": "live_frames",
+    }
+
+
 def test_overlapping_and_duplicate_intervals_are_detected(tmp_path):
     _dataset(tmp_path, "research_a")
     _dataset(tmp_path, "research_b")  # identical interval
