@@ -482,6 +482,7 @@ describe("buildVitalsSections", () => {
       "Last scan",
       "Coins analyzed",
       "Unanalyzed frames (24h)",
+      "Published snapshots",
     ]);
     // OINK CORP shows only its real research-data signal — no ranking,
     // Truffle, or experiment rows until those capabilities exist.

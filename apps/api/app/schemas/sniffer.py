@@ -1,6 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -90,3 +90,8 @@ class SnifferStatus(BaseModel):
     frames_unanalyzed_24h: int = 0
     # "live" | "recovery" | None (before provenance was recorded).
     last_analysis: str | None = None
+    # Published ranking snapshots (`app.services.ranking_snapshots`): the
+    # newest stored one, and this process's capture counters.
+    last_snapshot_frame: datetime | None = None
+    last_snapshot_published_at: datetime | None = None
+    snapshot_capture: dict[str, Any] | None = None

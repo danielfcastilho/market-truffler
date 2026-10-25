@@ -162,6 +162,12 @@ or reserved period is read (enforced by an import-boundary test).
 - `?symbol=X` additionally returns that row's full `checks` (observed
   value, threshold, outcome per condition).
 
+## History
+
+Every published ranking, with its Truffles and full qualification
+explanations, is kept as an immutable snapshot and browsable under Rankings
+→ History. See [RANKING_SNAPSHOTS.md](RANKING_SNAPSHOTS.md).
+
 ## Performance
 
 The clock-independent part (both rankings, diagnostics, qualification

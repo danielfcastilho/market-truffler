@@ -54,3 +54,22 @@ class LiveRankings(BaseModel):
     short: DirectionRanking | None = None
     #: Symbols that are Truffles for Long and for Short in this frame.
     truffles_in_both_directions: list[str] = []
+
+
+class RankingHistoryPage(BaseModel):
+    """Published ranking snapshots, newest first (summaries only)."""
+
+    items: list[dict[str, Any]]
+    #: Pass as `before` for the next (older) page; None at the end.
+    next_before: int | None
+
+
+class RankingSnapshotDetail(BaseModel):
+    """One published snapshot as stored (`ranking` has the live response's
+    shape, captured at publication) — never recomputed."""
+
+    snapshot: dict[str, Any]
+    ranking: dict[str, Any]
+    previous: dict[str, Any] | None
+    next: dict[str, Any] | None
+    comparison: dict[str, Any]

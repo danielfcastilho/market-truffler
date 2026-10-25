@@ -147,6 +147,29 @@ function missedFramesRow(market: MarketStatus | null): VitalRow {
 }
 
 /**
+ * Published ranking snapshots: the newest captured one, and whether this
+ * API process failed to capture any (never reported as captured).
+ */
+function snapshotRow(sniffer: SnifferStatus | null): VitalRow {
+  const label = "Published snapshots";
+  if (sniffer === null || sniffer.snapshot_capture === undefined) return unavailableRow(label);
+  const capture = sniffer.snapshot_capture;
+  if (capture && (capture.failures > 0 || capture.conflicts > 0)) {
+    return {
+      label,
+      value: `${capture.failures} capture failure(s), ${capture.conflicts} conflict(s)${capture.last_error ? ` — ${capture.last_error}` : ""}`,
+      status: "down",
+    };
+  }
+  if (!sniffer.last_snapshot_published_at) return { label, value: "None captured yet", status: "unavailable" };
+  return {
+    label,
+    value: `Last ${formatTimestampUtc(sniffer.last_snapshot_published_at)}`,
+    status: "ok",
+  };
+}
+
+/**
  * Finalized frames of the last 24h with no Sniffer analysis — an analysis
  * lost to a restart that startup recovery has not (yet) reached.
  */
@@ -345,6 +368,7 @@ export function buildVitalsSections({
           status: sniffer?.coins_analyzed != null ? "ok" : "unavailable",
         },
         unanalyzedFramesRow(sniffer),
+        snapshotRow(sniffer),
       ],
     },
     {

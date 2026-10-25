@@ -9,7 +9,11 @@ import type {
   ResearchHistory as ResearchHistoryData,
   ResearchOverview as ResearchOverviewData,
 } from "@/lib/research";
-import type { LiveRankings as LiveRankingsData } from "@/lib/rankings";
+import type {
+  LiveRankings as LiveRankingsData,
+  RankingHistoryPage,
+  RankingSnapshotDetail,
+} from "@/lib/rankings";
 
 const API_INTERNAL_URL = process.env.API_INTERNAL_URL ?? "http://localhost:8000";
 
@@ -121,6 +125,16 @@ export interface SnifferStatus {
   frames_unanalyzed_24h?: number;
   /** "live" | "recovery" | null (before provenance was recorded). */
   last_analysis?: string | null;
+  last_snapshot_frame?: string | null;
+  last_snapshot_published_at?: string | null;
+  snapshot_capture?: {
+    captured: number;
+    duplicates: number;
+    conflicts: number;
+    failures: number;
+    last_error: string | null;
+    last_overhead_ms: number | null;
+  } | null;
 }
 
 /** OINK CORP research data continuity, as last reported by the backend's
@@ -335,3 +349,29 @@ export async function getLiveRankings(symbol?: string): Promise<LiveRankingsResu
 }
 
 export type { ResearchAlert };
+
+export type ApiResult<T> = { status: "ok"; data: T } | { status: "not_found" } | { status: "error"; message: string };
+
+async function apiFetch<T>(path: string): Promise<ApiResult<T>> {
+  try {
+    const response = await serverFetch(path);
+    if (response.status === 404) return { status: "not_found" };
+    if (!response.ok) return { status: "error", message: `HTTP ${response.status}` };
+    return { status: "ok", data: (await response.json()) as T };
+  } catch {
+    return { status: "error", message: "rankings API unreachable" };
+  }
+}
+
+/** Published ranking snapshots, newest first (summaries only). */
+export function getRankingHistory(before?: number, limit = 50): Promise<ApiResult<RankingHistoryPage>> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (before !== undefined) params.set("before", String(before));
+  return apiFetch(`/api/sniffer/rankings/history?${params.toString()}`);
+}
+
+/** One published snapshot as stored, with its comparison to the previous one. */
+export function getRankingSnapshot(id: number, symbol?: string): Promise<ApiResult<RankingSnapshotDetail>> {
+  const query = symbol ? `?symbol=${encodeURIComponent(symbol)}` : "";
+  return apiFetch(`/api/sniffer/rankings/history/${id}${query}`);
+}

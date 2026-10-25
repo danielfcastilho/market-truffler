@@ -55,6 +55,9 @@ logger = logging.getLogger(__name__)
 
 SessionFactory = Callable[[], AsyncSession]
 Sleep = Callable[[float], Awaitable[object]]
+#: Called with a frame time right after its analysis is committed — the
+#: ranking publication boundary (`app.services.ranking_snapshots`).
+Publish = Callable[[datetime], Awaitable[object]]
 
 #: How far back startup recovery looks for frames whose analysis was lost.
 RECOVERY_LOOKBACK = timedelta(hours=24)
@@ -67,10 +70,17 @@ RECOVERY = "recovery"
 
 
 class Sniffer:
-    def __init__(self, session_factory: SessionFactory, *, sleep: Sleep = asyncio.sleep) -> None:
+    def __init__(
+        self,
+        session_factory: SessionFactory,
+        *,
+        sleep: Sleep = asyncio.sleep,
+        publish: Publish | None = None,
+    ) -> None:
         self._session_factory = session_factory
         self._engine = FeatureEngine()
         self._sleep = sleep
+        self._publish = publish
         self._recovery_task: asyncio.Task[list[datetime]] | None = None
 
     async def analyze_frame(self, frame_time: datetime, *, analysis: str = LIVE) -> None:
@@ -112,6 +122,16 @@ class Sniffer:
                 "analysis": analysis,
             },
         )
+        if self._publish is not None:
+            # The ranking of this frame is now available: capture it. A
+            # capture failure never affects the analysis (it is logged and
+            # counted by the publisher, never reported as captured).
+            try:
+                await self._publish(frame_time)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "ranking_snapshot_capture_failed", extra={"frame_time": frame_time.isoformat()}
+                )
 
     async def on_frame_finalized(self, frame_time: datetime) -> None:
         """The hook wired into `FrameSynchronizer` — see `app.main`. Any

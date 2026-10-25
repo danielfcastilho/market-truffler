@@ -210,3 +210,96 @@ export function conditionLabel(c: {
 export function truffleEmoji(direction: RankDirection): string {
   return direction === "long" ? "🟢" : "🔴";
 }
+
+
+// -- published ranking snapshots (`/api/sniffer/rankings/history`) ----------------------------
+
+export interface RankingSnapshotSummary {
+  id: number;
+  frame_time: string;
+  analyzed_at: string;
+  analysis: string | null;
+  published_at: string;
+  temporal_contract_version: number | null;
+  long_candidate: string | null;
+  long_candidate_hash: string | null;
+  short_candidate: string | null;
+  short_candidate_hash: string | null;
+  long_qualification: string | null;
+  long_qualification_hash: string | null;
+  short_qualification: string | null;
+  short_qualification_hash: string | null;
+  long_qualification_status: string | null;
+  short_qualification_status: string | null;
+  long_truffles: number | null;
+  short_truffles: number | null;
+  schema_version: number;
+  payload_sha256: string;
+}
+
+export interface RankingHistoryPage {
+  items: RankingSnapshotSummary[];
+  next_before: number | null;
+}
+
+export interface Movement {
+  rank: number;
+  previous_rank: number | null;
+  change: number | null;
+}
+
+export type DirectionComparison =
+  | { available: false; reason: string }
+  | {
+      available: true;
+      k: number;
+      model_changed: boolean;
+      policy_changed: boolean;
+      entered_top_k: string[];
+      left_top_k: string[];
+      movements: Record<string, Movement>;
+      truffles:
+        | { comparable: false; status: string | null; previous_status: string | null }
+        | {
+            comparable: boolean;
+            count: number;
+            previous_count: number;
+            count_change: number;
+            gained: string[];
+            lost: string[];
+          };
+    };
+
+export type SnapshotComparison =
+  | { available: false; reason: string }
+  | {
+      available: true;
+      previous_id: number;
+      previous_frame_time: string;
+      frame_gap_seconds: number;
+      consecutive: boolean;
+      same_frame: boolean;
+      long: DirectionComparison;
+      short: DirectionComparison;
+    };
+
+export interface RankingSnapshotDetail {
+  snapshot: RankingSnapshotSummary;
+  ranking: LiveRankings;
+  previous: RankingSnapshotSummary | null;
+  next: RankingSnapshotSummary | null;
+  comparison: SnapshotComparison;
+}
+
+/** "↑ 3", "↓ 2", "–", or "new" — for a row present in the comparison. */
+export function movementLabel(m: Movement | undefined, inTopK: boolean): string | null {
+  if (!m) return null;
+  if (m.previous_rank === null) return inTopK ? "new to top 10" : "new";
+  if (m.change === 0) return "–";
+  return m.change! > 0 ? `↑ ${m.change}` : `↓ ${-m.change!}`;
+}
+
+export function historyHref(snapshotId: number, extra: Record<string, string> = {}): string {
+  const params = new URLSearchParams({ view: "history", snapshot: String(snapshotId), ...extra });
+  return `/sniffer?${params.toString()}`;
+}

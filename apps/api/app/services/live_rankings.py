@@ -216,7 +216,12 @@ async def live_rankings(
     qualifications_dir: Path | None = None,
     long_qualification: str | None = None,
     short_qualification: str | None = None,
+    include_checks: bool = False,
 ) -> dict[str, Any]:
+    """The live response. `include_checks` attaches every row's full
+    qualification checks (the board carries only which conditions failed) —
+    used to capture a published snapshot (`app.services.ranking_snapshots`);
+    computed once per analyzed frame either way."""
     repo = SnifferRepository(session)
     marker = await repo.latest_marker()
     if marker is None:
@@ -290,6 +295,17 @@ async def live_rankings(
     }
     for direction in ("long", "short"):
         ranking = _gate(snapshot[direction], stale_reason, frame.completeness)
+        if include_checks and symbol is None:
+            checks = snapshot["checks"][direction]
+            ranking = {
+                **ranking,
+                "rows": [
+                    {**r, "qualification": {**r["qualification"], "checks": checks[r["symbol"]]}}
+                    if r.get("qualification") is not None and r["symbol"] in checks
+                    else r
+                    for r in ranking.get("rows", [])
+                ],
+            }
         result[direction] = _only(ranking, symbol, snapshot["checks"][direction])
     result["truffles_in_both_directions"] = sorted(
         {t["symbol"] for t in result["long"]["qualification"]["truffles"]}

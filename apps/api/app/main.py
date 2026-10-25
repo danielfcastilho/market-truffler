@@ -1,6 +1,7 @@
 import logging
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,6 +21,7 @@ from app.services.live_candle_sink import PersistingCandleSink
 from app.services.market_collector import MarketCollector
 from app.services.market_universe import MarketUniverseService
 from app.services.open_interest_reconciler import OpenInterestReconciler
+from app.services.ranking_snapshots import RankingPublisher
 from app.services.sniffer import Sniffer
 
 settings = get_settings()
@@ -101,7 +103,20 @@ async def lifespan(app: FastAPI):
     # an interrupted frame first). A Sniffer failure is isolated inside
     # FrameSynchronizer itself (see its `on_frame_finalized` handling), so
     # it can never take MARKET down.
-    sniffer_service = Sniffer(session_factory)
+    # Published ranking snapshots are captured where a frame's ranking
+    # becomes available — right after Sniffer commits its analysis.
+    ranking_dir = Path(settings.research_ranking_dir)
+    ranking_publisher = RankingPublisher(
+        session_factory,
+        candidates_dir=ranking_dir / "candidates",
+        qualifications_dir=ranking_dir / "qualifications",
+        long_candidate=settings.live_ranking_long_candidate,
+        short_candidate=settings.live_ranking_short_candidate,
+        long_qualification=settings.live_truffle_long_qualification,
+        short_qualification=settings.live_truffle_short_qualification,
+    )
+    app.state.ranking_publisher = ranking_publisher
+    sniffer_service = Sniffer(session_factory, publish=ranking_publisher.publish)
     app.state.sniffer = sniffer_service
 
     frame_synchronizer = FrameSynchronizer(

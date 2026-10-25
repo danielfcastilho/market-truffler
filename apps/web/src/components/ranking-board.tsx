@@ -12,8 +12,11 @@ import {
   formatFeature,
   formatScore,
   transformLabel,
+  historyHref,
+  movementLabel,
   truffleEmoji,
   type DirectionRanking,
+  type SnapshotComparison,
   type LiveModel,
   type RankDirection,
   type RankedCoin,
@@ -30,12 +33,23 @@ const CONTEXT = ["return_1h", "oi_change_1h", "relative_volume_1h"] as const;
  * configured model), with the model and every score's breakdown one click
  * away. Nothing is re-sorted or recomputed here; search only filters.
  */
+/** Set when the board shows a published snapshot instead of the live
+ * ranking: links stay inside the snapshot and rows show their movement
+ * since the previous published snapshot. */
+export interface HistoryContext {
+  snapshotId: number;
+  publishedAt: string;
+  comparison: SnapshotComparison;
+}
+
 export function RankingBoard({
   result,
   initialDirection = "long",
+  history,
 }: {
   result: LiveRankingsResult;
   initialDirection?: RankDirection;
+  history?: HistoryContext;
 }) {
   const [direction, setDirection] = useState<RankDirection>(initialDirection);
   const [query, setQuery] = useState("");
@@ -67,15 +81,21 @@ export function RankingBoard({
           Frame {formatFrameTimeUtc(frame.frame_time)} · {frame.analyzed_instruments} instruments
           {frame.analysis === "recovery" && " · analysis recovered after a restart"}
         </span>
-        <span
-          className={cn(
-            "rounded-md px-2 py-0.5 text-xs",
-            frame.stale ? "bg-destructive/10 text-destructive" : "bg-primary/10 text-primary",
-          )}
-          title={frame.stale_reason ?? undefined}
-        >
-          {frame.stale ? `Stale — ${frame.stale_reason}` : "Current"}
-        </span>
+        {history ? (
+          <span className="rounded-md bg-amber-500/15 px-2 py-0.5 text-xs text-amber-900 dark:text-amber-200">
+            Published snapshot · {formatFrameTimeUtc(history.publishedAt)}
+          </span>
+        ) : (
+          <span
+            className={cn(
+              "rounded-md px-2 py-0.5 text-xs",
+              frame.stale ? "bg-destructive/10 text-destructive" : "bg-primary/10 text-primary",
+            )}
+            title={frame.stale_reason ?? undefined}
+          >
+            {frame.stale ? `Stale — ${frame.stale_reason}` : "Current"}
+          </span>
+        )}
       </div>
       <p className="text-sm text-muted-foreground">
         <span className="font-medium text-foreground">Experimental rankings.</span> Models are
@@ -124,7 +144,7 @@ export function RankingBoard({
         <>
           <RankingDiagnosticsPanel diagnostics={ranking.diagnostics} />
           <ModelPanel model={ranking.model!} ranking={ranking} />
-          <RankingTable ranking={ranking} direction={direction} query={query} />
+          <RankingTable ranking={ranking} direction={direction} query={query} history={history} />
         </>
       )}
     </div>
@@ -197,11 +217,17 @@ function RankingTable({
   ranking,
   direction,
   query,
+  history,
 }: {
   ranking: DirectionRanking;
   direction: RankDirection;
   query: string;
+  history?: HistoryContext;
 }) {
+  const compared =
+    history?.comparison.available && history.comparison[direction].available
+      ? history.comparison[direction]
+      : null;
   const [open, setOpen] = useState<string | null>(null);
   const rows = useMemo(() => {
     const q = query.trim().toUpperCase();
@@ -233,10 +259,21 @@ function RankingTable({
           {rows.map((row) => (
             <Fragment key={row.symbol}>
               <tr data-symbol={row.symbol}>
-                <td className="px-3 py-2 text-muted-foreground">#{row.rank}</td>
+                <td className="px-3 py-2 text-muted-foreground">
+                  #{row.rank}
+                  {compared && compared.available && (
+                    <span className="ml-1 text-[11px]" data-movement={row.symbol}>
+                      {movementLabel(compared.movements[row.symbol], row.rank <= compared.k)}
+                    </span>
+                  )}
+                </td>
                 <td className="px-3 py-2">
                   <Link
-                    href={`/sniffer/${encodeURIComponent(row.symbol)}?direction=${direction}`}
+                    href={
+                      history
+                        ? historyHref(history.snapshotId, { symbol: row.symbol, direction })
+                        : `/sniffer/${encodeURIComponent(row.symbol)}?direction=${direction}`
+                    }
                     className="font-medium underline-offset-4 hover:underline"
                   >
                     {row.symbol}

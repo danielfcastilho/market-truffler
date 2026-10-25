@@ -1,18 +1,23 @@
 import logging
+from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
+from sqlalchemy import select
 
 from app.core.config import get_settings
 from app.core.deps import CurrentUserDep, DbSessionDep
 from app.domain.sniffer import SnifferFrameResult
 from app.domain.temporal import DECISION_DELAY
+from app.models.ranking_snapshot import RankingSnapshot
 from app.repositories.sniffer_repository import SnifferRepository
-from app.schemas.rankings import LiveRankings
+from app.schemas.rankings import LiveRankings, RankingHistoryPage, RankingSnapshotDetail
 from app.schemas.sniffer import SnifferFrameResponse, SnifferInstrument, SnifferStatus
 from app.services.collection_continuity import FINALIZE_ALLOWANCE
 from app.services.live_rankings import live_rankings
+from app.services.ranking_snapshots import history_page, snapshot_detail
 
 router = APIRouter(tags=["sniffer"])
 logger = logging.getLogger(__name__)
@@ -60,7 +65,9 @@ def _to_response(result: SnifferFrameResult, symbol: str | None = None) -> Sniff
 
 
 @router.get("/api/sniffer/status", response_model=SnifferStatus)
-async def sniffer_status(db: DbSessionDep, current_user: CurrentUserDep) -> SnifferStatus:
+async def sniffer_status(
+    request: Request, db: DbSessionDep, current_user: CurrentUserDep
+) -> SnifferStatus:
     """Truthful Sniffer status for Vitals.
 
     Read-only snapshot of Sniffer's own persisted results — this never
@@ -75,10 +82,27 @@ async def sniffer_status(db: DbSessionDep, current_user: CurrentUserDep) -> Snif
     unanalyzed = await repo.count_unanalyzed_frames(
         now - timedelta(hours=24), now - DECISION_DELAY - FINALIZE_ALLOWANCE
     )
+    latest_snapshot = (
+        await db.execute(
+            select(RankingSnapshot.frame_time, RankingSnapshot.published_at)
+            .order_by(RankingSnapshot.published_at.desc(), RankingSnapshot.id.desc())
+            .limit(1)
+        )
+    ).first()
+    publisher = getattr(request.app.state, "ranking_publisher", None)
+    snapshots: dict[str, Any] = {
+        "last_snapshot_frame": latest_snapshot[0] if latest_snapshot else None,
+        "last_snapshot_published_at": latest_snapshot[1] if latest_snapshot else None,
+        "snapshot_capture": asdict(publisher.status) if publisher is not None else None,
+    }
     result = await repo.get_latest()
     if result is None:
         return SnifferStatus(
-            status=None, last_scan=None, coins_analyzed=None, frames_unanalyzed_24h=unanalyzed
+            status=None,
+            last_scan=None,
+            coins_analyzed=None,
+            frames_unanalyzed_24h=unanalyzed,
+            **snapshots,
         )
     return SnifferStatus(
         status="ok",
@@ -86,6 +110,7 @@ async def sniffer_status(db: DbSessionDep, current_user: CurrentUserDep) -> Snif
         coins_analyzed=len(result.instruments),
         frames_unanalyzed_24h=unanalyzed,
         last_analysis=result.analysis,
+        **snapshots,
     )
 
 
@@ -128,6 +153,31 @@ async def sniffer_rankings(
         short_qualification=settings.live_truffle_short_qualification,
     )
     return LiveRankings.model_validate(result)
+
+
+@router.get("/api/sniffer/rankings/history", response_model=RankingHistoryPage)
+async def ranking_history(
+    db: DbSessionDep,
+    current_user: CurrentUserDep,
+    limit: int = Query(default=50, ge=1, le=100),
+    before: int | None = None,
+) -> RankingHistoryPage:
+    """Published ranking snapshots, newest first (`before` = the last id of
+    the previous page). Summaries only; never recomputes anything."""
+    return RankingHistoryPage.model_validate(await history_page(db, limit=limit, before=before))
+
+
+@router.get("/api/sniffer/rankings/history/{snapshot_id}", response_model=RankingSnapshotDetail)
+async def ranking_snapshot(
+    snapshot_id: int, db: DbSessionDep, current_user: CurrentUserDep, symbol: str | None = None
+) -> RankingSnapshotDetail:
+    """One published snapshot exactly as stored, its neighbours, and the
+    comparison with the previous available published snapshot. `symbol`
+    keeps only that coin's rows."""
+    detail = await snapshot_detail(db, snapshot_id, symbol=symbol.upper() if symbol else None)
+    if detail is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="No published snapshot with that id")
+    return RankingSnapshotDetail.model_validate(detail)
 
 
 @router.get("/api/sniffer/frames/{frame_time}", response_model=SnifferFrameResponse)
