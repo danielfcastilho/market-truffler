@@ -19,6 +19,18 @@ exists.
 
 - A frame that was not the newest when analyzed (an older frame recovered
   after a restart) was never served live, so it is not captured.
+- A **recovery** analysis is a publication only when it made its frame the
+  newest analyzed one — the provenance label alone decides nothing. The
+  publisher checks exactly what the live endpoint reads (the newest
+  analyzed frame), and the captured payload must be for that frame: if a
+  newer frame was analyzed in between, nothing is attributed to the older
+  one.
+- Audit, 2026-10-25: snapshot 10 (frame 14:25, `recovery`) was a genuine
+  publication. The restart lost frames 14:30 and 14:35, so after recovery
+  analyzed 14:25 at 14:35:46 it was the newest analyzed frame, and the live
+  endpoint served it from 14:36:28 (its capture) until 14:40 was analyzed
+  at 14:41:05. It was stale when published, so its Truffles show as
+  withheld, as they were served. No record needed correcting.
 - "Published" means the system made it available, not that anyone looked.
 - The frame time is the 5-minute boundary the ranking describes. It
   appeared at its **publication** time, about T+2 min (see

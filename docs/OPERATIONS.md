@@ -94,6 +94,99 @@ the last 24h without results (at most 24, oldest first, labelled
 `analysis = 'recovery'`). Vitals shows "Unanalyzed frames (24h)" for any
 still missing.
 
+The research worker does **not** need to be stopped or waited for: a
+restart during shard generation is safe (see *Partition maintenance*
+below). There is one `api` process, so recreating it still pauses
+collection for the restart itself (6.9 s from recreate to the frame loop
+running on 2026-10-25, with a shard being generated: migrations, universe
+discovery, collector reconnect) — a frame whose boundary falls in
+that window can still be lost, hence the timing above. Zero-downtime
+deploys would need a second collector, which this stack does not have.
+
+```bash
+docker compose up -d --build --no-deps api      # deploy
+docker compose logs -f api | grep -E 'frame_synchronizer_started|partition_'
+```
+
+## Partition maintenance
+
+`market_candles`, `market_frame_members` and `sniffer_results` are
+partitioned by month (`app/services/partition_manager.py`,
+`app/services/partition_maintenance.py`). Creating or dropping a partition
+needs an ACCESS EXCLUSIVE lock on the table, which waits for every open
+reader — and, while waiting, makes every later reader and writer (frame
+building included) queue behind it.
+
+**The 2026-10-25 outage.** Each startup created the partitions for the
+last three months. Retention (30 days) keeps only months from the cutoff
+month on, so every restart re-created two already-expired, empty months,
+and retention dropped them again two seconds later. At 14:28 UTC that
+creation waited, with no timeout, behind the research worker's shard read
+on `market_frame_members`. Startup hung for seven minutes, frames 14:30
+and 14:35 were lost, and it only continued once `research` was stopped.
+
+**Required — before anything ingests.** The current month's partition of
+each table (live candles, frames and Sniffer results are written there).
+Startup checks the catalog; when they exist (always, normally) it takes
+no lock at all. If one is missing, startup creates it with a bounded lock
+wait and retries (1, 2, 5, then every 10 s) until it exists. Meanwhile the
+API is not ready (`/health` does not answer yet, the container is not
+healthy) and nothing is collected — never silently. A non-contention error
+fails startup and Docker restarts it.
+
+**Deferrable — in the background after each universe refresh (15 min).**
+The rest of the retained window (next month's partition, created about a
+month before it is needed; older retained months the history backfill
+writes into) and retention drops. Expired months are never created.
+Retention takes its exclusive locks only when a month is actually
+droppable; a candle month still referenced by retained frames is
+recognised without them.
+
+**Bounded waits.** Every partition statement runs with `SET LOCAL
+lock_timeout` = `PARTITION_LOCK_TIMEOUT_MS` (default 2000 ms). It ends with
+its transaction, so it never stays on a pooled connection, and other
+statements are unaffected. A lock timeout (SQLSTATE 55P03) or a deadlock
+(40P01) defers the operation: the transaction is rolled back and it is
+retried after 15, 30, 60, 120 and 240 s, then at the next universe
+refresh. Only one maintenance run exists at a time. A restart forgets
+nothing: what is missing is re-derived from the catalog. Any other error
+(missing table, permissions, anything unexpected) is reported as
+*Failed* and never retried as contention. A second process creating the
+same partition at the same moment ("already exists", 42P07) counts as
+done.
+
+**Impact on collection.** While a partition statement waits (at most the
+timeout), queries on that table queue behind it — at most ~2 s of delay to
+frame building, then the statement gives up.
+
+**Vitals → MARKET → Partition maintenance**
+
+| Shown | Meaning | Action |
+|---|---|---|
+| Healthy (time) | Window present, retention done | — |
+| Not run yet | Just started; the first pass follows the first universe refresh | — |
+| Deferred — lock_timeout …; retry N at … | Waiting for a lock on work that can wait; retrying | None: it resolves when the reader (usually a research shard) finishes |
+| Deferred — …; retried at the next universe refresh | Retries exhausted; tried again within 15 min | Only if it persists for hours |
+| Failed — category | Not contention: `missing_schema`, `permission`, `unexpected` | Read `partition_operation_failed` in the api log |
+| Required partition unavailable — ingestion blocked | A table has no partition for the current month: inserts fail. `/ready` returns 503 | Find what holds the lock (below); check the log |
+
+The categories never include database messages or credentials; the api
+log has the full error.
+
+**Fallback.** If a required partition stays blocked, find the holder:
+
+```bash
+docker compose exec postgres psql -U truffler -d market_truffler -c \
+  "select pid, state, now()-xact_start as age, left(query,80) from pg_stat_activity
+   where pid = any(pg_blocking_pids((select pid from pg_stat_activity
+   where wait_event_type = 'Lock' limit 1)));"
+```
+
+If it is the research worker, `docker compose stop research` releases it
+(safe mid-shard: the day is regenerated) — then `docker compose up -d
+research` once the api is healthy. This is an exceptional fallback, no
+longer part of a normal deploy.
+
 **Ports.** `api` and `web` publish on `127.0.0.1` by default
 (`API_BIND`/`WEB_BIND` in `.env`); set them to `0.0.0.0` only to reach the
 app from another machine on purpose. Interactive API docs (`/docs`) are

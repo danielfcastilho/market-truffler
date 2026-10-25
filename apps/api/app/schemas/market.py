@@ -4,6 +4,21 @@ from typing import Literal
 from pydantic import BaseModel
 
 
+class PartitionMaintenanceState(BaseModel):
+    """See app.services.partition_maintenance. `deferred`/`retrying` are lock
+    contention on work that can wait; `required_unavailable` means a table
+    lacks the current month's partition and ingestion into it fails."""
+
+    state: Literal["pending", "healthy", "deferred", "retrying", "failed", "required_unavailable"]
+    last_attempt_at: datetime | None
+    last_success_at: datetime | None
+    retry_count: int
+    next_retry_at: datetime | None
+    last_error_category: str | None
+    pending: list[str]
+    ingestion_affected: bool
+
+
 class MarketStatus(BaseModel):
     bybit_connectivity: Literal["ok", "down"]
     symbols_tracked: int | None
@@ -36,3 +51,5 @@ class MarketStatus(BaseModel):
     symbols_discovered: int
     symbols_backfilling: int
     symbols_ready: int
+    # None only when no reconciler runs (tests).
+    partition_maintenance: PartitionMaintenanceState | None = None

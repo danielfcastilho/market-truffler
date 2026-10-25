@@ -105,6 +105,22 @@ export interface MarketStatus {
   symbols_discovered: number;
   symbols_backfilling: number;
   symbols_ready: number;
+  /** Partition upkeep (see the backend's app.services.partition_maintenance).
+   * Absent from older API versions. */
+  partition_maintenance?: PartitionMaintenance | null;
+}
+
+export interface PartitionMaintenance {
+  state: "pending" | "healthy" | "deferred" | "retrying" | "failed" | "required_unavailable";
+  last_attempt_at: string | null;
+  last_success_at: string | null;
+  retry_count: number;
+  next_retry_at: string | null;
+  last_error_category: string | null;
+  /** Operations not done yet, e.g. "create market_candles_2026_12". */
+  pending: string[];
+  /** A table lacks the current month's partition: ingestion into it fails. */
+  ingestion_affected: boolean;
 }
 
 export async function getMarketStatus(): Promise<MarketStatus | null> {

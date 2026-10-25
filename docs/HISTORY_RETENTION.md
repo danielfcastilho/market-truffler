@@ -45,6 +45,9 @@ on the initial successful universe discovery during startup, then after each
 successful universe refresh (900 seconds by default). If Bybit discovery fails,
 that cycle skips cleanup. Periodic refresh also provisions this and next month's
 partitions, so continuous operation does not depend on a monthly restart.
+Since 2026-10-25 retention and provisioning run in the background with
+bounded lock waits, and only months retention keeps are ever created —
+see "Partition maintenance" in [OPERATIONS.md](OPERATIONS.md).
 
 ## What happens to the existing database
 

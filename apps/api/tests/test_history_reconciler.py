@@ -759,10 +759,14 @@ async def test_retention_prunes_members_before_candles_and_rolls_partitions(
     monkeypatch.setattr(partition_manager, "ensure_partitions", ensure)
     reconciler = _reconciler(session_factory, _FakeBybitClient(), retention_days=30)
     await reconciler._reconcile_universe_once()
+    # Partition upkeep runs in the background, never inside the refresh.
+    await reconciler.partition_maintenance._task
     assert [c.kwargs["table"] for c in drop.call_args_list] == [
         "market_frame_members",
         "sniffer_results",
         "market_candles",
     ]
     assert all(c.kwargs["retention_days"] == 30 for c in drop.call_args_list)
+    assert all(c.kwargs["lock_timeout_ms"] == 2000 for c in drop.call_args_list)
     assert ensure.await_count == 3
+    assert reconciler.partition_maintenance.status.state == "healthy"

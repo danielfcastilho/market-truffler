@@ -1,7 +1,7 @@
 import logging
 import time
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
 from sqlalchemy import text
 
 from app.core import PROCESS_STARTED_AT, __version__
@@ -19,8 +19,17 @@ async def health() -> HealthResponse:
 
 
 @router.get("/ready", response_model=ReadyResponse)
-async def ready(db: DbSessionDep) -> ReadyResponse:
-    """Readiness probe: the app and its required dependencies (PostgreSQL) are usable."""
+async def ready(request: Request, db: DbSessionDep) -> ReadyResponse:
+    """Readiness probe: the app and its required dependencies (PostgreSQL) are
+    usable. Not ready while a table lacks the current month's partition
+    (ingestion into it fails — see app.services.partition_maintenance);
+    deferred partition upkeep does not affect readiness."""
+    reconciler = getattr(request.app.state, "history_reconciler", None)
+    if reconciler is not None and reconciler.partition_maintenance.status.ingestion_affected:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Required database partition unavailable",
+        )
     try:
         await db.execute(text("SELECT 1"))
     except Exception as exc:  # noqa: BLE001 - readiness must report any failure

@@ -147,6 +147,53 @@ function missedFramesRow(market: MarketStatus | null): VitalRow {
 }
 
 /**
+ * Monthly partition upkeep. Lock contention on work that can wait
+ * (next month's partition, retention) is retried automatically and is not
+ * a failure; a missing current-month partition blocks ingestion and is.
+ */
+function partitionRow(market: MarketStatus | null): VitalRow {
+  const label = "Partition maintenance";
+  const maintenance = market?.partition_maintenance;
+  if (!maintenance) return unavailableRow(label);
+  const pending = maintenance.pending.length ? ` (${maintenance.pending.join(", ")})` : "";
+  const cause = maintenance.last_error_category ?? "unknown error";
+  switch (maintenance.state) {
+    case "healthy":
+      return {
+        label,
+        value: maintenance.last_success_at
+          ? `Healthy (${formatTimestampUtc(maintenance.last_success_at)})`
+          : "Healthy",
+        status: "ok",
+      };
+    case "pending":
+      return { label, value: "Not run yet", status: "ok" };
+    case "retrying":
+      return {
+        label,
+        value:
+          `Deferred — ${cause}${pending}; retry ${maintenance.retry_count}` +
+          (maintenance.next_retry_at ? ` at ${formatTimestampUtc(maintenance.next_retry_at)}` : ""),
+        status: "ok",
+      };
+    case "deferred":
+      return {
+        label,
+        value: `Deferred — ${cause}${pending}; retried at the next universe refresh`,
+        status: "ok",
+      };
+    case "failed":
+      return { label, value: `Failed — ${cause}${pending}`, status: "down" };
+    case "required_unavailable":
+      return {
+        label,
+        value: `Required partition unavailable — ingestion blocked (${cause})${pending}`,
+        status: "down",
+      };
+  }
+}
+
+/**
  * Published ranking snapshots: the newest captured one, and whether this
  * API process failed to capture any (never reported as captured).
  */
@@ -347,6 +394,7 @@ export function buildVitalsSections({
           status: market?.frame_completeness != null ? "ok" : "unavailable",
         },
         missedFramesRow(market),
+        partitionRow(market),
       ],
     },
     {

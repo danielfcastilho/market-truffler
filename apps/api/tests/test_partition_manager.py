@@ -2,15 +2,19 @@
 range partitioning). These tests confirm the dialect guard makes both
 functions safe, harmless no-ops against the SQLite engine used everywhere
 else in this test suite. Real partition creation/drop is verified against a
-live PostgreSQL instance in the milestone's manual smoke test — see the
-final report.
+live PostgreSQL instance in tests/test_partition_locks_postgres.py
+(opt-in via TEST_POSTGRES_URL).
 """
+
+from datetime import UTC, datetime
 
 from app.services import partition_manager
 
 
 async def test_ensure_partitions_is_a_noop_on_sqlite(db_session):
-    created = await partition_manager.ensure_partitions(db_session, months_back=13)
+    created = await partition_manager.ensure_partitions(
+        db_session, months=[datetime(2026, 10, 1, tzinfo=UTC)]
+    )
     assert created == []
 
 
@@ -21,7 +25,7 @@ async def test_drop_expired_partitions_is_a_noop_on_sqlite(db_session):
 
 async def test_partition_functions_accept_a_table_override_and_still_noop_on_sqlite(db_session):
     created = await partition_manager.ensure_partitions(
-        db_session, months_back=13, table="market_frame_members", partition_column="frame_time"
+        db_session, months=[datetime(2026, 10, 1, tzinfo=UTC)], table="market_frame_members"
     )
     dropped = await partition_manager.drop_expired_partitions(
         db_session, retention_days=365, table="market_frame_members"
@@ -153,7 +157,9 @@ async def test_postgres_retention_preserves_window_and_referenced_month(monkeypa
                 None,
             ]
         ),
-        scalar=AsyncMock(side_effect=[False, True]),
+        # June: unreferenced before and under the locks; July: referenced at
+        # the unlocked pre-check, so it is kept without being re-checked.
+        scalar=AsyncMock(side_effect=[False, False, True]),
         commit=AsyncMock(),
     )
     dropped = await partition_manager.drop_expired_partitions(session, retention_days=30)
@@ -162,5 +168,45 @@ async def test_postgres_retention_preserves_window_and_referenced_month(monkeypa
     assert [s for s in statements if s.startswith("DROP")] == [
         "DROP TABLE IF EXISTS market_candles_2026_06"
     ]
-    assert session.scalar.await_count == 2  # August/September never considered for deletion
+    assert session.scalar.await_count == 3  # August/September never considered for deletion
+    assert sum(s.startswith("LOCK TABLE") for s in statements) == 2
     session.commit.assert_awaited_once()
+
+
+def test_retained_months_match_what_retention_keeps():
+    """Startup on 2026-10-25 used to create July and August (months_back=3),
+    which retention dropped two seconds later — each creation needing an
+    ACCESS EXCLUSIVE lock. Only retained months are ever created now."""
+    from app.services.partition_manager import retained_months
+
+    now = datetime(2026, 10, 25, 14, 28, tzinfo=UTC)
+    assert retained_months(now, 30) == [
+        datetime(2026, 9, 1, tzinfo=UTC),
+        datetime(2026, 10, 1, tzinfo=UTC),
+        datetime(2026, 11, 1, tzinfo=UTC),
+    ]
+    assert retained_months(datetime(2026, 12, 31, tzinfo=UTC), 1)[-1] == datetime(
+        2027, 1, 1, tzinfo=UTC
+    )
+
+
+def test_error_categories_separate_contention_from_faults():
+    from sqlalchemy.exc import OperationalError, ProgrammingError
+
+    from app.services.partition_manager import RETRYABLE_CATEGORIES, error_category
+
+    class _Orig(Exception):
+        def __init__(self, sqlstate):
+            self.sqlstate = sqlstate
+
+    def err(cls, sqlstate):
+        return cls("stmt", {}, _Orig(sqlstate))
+
+    assert error_category(err(OperationalError, "55P03")) == "lock_timeout"
+    assert error_category(err(OperationalError, "40P01")) == "deadlock"
+    assert error_category(err(ProgrammingError, "42P01")) == "missing_schema"
+    assert error_category(err(ProgrammingError, "42501")) == "permission"
+    assert error_category(err(OperationalError, "08006")) == "unexpected"
+    assert error_category(err(OperationalError, None)) == "unexpected"
+    assert error_category(RuntimeError("bug")) == "unexpected"
+    assert RETRYABLE_CATEGORIES == {"lock_timeout", "deadlock"}

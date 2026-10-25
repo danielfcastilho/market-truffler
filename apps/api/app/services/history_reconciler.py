@@ -43,25 +43,21 @@ from app.integrations.bybit.schemas import parse_kline_history_row
 from app.models.instrument import Instrument
 from app.repositories.candle_repository import CandleRepository
 from app.repositories.instrument_repository import InstrumentRepository
-from app.services import partition_manager
 from app.services.candle_conversion import to_closed_candle
 from app.services.candle_ingestion import CandleIngestionService
 from app.services.market_universe import MarketUniverseUnavailable
+from app.services.partition_maintenance import PartitionMaintenance
 
 logger = logging.getLogger(__name__)
 
 _CATEGORY = "linear"
 
 # Every RANGE-partitioned, time-series table MARKET/Sniffer own, sharing the
-# same rolling retention horizon and monthly partition scheme. Partitioned
-# by open_time; the frame/Sniffer tables are partitioned by frame_time, but
-# `partition_manager` only needs the column name for documentation — the
-# DDL itself is generic.
-_PARTITIONED_TABLES: tuple[tuple[str, str], ...] = (
-    ("market_frame_members", "frame_time"),
-    ("sniffer_results", "frame_time"),
-    ("market_candles", "open_time"),
-)
+# same rolling retention horizon and monthly partition scheme (candles by
+# open_time, the frame/Sniffer tables by frame_time — the DDL is generic).
+# Members come before candles: retention keeps a candle month while
+# retained members reference it.
+_PARTITIONED_TABLES: tuple[str, ...] = ("market_frame_members", "sniffer_results", "market_candles")
 
 SessionFactory = Callable[[], AsyncSession]
 NewSymbolsHook = Callable[[list[str]], "Awaitable[None]"]
@@ -106,6 +102,7 @@ class HistoryReconciler:
         universe_refresh_interval_seconds: float = 900.0,
         gap_retry_delay_seconds: float = 3.0,
         on_new_symbols: NewSymbolsHook | None = None,
+        partition_lock_timeout_ms: int = 2000,
     ) -> None:
         self._session_factory = session_factory
         self._bybit_client = bybit_client
@@ -123,6 +120,12 @@ class HistoryReconciler:
         self._tasks: list[asyncio.Task[None]] = []
         self._running = False
         self._status = HistoryReconcilerStatus()
+        self._partitions = PartitionMaintenance(
+            session_factory,
+            tables=_PARTITIONED_TABLES,
+            retention_days=retention_days,
+            lock_timeout_ms=partition_lock_timeout_ms,
+        )
 
     @property
     def running(self) -> bool:
@@ -132,15 +135,17 @@ class HistoryReconciler:
     def status(self) -> HistoryReconcilerStatus:
         return self._status
 
+    @property
+    def partition_maintenance(self) -> PartitionMaintenance:
+        return self._partitions
+
     async def start(self) -> None:
         self._stop_event = asyncio.Event()
 
-        months_back = (self._retention_days // 30) + 2
-        async with self._session_factory() as session:
-            for table, column in _PARTITIONED_TABLES:
-                await partition_manager.ensure_partitions(
-                    session, months_back=months_back, table=table, partition_column=column
-                )
+        # Only the current month's partitions gate startup (live writes go
+        # there); the rest of the window and retention run in the background
+        # after the universe refresh below. See PartitionMaintenance.
+        await self._partitions.ensure_required()
 
         await self._reconcile_universe_once()
 
@@ -160,6 +165,7 @@ class HistoryReconciler:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         self._tasks = []
+        await self._partitions.stop()
         self._running = False
         logger.info("history_reconciler_stopped")
 
@@ -189,13 +195,9 @@ class HistoryReconciler:
             active, newly_added = await InstrumentRepository(session).reconcile_universe(
                 discovered, now=now, retention_days=self._retention_days
             )
-            for table, column in _PARTITIONED_TABLES:
-                await partition_manager.ensure_partitions(
-                    session, months_back=0, table=table, partition_column=column
-                )
-                await partition_manager.drop_expired_partitions(
-                    session, retention_days=self._retention_days, table=table
-                )
+        # Next month's partition and retention, in the background with
+        # bounded lock waits — never blocking this loop or startup.
+        self._partitions.request()
 
         logger.info(
             "universe_reconciled",

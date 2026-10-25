@@ -61,6 +61,7 @@ async def lifespan(app: FastAPI):
         catchup_buffer_minutes=settings.market_history_catchup_buffer_minutes,
         universe_refresh_interval_seconds=settings.market_universe_refresh_interval_seconds,
         on_new_symbols=market_collector.add_symbols,
+        partition_lock_timeout_ms=settings.partition_lock_timeout_ms,
     )
     app.state.history_reconciler = history_reconciler
 

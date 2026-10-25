@@ -313,6 +313,75 @@ describe("buildVitalsSections", () => {
     ).toEqual({ label: "Missed frames (24h)", value: "N/A", status: "unavailable" });
   });
 
+  it("shows deferred partition upkeep as recoverable and a missing required partition as down", () => {
+    const row = (partition_maintenance: MarketStatus["partition_maintenance"]) =>
+      buildVitalsSections({
+        health: "ok",
+        ready: "ok",
+        system: healthySystem,
+        market: { ...healthyMarket, partition_maintenance },
+        sniffer: healthySniffer,
+      })
+        .find((s) => s.title === "MARKET")
+        ?.rows.find((r) => r.label === "Partition maintenance");
+    const base = {
+      last_attempt_at: "2026-10-25T14:35:30.000Z",
+      last_success_at: null,
+      retry_count: 0,
+      next_retry_at: null,
+      last_error_category: null,
+      pending: [],
+      ingestion_affected: false,
+    };
+    expect(
+      row({ ...base, state: "healthy", last_success_at: "2026-10-25T14:35:30.000Z" }),
+    ).toEqual({
+      label: "Partition maintenance",
+      value: "Healthy (2026-10-25 14:35:30 UTC)",
+      status: "ok",
+    });
+    expect(
+      row({
+        ...base,
+        state: "retrying",
+        retry_count: 2,
+        next_retry_at: "2026-10-25T14:36:30.000Z",
+        last_error_category: "lock_timeout",
+        pending: ["create market_candles"],
+      }),
+    ).toEqual({
+      label: "Partition maintenance",
+      value:
+        "Deferred — lock_timeout (create market_candles); retry 2 at 2026-10-25 14:36:30 UTC",
+      status: "ok",
+    });
+    expect(row({ ...base, state: "deferred", last_error_category: "lock_timeout" })?.status).toBe(
+      "ok",
+    );
+    expect(
+      row({ ...base, state: "failed", last_error_category: "permission", pending: ["x"] }),
+    ).toEqual({ label: "Partition maintenance", value: "Failed — permission (x)", status: "down" });
+    expect(
+      row({
+        ...base,
+        state: "required_unavailable",
+        last_error_category: "lock_timeout",
+        pending: ["create sniffer_results"],
+        ingestion_affected: true,
+      }),
+    ).toEqual({
+      label: "Partition maintenance",
+      value:
+        "Required partition unavailable — ingestion blocked (lock_timeout) (create sniffer_results)",
+      status: "down",
+    });
+    expect(row(undefined)).toEqual({
+      label: "Partition maintenance",
+      value: "N/A",
+      status: "unavailable",
+    });
+  });
+
   it("reports Bybit connectivity as down and symbols tracked as N/A when Bybit REST is unreachable", () => {
     const sections = buildVitalsSections({
       health: "ok",

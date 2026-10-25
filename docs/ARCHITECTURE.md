@@ -317,7 +317,10 @@ app/models/instrument.py, app/models/candle.py
 app/services/partition_manager.py
    Idempotent CREATE/DROP of whole monthly partitions — retention is a
    handful of DROP TABLE statements, never a row-by-row delete. A no-op on
-   SQLite (tests), since only PostgreSQL is partitioned.
+   SQLite (tests), since only PostgreSQL is partitioned. Every lock wait is
+   bounded; app/services/partition_maintenance.py gates startup on the
+   current month only and defers the rest on contention (OPERATIONS.md,
+   "Partition maintenance").
         │
         ▼
 app/services/history_reconciler.py (HistoryReconciler)

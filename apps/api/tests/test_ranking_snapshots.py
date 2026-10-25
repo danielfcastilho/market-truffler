@@ -132,6 +132,54 @@ async def test_only_the_frame_served_live_is_captured(db_session, session_factor
     assert await _rows(session_factory) == []
 
 
+async def test_a_recovery_analysis_that_became_newest_is_a_publication(
+    db_session, session_factory
+):
+    """Frame 2026-10-25 14:25: analyzed by startup recovery after a restart
+    lost 14:30 and 14:35, it was the newest analyzed frame — the one the live
+    endpoint served — until 14:40 was analyzed."""
+    await _seed(db_session, _board(), analysis="recovery")
+    late = FRAME + timedelta(minutes=11)
+    assert await _publisher(session_factory, at=late).publish(FRAME) == "captured"
+    [row] = await _rows(session_factory)
+    assert row.analysis == "recovery" and row.published_at == late
+    # Published stale, so Truffles were withheld — as served.
+    assert row.long_qualification_status == "withheld" and row.long_truffles is None
+
+
+async def test_an_older_recovered_frame_is_never_a_publication(db_session, session_factory):
+    """Recovery of a frame older than one already analyzed: the live
+    endpoint never served it, so nothing is captured and history is
+    unchanged."""
+    ids = await _seed(db_session, _board(), frame_time=FRAME)
+    older = FRAME - timedelta(minutes=10)
+    await _seed(db_session, _board(), frame_time=older, analysis="recovery", ids=ids)
+    publisher = _publisher(session_factory)
+    assert await publisher.publish(older) == "not_published"
+    assert "not the newest" in publisher.status.skipped[0]
+    assert await _rows(session_factory) == []
+
+
+async def test_a_frame_superseded_before_capture_is_not_attributed_to_it(
+    db_session, session_factory, monkeypatch
+):
+    """A newer frame analyzed between the newest-frame check and the ranking
+    read: the payload is that frame's publication, not this one's."""
+    await _seed(db_session, _board())
+    real = live.live_rankings
+
+    async def newer_frame_served(session, **kwargs):
+        payload = await real(session, **kwargs)
+        payload["frame"]["frame_time"] = (FRAME + timedelta(minutes=5)).isoformat()
+        return payload
+
+    monkeypatch.setattr(rs, "live_rankings", newer_frame_served)
+    publisher = _publisher(session_factory)
+    assert await publisher.publish(FRAME) == "not_published"
+    assert "superseded" in publisher.status.skipped[0]
+    assert await _rows(session_factory) == []
+
+
 async def test_a_storage_failure_is_counted_never_reported_as_captured(
     db_session, session_factory, monkeypatch
 ):

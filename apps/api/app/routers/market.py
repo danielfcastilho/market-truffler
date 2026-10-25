@@ -1,4 +1,5 @@
 import logging
+from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Literal
 
@@ -11,7 +12,7 @@ from app.features.engine import REQUIRED_WARMUP
 from app.repositories.frame_repository import FrameRepository
 from app.repositories.instrument_repository import InstrumentRepository
 from app.schemas.frame import FrameCandleContext, FrameMember, MarketFrameResponse
-from app.schemas.market import MarketStatus
+from app.schemas.market import MarketStatus, PartitionMaintenanceState
 from app.services.collection_continuity import WINDOW as COLLECTION_WINDOW
 from app.services.collection_continuity import missed_frames
 from app.services.historical_coverage import compute_historical_coverage
@@ -153,7 +154,15 @@ async def market_status(
         symbols_discovered=readiness_counts[SymbolReadiness.DISCOVERED],
         symbols_backfilling=readiness_counts[SymbolReadiness.BACKFILLING],
         symbols_ready=readiness_counts[SymbolReadiness.READY],
+        partition_maintenance=_partition_state(reconciler),
     )
+
+
+def _partition_state(reconciler: object) -> PartitionMaintenanceState | None:
+    maintenance = getattr(reconciler, "partition_maintenance", None)
+    if maintenance is None:
+        return None
+    return PartitionMaintenanceState(**asdict(maintenance.status))
 
 
 @router.get("/api/market/frames/latest", response_model=MarketFrameResponse)

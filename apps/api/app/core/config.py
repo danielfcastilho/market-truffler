@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     # can still replay a frame's OI/funding features well after the frame
     # (see docs/ARCHITECTURE.md, "Research data continuity").
     market_oi_funding_retention_days: int = 30
+    # Longest a partition create/drop waits for its table lock before it is
+    # deferred and retried (app.services.partition_maintenance). While it
+    # waits, later readers and writers of that table — frame building
+    # included — queue behind it, so keep this short.
+    partition_lock_timeout_ms: int = 2000
     # How many instruments the history reconciler works on concurrently.
     market_history_max_concurrent_instruments: int = 5
     # Rows requested per Bybit historical kline page (Bybit's documented max).

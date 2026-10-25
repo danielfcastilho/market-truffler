@@ -210,6 +210,14 @@ class RankingPublisher:
                 if not payload.get("available"):
                     self.status.skipped = [f"{frame_time.isoformat()}: {payload.get('reason')}"]
                     return "not_published"
+                # `live_rankings` reads the newest frame again: if a newer one
+                # was analyzed in between, this payload is that frame's
+                # publication (captured by its own publish), not this one's.
+                if _dt(payload["frame"]["frame_time"]) != frame_time:
+                    self.status.skipped = [
+                        f"{frame_time.isoformat()}: superseded before capture"
+                    ]
+                    return "not_published"
                 outcome = await _insert(session, snapshot_row(payload, published_at, self._clock()))
         except Exception as exc:
             self.status.failures += 1
