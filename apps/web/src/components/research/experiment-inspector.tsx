@@ -35,16 +35,17 @@ export function ExperimentInspector({ detail }: { detail: ExperimentDetail }) {
       <ArtifactIssues issues={detail.issues} />
 
       <header className="space-y-2">
-        <p className="font-mono text-xs text-muted-foreground">Experiment</p>
+        <div className="flex flex-wrap items-center gap-2">
+          {spec && <DirectionTag direction={spec.hypothesis.direction} />}
+          <h2 className="text-lg font-semibold tracking-tight">
+            {spec ? hypothesisTitle(spec.hypothesis.conditions) : detail.experiment_id}
+          </h2>
+        </div>
         {spec && (
-          <div className="flex flex-wrap items-center gap-2">
-            <DirectionTag direction={spec.hypothesis.direction} />
-            <span className="text-lg font-semibold tracking-tight">
-              {hypothesisTitle(spec.hypothesis.conditions)}
-            </span>
-          </div>
+          <p className="font-mono text-xs break-all text-muted-foreground">
+            Experiment {detail.experiment_id}
+          </p>
         )}
-        <h2 className="font-mono text-sm break-all text-muted-foreground">{detail.experiment_id}</h2>
         {detail.campaigns.map((c) => (
           <p key={c.campaign_id} className="font-mono text-xs text-muted-foreground">
             In{" "}

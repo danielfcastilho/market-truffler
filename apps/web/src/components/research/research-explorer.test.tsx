@@ -1,10 +1,13 @@
 import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
+import { deriveQuestions, scientificSummary } from "@/lib/research-questions";
+
 import { CampaignExplorer } from "./campaign-explorer";
 import { ExperimentInspector } from "./experiment-inspector";
 import { KnowledgeBadge } from "./knowledge-badge";
 import { ResearchHistory } from "./research-history";
+import { ResearchHypotheses } from "./research-hypotheses";
 import { ResearchOverview } from "./research-overview";
 import { ResearchUnavailable } from "./research-unavailable";
 import { RunEvidence } from "./run-evidence";
@@ -17,9 +20,11 @@ import {
   HISTORY,
   INSUFFICIENT_RUN,
   LEDGER,
+  MODEL_KNOWLEDGE,
   OVERVIEW,
   PENDING_EVALUATION,
   POSITIVE_RUN,
+  RANKING_RESEARCH,
 } from "./test-fixtures";
 import { VerdictBadge } from "./verdict-badge";
 
@@ -74,45 +79,107 @@ describe("RunEvidence", () => {
   });
 });
 
+function renderOverview(overrides: Partial<Parameters<typeof deriveQuestions>[0]> = {}, missing: string[] = []) {
+  const sources = {
+    overview: OVERVIEW,
+    campaignDetails: { [CAMPAIGN]: CAMPAIGN_DETAIL },
+    ranking: RANKING_RESEARCH,
+    models: MODEL_KNOWLEDGE,
+    ...overrides,
+  };
+  const questions = deriveQuestions(sources);
+  return render(
+    <ResearchOverview
+      questions={questions}
+      summary={scientificSummary(questions, missing)}
+      activity={sources.overview ? sources.overview.activity : null}
+      issues={sources.overview ? sources.overview.issues : []}
+    />,
+  );
+}
+
 describe("ResearchOverview", () => {
-  it("leads with knowledge, not execution", () => {
-    render(<ResearchOverview overview={OVERVIEW} />);
-    expect(screen.getByRole("heading", { name: "Research intelligence" })).toBeInTheDocument();
-    expect(screen.getByText("Independently validated").nextSibling).toHaveTextContent("0");
-    expect(screen.queryByText(/Established findings/i)).not.toBeInTheDocument();
-    expect(screen.getByText(/Current knowledge: 2 insufficient evidence/)).toBeInTheDocument();
-    expect(screen.queryByText(COMPARISON_RUN.run_id)).not.toBeInTheDocument(); // no run ids here
+  it("leads with the scientific state, not artifact counts or run ids", () => {
+    renderOverview();
+    expect(screen.getByRole("heading", { name: "State of research" })).toBeInTheDocument();
+    expect(screen.getByText("No research question has enough data for a conclusion yet.")).toBeInTheDocument();
+    expect(screen.getByText("qualifying days in segment: 1 recorded, 10 required")).toBeInTheDocument();
+    expect(screen.queryByText(/Research campaigns/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/immutable runs recorded/)).not.toBeInTheDocument();
+    expect(screen.queryByText(COMPARISON_RUN.run_id)).not.toBeInTheDocument();
   });
 
+  it("lists each recorded question with its own status, blocker and record link", () => {
+    renderOverview();
+    const models = screen.getByRole("heading", { name: "Ranking models" }).closest("section")!;
+    const study = within(models).getByRole("link", { name: "Long: does Open Interest improve a price-reversal ranking?" });
+    expect(study).toHaveAttribute("href", "/oink-corp/models#long-oi-vs-price-v1");
+    const row = study.closest("li")!;
+    expect(within(row).getByText("Insufficient data")).toBeInTheDocument();
+    expect(within(row).getByText("development data (exploratory)")).toBeInTheDocument();
+    expect(row).toHaveTextContent("Blocked by: 1 of 10 qualifying days in segment");
+    expect(within(models).getByText("Not evaluated")).toBeInTheDocument();
+
+    const hypotheses = screen.getByRole("heading", { name: "Market hypotheses" }).closest("section")!;
+    const h1 = within(hypotheses).getByRole("link", { name: "Price ↓ + Open Interest ↓ · 1h" });
+    expect(h1).toHaveAttribute("href", `/oink-corp/campaigns/${CAMPAIGN}#H1`);
+    expect(within(h1.closest("li")!).getByText("Insufficient evidence")).toBeInTheDocument();
+    expect(h1.closest("li")).toHaveTextContent(/evaluable from 2026-11-27 at the earliest, if enough data is collected/);
+
+    const prospective = screen.getByRole("heading", { name: "Prospective evaluations" }).closest("section")!;
+    expect(within(prospective).getByText("Long & Short")).toBeInTheDocument();
+    expect(within(prospective).getByText("Registered — awaiting data")).toBeInTheDocument();
+  });
+
+  it("keeps recent activity short and the audit log one link away", () => {
+    renderOverview();
+    expect(screen.getByText(/H1: first recorded → Insufficient evidence/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Audit log: all events and immutable runs →" })).toHaveAttribute(
+      "href",
+      "/oink-corp/history",
+    );
+  });
+
+  it("names a source it could not load instead of concluding anything", () => {
+    renderOverview({ ranking: null }, ["ranking studies"]);
+    expect(screen.getByRole("status")).toHaveTextContent("could not be loaded: ranking studies");
+    expect(screen.queryByRole("heading", { name: "Ranking models" })).not.toBeInTheDocument();
+  });
+
+  it("has honest empty and unavailable states", () => {
+    const { unmount } = renderOverview({ overview: { ...OVERVIEW, campaigns: [], activity: [] }, ranking: null, models: null });
+    expect(screen.getByText("No research question has been recorded yet.")).toBeInTheDocument();
+    unmount();
+    renderOverview({ overview: null, ranking: null, models: null }, ["market hypotheses", "ranking studies", "prospective evaluations"]);
+    expect(screen.getByText(/Research records could not be loaded/)).toBeInTheDocument();
+    expect(screen.getByText("Research activity could not be loaded.")).toBeInTheDocument();
+  });
+
+  it("surfaces unreadable artifacts and API failures instead of hiding them", () => {
+    const { unmount } = renderOverview({ overview: { ...OVERVIEW, issues: [{ artifact: "broken-v1.json", problem: "unreadable" }] } });
+    expect(screen.getByRole("alert")).toHaveTextContent("broken-v1.json: unreadable");
+    unmount();
+    render(<ResearchUnavailable message="research API unreachable" />);
+    expect(screen.getByRole("alert")).toHaveTextContent("Research records could not be loaded.");
+  });
+});
+
+describe("ResearchHypotheses", () => {
   it("groups each campaign's hypotheses by Long and Short with readable titles", () => {
-    render(<ResearchOverview overview={OVERVIEW} />);
+    render(<ResearchHypotheses overview={OVERVIEW} />);
     const long = screen.getByText("long hypotheses").parentElement!;
     const short = screen.getByText("short hypotheses").parentElement!;
     const h1 = within(long).getByRole("link", { name: /Price ↓ \+ Open Interest ↓ · 1h/ });
     expect(h1).toHaveAttribute("href", `/oink-corp/campaigns/${CAMPAIGN}#H1`);
     expect(within(h1).getByText("Insufficient evidence")).toBeInTheDocument();
     expect(within(short).getByText("Price ↑ + Open Interest ↓ · 1h")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Explore campaign →" })).toHaveAttribute(
-      "href",
-      `/oink-corp/campaigns/${CAMPAIGN}`,
-    );
-  });
-
-  it("summarises activity from artifacts and links to the full history", () => {
-    render(<ResearchOverview overview={OVERVIEW} />);
-    expect(screen.getByText("Knowledge ledger revision 1 for", { exact: false })).toBeInTheDocument();
-    expect(screen.getByText(/H1: first recorded → Insufficient evidence/)).toBeInTheDocument();
-    expect(screen.getByText(/1 repeat of earlier runs — not new evidence/)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "View research history →" })).toHaveAttribute(
-      "href",
-      "/oink-corp/history",
-    );
+    expect(screen.getByRole("link", { name: "Explore campaign →" })).toHaveAttribute("href", `/oink-corp/campaigns/${CAMPAIGN}`);
   });
 
   it("flags a campaign without knowledge or with an inconsistent ledger", () => {
     const [campaign] = OVERVIEW.campaigns;
     render(
-      <ResearchOverview
+      <ResearchHypotheses
         overview={{
           ...OVERVIEW,
           campaigns: [
@@ -126,28 +193,12 @@ describe("ResearchOverview", () => {
     expect(screen.getAllByText("Not yet in the ledger")).toHaveLength(2);
   });
 
-  it("has an honest empty state", () => {
-    render(
-      <ResearchOverview
-        overview={{
-          ...OVERVIEW,
-          counts: { ...OVERVIEW.counts, campaigns: 0, runs: 0, experiments_registered: 0 },
-          campaigns: [],
-          activity: [],
-        }}
-      />,
-    );
-    expect(screen.getByText("No research has been registered yet.")).toBeInTheDocument();
-  });
-
-  it("surfaces unreadable artifacts and API failures instead of hiding them", () => {
-    const { unmount } = render(
-      <ResearchOverview overview={{ ...OVERVIEW, issues: [{ artifact: "broken-v1.json", problem: "unreadable" }] }} />,
-    );
-    expect(screen.getByRole("alert")).toHaveTextContent("broken-v1.json: unreadable");
+  it("shows the registered plan without implying validation, and an empty state", () => {
+    const { unmount } = render(<ResearchHypotheses overview={OVERVIEW} />);
+    expect(screen.getByText(/Prospective validation registered for 2026-10-26 → 2026-11-25/)).toBeInTheDocument();
     unmount();
-    render(<ResearchUnavailable message="research API unreachable" />);
-    expect(screen.getByRole("alert")).toHaveTextContent("Research records could not be loaded.");
+    render(<ResearchHypotheses overview={{ ...OVERVIEW, campaigns: [] }} />);
+    expect(screen.getByText("No hypothesis has been registered yet.")).toBeInTheDocument();
   });
 });
 
@@ -222,8 +273,8 @@ describe("CampaignExplorer", () => {
 describe("ExperimentInspector", () => {
   it("shows the hypothesis it tests and its knowledge before execution detail", () => {
     render(<ExperimentInspector detail={EXPERIMENT_DETAIL} />);
-    expect(screen.getByText("Price ↓ + Open Interest ↓ · 1h")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: CAND })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Price ↓ + Open Interest ↓ · 1h" })).toBeInTheDocument();
+    expect(screen.getByText(`Experiment ${CAND}`)).toBeInTheDocument(); // id kept, secondary
     expect(screen.getByRole("link", { name: "H1" })).toHaveAttribute("href", `/oink-corp/campaigns/${CAMPAIGN}#H1`);
     expect(screen.getAllByText("Insufficient evidence").length).toBeGreaterThan(0);
     expect(screen.getByText(/Not validated: no validation run exists/)).toBeInTheDocument();
@@ -303,11 +354,4 @@ describe("independent testing", () => {
     expect(screen.getByText(/Reused data — not independent/)).toBeInTheDocument();
   });
 
-  it("shows the plan on the overview without implying validation", () => {
-    render(<ResearchOverview overview={OVERVIEW} />);
-    expect(
-      screen.getByText(/prospective validation registered \(2026-10-26 → 2026-11-25\), awaiting data until 2026-11-27/),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Independently validated").nextSibling).toHaveTextContent("0");
-  });
 });

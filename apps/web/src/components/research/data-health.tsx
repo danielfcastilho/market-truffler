@@ -13,16 +13,24 @@ import {
 import { cn } from "@/lib/utils";
 
 /**
- * Research data health: how much history exists and how complete it is,
- * which research shards exist and whether they are continuous, which
- * temporal-contract versions they carry, and how far each prospective
- * registration is from being evaluable. Descriptive only.
+ * Data readiness: is there enough trustworthy data to evaluate the research
+ * questions? Readiness of each prospective evaluation and collection
+ * continuity come first; storage and integrity internals are one click
+ * away — except problems (failed verification, unprotected or failing
+ * backups), which stay visible. Descriptive only.
  */
 export function DataHealthView({ health }: { health: DataHealth }) {
+  const failedVerification =
+    health.verification?.available === true && (health.verification.counts.failed ?? 0) > 0;
+  const b = health.backups;
+  const backupProblem =
+    b?.available === true &&
+    (!b.configured || Boolean(b.destination_error) || b.integrity_failures > 0 || b.failed_items > 0);
   return (
     <div className="max-w-5xl space-y-10">
       <p className="max-w-3xl text-sm text-muted-foreground">
-        Complete data is a precondition for research, not evidence of anything. Computed{" "}
+        Do we have enough trustworthy data to evaluate our research questions? Complete data is a
+        precondition for research, not evidence of anything. Computed{" "}
         {formatTimestamp(health.computed_at)} (cached up to {health.cache_seconds}s).
       </p>
       {health.warnings.length > 0 && (
@@ -35,13 +43,23 @@ export function DataHealthView({ health }: { health: DataHealth }) {
           </ul>
         </section>
       )}
+      <Readiness readiness={health.readiness} alerts={health.alerts ?? []} />
       <Overview health={health} />
       <RecentContinuity health={health} />
-      <Verification health={health} />
-      <Backups health={health} />
-      <Readiness readiness={health.readiness} alerts={health.alerts ?? []} />
-      <Daily health={health} />
-      <Shards health={health} />
+      {failedVerification && <Verification health={health} />}
+      {backupProblem && <Backups health={health} />}
+      <details className="space-y-8">
+        <summary className="cursor-pointer text-sm font-medium text-muted-foreground">
+          Storage and integrity details
+        </summary>
+        <div className="mt-6 space-y-10">
+          <TemporalContract health={health} />
+          {!failedVerification && <Verification health={health} />}
+          {!backupProblem && <Backups health={health} />}
+          <Daily health={health} />
+          <Shards health={health} />
+        </div>
+      </details>
       <details className="text-xs text-muted-foreground">
         <summary className="cursor-pointer">Limitations</summary>
         <ul className="mt-1 list-disc space-y-0.5 pl-5">
@@ -67,9 +85,8 @@ function Stat({ label, value, note }: { label: string; value: string; note?: str
 function Overview({ health }: { health: DataHealth }) {
   const f = health.frames;
   const shards = health.shards.datasets;
-  const contract = health.temporal_contract;
   return (
-    <section aria-label="Overview" className="grid gap-3 md:grid-cols-4">
+    <section aria-label="Overview" className="grid gap-3 md:grid-cols-3">
       {f.available ? (
         <>
           <Stat
@@ -91,15 +108,21 @@ function Overview({ health }: { health: DataHealth }) {
         value={String(shards.length)}
         note={shards.length === 0 ? "No research shard exists yet." : `${shards.filter((s) => s.kind === "daily_shard").length} daily shards`}
       />
-      <Stat
-        label="Temporal contract"
-        value={`v${contract.current_version} current`}
-        note={
-          Object.entries(contract.datasets)
-            .map(([v, d]) => `${d.count} dataset(s) ${v}`)
-            .join(" · ") || "No dataset manifests."
-        }
-      />
+    </section>
+  );
+}
+
+function TemporalContract({ health }: { health: DataHealth }) {
+  const contract = health.temporal_contract;
+  return (
+    <section aria-label="Temporal contract" className="space-y-1">
+      <h2 className="text-lg font-semibold">Temporal contract</h2>
+      <p className="text-sm">
+        v{contract.current_version} current ·{" "}
+        {Object.entries(contract.datasets)
+          .map(([v, d]) => `${d.count} dataset(s) ${v}`)
+          .join(" · ") || "No dataset manifests."}
+      </p>
     </section>
   );
 }
@@ -277,8 +300,8 @@ function RegistrationCard({
     <article className="space-y-2 rounded-xl border border-border p-4 text-sm" data-registration={registration.registration_id ?? ""}>
       <p className="flex flex-wrap items-baseline justify-between gap-2">
         <span className="font-mono font-medium">{registration.registration_id ?? "unreadable registration"}</span>
-        <span className="font-mono text-xs text-muted-foreground">
-          {registration.kind} · {shortHash(registration.registration_hash)} ·{" "}
+        <span className="font-mono text-xs text-muted-foreground" title={registration.registration_hash ?? undefined}>
+          {registration.kind} ·{" "}
           <span className={registration.verification === "verified" ? "text-primary" : "text-destructive"}>
             {registration.verification}
           </span>

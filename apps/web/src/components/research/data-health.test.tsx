@@ -229,3 +229,32 @@ describe("DataHealthView", () => {
     expect(within(section).queryByRole("button")).toBeNull(); // no restore action
   });
 });
+
+describe("DataHealthView layout", () => {
+  const verification = (failed: number): DataHealth["verification"] => ({
+    available: true,
+    interval_hours: 24,
+    last_checked_at: "2026-10-25T03:00:00+00:00",
+    last_pass_at: "2026-10-25T03:00:00+00:00",
+    last_pass_checked: 2,
+    counts: failed ? { verified: 1, failed } : { verified: 2 },
+    scopes: {},
+  });
+
+  it("puts readiness first and storage internals in a collapsed section", () => {
+    render(<DataHealthView health={{ ...HEALTH, verification: verification(0) }} />);
+    const details = screen.getByText("Storage and integrity details").closest("details")!;
+    expect(details).not.toHaveAttribute("open");
+    expect(within(details).getByRole("heading", { name: "Shard verification" })).toBeInTheDocument();
+    expect(within(details).getByRole("heading", { name: "Temporal contract" })).toBeInTheDocument();
+    const sections = [...document.querySelectorAll("section[aria-label]")].map((s) => s.getAttribute("aria-label"));
+    expect(sections.indexOf("Prospective readiness")).toBeLessThan(sections.indexOf("Verification"));
+  });
+
+  it("never tucks a failed integrity check away", () => {
+    render(<DataHealthView health={{ ...HEALTH, verification: verification(1) }} />);
+    const details = screen.getByText("Storage and integrity details").closest("details")!;
+    const heading = screen.getByRole("heading", { name: "Shard verification" });
+    expect(details.contains(heading)).toBe(false);
+  });
+});

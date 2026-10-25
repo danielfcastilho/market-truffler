@@ -65,6 +65,32 @@ export function CampaignExplorer({ detail }: { detail: CampaignDetail }) {
         <p className="text-sm leading-relaxed text-muted-foreground">{campaign.motivation}</p>
       </header>
 
+      <section className="space-y-3">
+        <SectionTitle>Recorded conclusion</SectionTitle>
+        {recorded.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            {detail.report === null
+              ? "No campaign report has been recorded."
+              : "The campaign report has no Conclusion section."}
+          </p>
+        ) : (
+          recorded.map((section) => <ReportText key={section.title} markdown={section.body} />)
+        )}
+        {sections.length > 0 && (
+          <details className="rounded-xl border border-border p-4">
+            <summary className="cursor-pointer text-sm font-medium">Full research report</summary>
+            <div className="mt-4 space-y-6">
+              {sections.map((section, n) => (
+                <div key={n} className="space-y-2">
+                  {section.title && <h4 className="font-semibold">{section.title}</h4>}
+                  <ReportText markdown={section.body} />
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
+      </section>
+
       {groups
         .filter((g) => g.hypotheses.length > 0)
         .map(({ direction, hypotheses }) => (
@@ -122,31 +148,6 @@ export function CampaignExplorer({ detail }: { detail: CampaignDetail }) {
         <ResultsTable detail={detail} />
       </section>
 
-      <section className="space-y-3">
-        <SectionTitle>Recorded conclusion</SectionTitle>
-        {recorded.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            {detail.report === null
-              ? "No campaign report has been recorded."
-              : "The campaign report has no Conclusion section."}
-          </p>
-        ) : (
-          recorded.map((section) => <ReportText key={section.title} markdown={section.body} />)
-        )}
-        {sections.length > 0 && (
-          <details className="rounded-xl border border-border p-4">
-            <summary className="cursor-pointer text-sm font-medium">Full research report</summary>
-            <div className="mt-4 space-y-6">
-              {sections.map((section, n) => (
-                <div key={n} className="space-y-2">
-                  {section.title && <h4 className="font-semibold">{section.title}</h4>}
-                  <ReportText markdown={section.body} />
-                </div>
-              ))}
-            </div>
-          </details>
-        )}
-      </section>
 
       <KnowledgeHistory detail={detail} />
       <Provenance detail={detail} />

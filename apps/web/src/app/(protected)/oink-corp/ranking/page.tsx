@@ -1,11 +1,7 @@
-import { RankingResearch } from "@/components/research/ranking-research";
-import { ResearchUnavailable } from "@/components/research/research-unavailable";
-import { getRankingResearch } from "@/lib/server-api";
+import { redirect } from "next/navigation";
 
-export default async function RankingResearchPage() {
-  const result = await getRankingResearch();
-  if (result.status !== "ok") {
-    return <ResearchUnavailable message={result.status === "error" ? result.message : "not found"} />;
-  }
-  return <RankingResearch research={result.data} />;
+/** Ranking studies now live with the models they evaluate. Browsers keep a
+ * `#study_id` fragment across the redirect, and each study keeps its anchor. */
+export default function RankingResearchPage() {
+  redirect("/oink-corp/models");
 }

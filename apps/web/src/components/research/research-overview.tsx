@@ -3,216 +3,207 @@ import Link from "next/link";
 import { ArtifactIssues } from "@/components/research/artifact-issues";
 import { DirectionTag, KnowledgeBadge } from "@/components/research/knowledge-badge";
 import { ResearchActivity } from "@/components/research/research-activity";
+import { VerdictBadge } from "@/components/research/verdict-badge";
+import { lifecycleLabel, type ArtifactIssue, type ResearchEvent } from "@/lib/research";
 import {
-  KNOWLEDGE_META,
-  PARTITION_STATE_LABEL,
-  hypothesisTitle,
-  isKnowledgeStatus,
-  type KnowledgeStatus,
-  type ResearchOverview as Overview,
-} from "@/lib/research";
+  describeBlocker,
+  type QuestionStatus,
+  type ResearchQuestion,
+  type ScientificSummary,
+} from "@/lib/research-questions";
+import { cn } from "@/lib/utils";
 
-/** Statuses that exist only after an independent validation run. */
-const INDEPENDENTLY_VALIDATED: KnowledgeStatus[] = [
-  "independently_supported",
-  "independently_contradicted",
-  "independently_observed_difference",
-  "conflicting_evidence",
-];
-const PRELIMINARY: KnowledgeStatus[] = [
-  "preliminary_support",
-  "preliminary_contradiction",
-  "preliminary_difference",
+const RECENT_EVENTS = 5;
+
+const GROUPS: { kind: ResearchQuestion["kind"]; title: string; note: string }[] = [
+  {
+    kind: "ranking_study",
+    title: "Ranking models",
+    note: "Do a model's top picks beat the market, or a simpler model?",
+  },
+  {
+    kind: "hypothesis",
+    title: "Market hypotheses",
+    note: "Does a market condition tell us something about what happens next?",
+  },
+  {
+    kind: "prospective_registration",
+    title: "Prospective evaluations",
+    note: "Claims frozen in advance and tested only on data collected afterwards.",
+  },
 ];
 
 /**
- * What OINK CORP is investigating and what it currently knows: hypotheses
- * and their knowledge status (from each campaign's knowledge ledger) first,
- * research activity second, execution detail one click away.
+ * OINK CORP's landing page: what is being investigated, what the recorded
+ * evidence supports, and what stands in the way — derived from research
+ * records (`lib/research-questions`), with every record one click away.
  */
-export function ResearchOverview({ overview }: { overview: Overview }) {
-  const { counts, knowledge, campaigns } = overview;
-  if (counts.campaigns === 0 && counts.runs === 0 && counts.experiments_registered === 0) {
-    return (
-      <div className="max-w-xl space-y-2">
-        <p className="font-medium">No research has been registered yet.</p>
-        <p className="text-sm text-muted-foreground">
-          Hypotheses appear here once a campaign is pre-registered in{" "}
-          <code className="font-mono">research/oink_corp/campaigns/</code>, and knowledge once its
-          experiments have been evaluated. Nothing is shown until then.
-        </p>
-      </div>
-    );
-  }
-  const sum = (statuses: KnowledgeStatus[]) =>
-    statuses.reduce((total, s) => total + (knowledge.by_status[s] ?? 0), 0);
-  const statusLine = Object.entries(knowledge.by_status)
-    .filter(([status, n]) => isKnowledgeStatus(status) && n)
-    .map(([status, n]) => `${n} ${KNOWLEDGE_META[status as KnowledgeStatus].label.toLowerCase()}`);
-
+export function ResearchOverview({
+  questions,
+  summary,
+  activity,
+  issues,
+}: {
+  questions: ResearchQuestion[];
+  summary: ScientificSummary;
+  activity: ResearchEvent[] | null;
+  issues: ArtifactIssue[];
+}) {
   return (
-    <div className="max-w-5xl space-y-12">
-      <ArtifactIssues issues={overview.issues} />
+    <div className="max-w-5xl space-y-10">
+      <ArtifactIssues issues={issues} />
 
-      <section aria-labelledby="intelligence" className="space-y-3">
-        <SectionTitle id="intelligence">Research intelligence</SectionTitle>
-        <dl className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <Stat label="Research campaigns" value={counts.campaigns} />
-          <Stat label="Registered hypotheses" value={counts.hypotheses} />
-          <Stat label="With preliminary evidence" value={sum(PRELIMINARY)} />
-          <Stat label="Independently validated" value={sum(INDEPENDENTLY_VALIDATED)} />
-        </dl>
-        <p className="text-sm text-muted-foreground">
-          Current knowledge: {statusLine.join(", ") || "none derived yet"}
-          {knowledge.hypotheses_without_ledger > 0 &&
-            ` · ${knowledge.hypotheses_without_ledger} hypotheses not yet in a knowledge ledger`}
-          . No hypothesis counts as an established finding until independent validation supports
-          it.
+      <section aria-labelledby="state" className="space-y-3">
+        <h2 id="state" className="text-sm font-semibold tracking-wide text-muted-foreground uppercase">
+          State of research
+        </h2>
+        <p className="max-w-3xl text-xl leading-snug font-semibold tracking-tight">{summary.headline}</p>
+        {summary.breakdown.length > 0 && (
+          <ul className="flex flex-wrap gap-x-6 gap-y-1 text-sm text-muted-foreground">
+            {summary.breakdown.map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+        )}
+        {summary.blockers.length > 0 && (
+          <div className="max-w-3xl rounded-lg border border-dashed border-border p-3 text-sm">
+            <p className="font-medium">What prevents stronger conclusions</p>
+            <ul className="mt-1 list-disc space-y-0.5 pl-5 text-muted-foreground">
+              {summary.blockers.map((b) => (
+                <li key={b}>{b}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {summary.missing.length > 0 && (
+          <p role="status" className="text-sm text-destructive">
+            Not included — could not be loaded: {summary.missing.join(", ")}. Nothing is concluded
+            about them.
+          </p>
+        )}
+        <p className="max-w-3xl text-xs text-muted-foreground">
+          Exploratory evidence comes from development data only. A finding counts as validated only
+          when independent data — prospective or never used before — supports it. None of this is
+          a trading signal.
         </p>
       </section>
 
-      <section aria-labelledby="investigations" className="space-y-4">
-        <SectionTitle id="investigations">Active investigations</SectionTitle>
-        {campaigns.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No campaigns registered.</p>
-        ) : (
-          campaigns.map((campaign) => <InvestigationCard key={campaign.campaign_id} campaign={campaign} />)
-        )}
-      </section>
+      {GROUPS.map((group) => {
+        const items = questions.filter((q) => q.kind === group.kind);
+        if (items.length === 0) return null;
+        return (
+          <section key={group.kind} aria-labelledby={`group-${group.kind}`} className="space-y-3">
+            <div>
+              <h2 id={`group-${group.kind}`} className="text-lg font-semibold tracking-tight">
+                {group.title}
+              </h2>
+              <p className="text-sm text-muted-foreground">{group.note}</p>
+            </div>
+            <ul className="divide-y divide-border rounded-xl ring-1 ring-foreground/10">
+              {items.map((q) => (
+                <QuestionRow key={q.key} question={q} />
+              ))}
+            </ul>
+          </section>
+        );
+      })}
+
+      {questions.length === 0 && summary.missing.length === 0 && (
+        <p className="max-w-xl text-sm text-muted-foreground">
+          Questions appear here once a campaign, ranking study or prospective evaluation is
+          registered under <code className="font-mono">research/oink_corp/</code>.
+        </p>
+      )}
 
       <section aria-labelledby="activity" className="space-y-4">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <SectionTitle id="activity">Recent research activity</SectionTitle>
+          <h2 id="activity" className="text-lg font-semibold tracking-tight">
+            Recent research activity
+          </h2>
           <Link href="/oink-corp/history" className="text-sm font-medium text-primary underline-offset-4 hover:underline">
-            View research history →
+            Audit log: all events and immutable runs →
           </Link>
         </div>
-        <ResearchActivity events={overview.activity} />
-        <p className="font-mono text-xs text-muted-foreground">
-          {counts.runs} immutable runs recorded{counts.runs_failed ? ` (${counts.runs_failed} failed)` : ""}
-          {" · "}
-          {counts.experiments_executed}/{counts.experiments_registered} experiments and{" "}
-          {counts.comparisons_executed}/{counts.comparisons_registered} comparisons run
-        </p>
+        {activity === null ? (
+          <p className="text-sm text-muted-foreground">Research activity could not be loaded.</p>
+        ) : (
+          <ResearchActivity events={activity.slice(0, RECENT_EVENTS)} />
+        )}
       </section>
     </div>
   );
 }
 
-function InvestigationCard({ campaign }: { campaign: Overview["campaigns"][number] }) {
-  const groups = (["long", "short"] as const)
-    .map((direction) => ({
-      direction,
-      hypotheses: campaign.hypotheses.filter((h) => h.direction === direction),
-    }))
-    .filter((g) => g.hypotheses.length > 0);
-  const undirected = campaign.hypotheses.filter((h) => h.direction !== "long" && h.direction !== "short");
+function QuestionRow({ question }: { question: ResearchQuestion }) {
+  const blocker = question.blockers[0];
   return (
-    <article className="space-y-5 rounded-2xl bg-card p-5 ring-1 ring-foreground/10 md:p-6">
-      <header className="space-y-1.5">
-        <p className="font-mono text-xs text-muted-foreground">
-          {campaign.campaign_id} · registered {campaign.created ?? "—"}
-        </p>
-        <h3 className="text-lg leading-snug font-semibold tracking-tight">{campaign.question}</h3>
-      </header>
-      <div className="grid gap-5 md:grid-cols-2">
-        {groups.map(({ direction, hypotheses }) => (
-          <div key={direction} className="space-y-2">
-            <p className="font-mono text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-              {direction} hypotheses
-            </p>
-            <ul className="space-y-2">
-              {hypotheses.map((h) => (
-                <HypothesisRow key={h.hypothesis_id} campaignId={campaign.campaign_id} hypothesis={h} />
-              ))}
-            </ul>
+    <li data-question={question.key} className="space-y-2 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-1">
+          <div className="flex flex-wrap items-center gap-2">
+            {question.direction === "both" ? (
+              <span className="text-xs font-semibold text-muted-foreground uppercase">Long &amp; Short</span>
+            ) : (
+              <DirectionTag direction={question.direction} />
+            )}
+            <Link
+              href={question.href}
+              className="font-medium underline-offset-4 hover:underline focus-visible:underline"
+            >
+              {question.title}
+            </Link>
           </div>
-        ))}
-        {undirected.length > 0 && (
-          <ul className="space-y-2">
-            {undirected.map((h) => (
-              <HypothesisRow key={h.hypothesis_id} campaignId={campaign.campaign_id} hypothesis={h} />
-            ))}
-          </ul>
-        )}
-      </div>
-      <EvaluationLine campaign={campaign} />
-      <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4 text-sm">
-        <span className="text-muted-foreground">
-          {campaign.ledger_revision === null
-            ? "Knowledge not yet derived for this campaign."
-            : `Knowledge ledger revision ${campaign.ledger_revision}`}
-          {campaign.ledger_problems > 0 && (
-            <span className="ml-2 font-medium text-destructive">
-              {campaign.ledger_problems} cited run{campaign.ledger_problems === 1 ? "" : "s"} do not
-              match their records
-            </span>
+          {question.context && question.context !== question.title && (
+            <p className="text-sm text-muted-foreground">{question.context}</p>
           )}
-        </span>
-        <Link
-          href={`/oink-corp/campaigns/${campaign.campaign_id}`}
-          className="font-medium text-primary underline-offset-4 hover:underline"
-        >
-          Explore campaign →
-        </Link>
-      </footer>
-    </article>
-  );
-}
-
-function EvaluationLine({ campaign }: { campaign: Overview["campaigns"][number] }) {
-  const validation = campaign.evaluations
-    .flatMap((e) => e.partitions)
-    .find((p) => p.role === "validation");
-  return (
-    <p className="text-sm text-muted-foreground">
-      <span className="font-medium text-foreground">Independent test: </span>
-      {!validation
-        ? "none registered — all evidence is historical."
-        : validation.state === "awaiting_data"
-          ? `prospective validation registered (${validation.start} → ${validation.end}), awaiting data until ${validation.eligible_from.slice(0, 10)}.`
-          : `prospective validation ${PARTITION_STATE_LABEL[validation.state].toLowerCase()}.`}
-    </p>
-  );
-}
-
-function HypothesisRow({
-  campaignId,
-  hypothesis,
-}: {
-  campaignId: string;
-  hypothesis: Overview["campaigns"][number]["hypotheses"][number];
-}) {
-  return (
-    <li>
-      <Link
-        href={`/oink-corp/campaigns/${campaignId}#${hypothesis.hypothesis_id}`}
-        className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border px-3 py-2 transition-colors hover:bg-muted/50"
-      >
-        <span className="flex items-center gap-2">
-          <DirectionTag direction={hypothesis.direction} />
-          <span className="text-sm font-medium">{hypothesisTitle(hypothesis.conditions)}</span>
-          <span className="font-mono text-xs text-muted-foreground">{hypothesis.hypothesis_id}</span>
-        </span>
-        <KnowledgeBadge status={hypothesis.knowledge_status} />
-      </Link>
+        </div>
+        <QuestionStatusBadge status={question.status} />
+      </div>
+      {blocker && (
+        <p className="text-sm">
+          <span className="text-muted-foreground">Blocked by: </span>
+          {describeBlocker(blocker)}
+          {question.blockers.length > 1 && (
+            <span className="text-muted-foreground"> · {question.blockers.length - 1} more on the detail page</span>
+          )}
+        </p>
+      )}
+      {question.independentTest && <p className="text-sm text-muted-foreground">{question.independentTest}</p>}
+      <p className="text-xs text-muted-foreground">{question.source}</p>
     </li>
   );
 }
 
-function SectionTitle({ id, children }: { id: string; children: React.ReactNode }) {
+/** The record's own status in its own vocabulary: knowledge status for a
+ * hypothesis, run verdict for a ranking study, lifecycle for a registration. */
+export function QuestionStatusBadge({ status }: { status: QuestionStatus }) {
+  if (status.type === "knowledge") return <KnowledgeBadge status={status.status} />;
+  if (status.type === "verdict") {
+    return (
+      <span className="flex flex-col items-end gap-0.5">
+        <VerdictBadge verdict={status.verdict} failed={status.failed} />
+        {status.verdict !== null && !status.failed && (
+          <span className="text-[11px] text-muted-foreground">development data (exploratory)</span>
+        )}
+      </span>
+    );
+  }
+  const decided = Object.entries(status.decisions);
   return (
-    <h2 id={id} className="font-mono text-xs font-semibold tracking-widest text-muted-foreground uppercase">
-      {children}
-    </h2>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="rounded-xl bg-card p-4 ring-1 ring-foreground/10">
-      <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd className="mt-1 text-2xl font-semibold tracking-tight tabular-nums">{value}</dd>
-    </div>
+    <span className="flex flex-col items-end gap-0.5">
+      <span
+        className={cn(
+          "inline-flex w-fit items-center rounded-full border px-2 py-0.5 text-xs font-medium whitespace-nowrap",
+          decided.length ? "border-border bg-secondary" : "border-dashed border-muted-foreground/60 bg-muted text-muted-foreground",
+        )}
+      >
+        {lifecycleLabel(status.lifecycle)}
+      </span>
+      {decided.map(([h, d]) => (
+        <span key={h} className="text-[11px] text-muted-foreground">
+          {h}: {d.replaceAll("_", " ")}
+        </span>
+      ))}
+    </span>
   );
 }
