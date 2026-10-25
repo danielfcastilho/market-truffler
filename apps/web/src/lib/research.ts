@@ -964,3 +964,146 @@ const LIFECYCLE_LABEL: Record<string, string> = {
 export function lifecycleLabel(lifecycle: string): string {
   return LIFECYCLE_LABEL[lifecycle] ?? lifecycle;
 }
+
+
+// -- research data health (`GET /api/research/data-health`) --------------------------------
+
+export interface DailyCoverage {
+  day: string;
+  partial_day: "first" | "last" | "first_and_last" | null;
+  expected: number;
+  finalized: number;
+  complete: number;
+  partial: number;
+  building: number;
+  missing: number;
+  analyzed: number;
+  unanalyzed: number;
+  analysis_unknown: number;
+  coverage: number;
+  largest_gap_minutes: number;
+  analyzed_by_contract: { v1: number; v2: number };
+}
+
+export interface Intervals {
+  count: number;
+  truncated: boolean;
+  items: [string, string, number][];
+}
+
+export type FrameCoverage =
+  | { available: false; reason: string; off_grid_frames: number }
+  | {
+      available: true;
+      observed_from: string;
+      observed_to: string;
+      observed_note: string;
+      expected: number;
+      finalized: number;
+      missing: number;
+      building: number;
+      partial: number;
+      complete: number;
+      analyzed: number;
+      unanalyzed: number;
+      analysis_unknown: number;
+      coverage: number;
+      latest_frame: string;
+      off_grid_frames: number;
+      duplicate_rows: number;
+      results_retained_from: string | null;
+      covered_intervals: Intervals;
+      missing_intervals: Intervals;
+      analyzed_by_contract: Record<string, { frames: number; first: string | null; last: string | null }>;
+      daily: DailyCoverage[];
+    };
+
+export interface ShardEntry {
+  name: string;
+  kind: "daily_shard" | "dataset";
+  manifest: string;
+  data_file_present: boolean;
+  manifest_sha256?: string;
+  data_sha256?: string | null;
+  shard_day?: string | null;
+  first_frame_time?: string | null;
+  last_frame_time?: string | null;
+  row_count?: number | null;
+  generated_at?: string | null;
+  temporal_contract_version?: number | null;
+  manifest_problems?: string[];
+  verification: "verified" | "failed" | "not_checked";
+  verification_error?: string;
+}
+
+export interface ReadinessPartition {
+  role: string;
+  start: string;
+  end: string;
+  state: string;
+  phase: string;
+  eligible_from: string;
+  days: number;
+  days_with_shard: number;
+  days_elapsed: number;
+  missing_past_days: string[];
+  blocking: string[];
+  eligible_now: boolean;
+}
+
+export interface RegistrationReadiness {
+  registration_id: string | null;
+  kind?: string;
+  registration_hash?: string;
+  registered_at?: string;
+  verification: "verified" | "invalid" | "error";
+  problems: string[];
+  partitions: ReadinessPartition[];
+}
+
+export interface DataHealth {
+  computed_at: string;
+  cache_seconds: number;
+  frames: FrameCoverage;
+  shards: { datasets: ShardEntry[]; overlaps: { datasets: string[]; kind: string }[] };
+  shard_continuity:
+    | { available: false; reason: string }
+    | {
+        available: true;
+        reported_at: string | null;
+        shards_start: string | null;
+        days: number;
+        by_status: Record<string, { count: number; days: string[] }>;
+        status_meanings: Record<string, string>;
+      };
+  temporal_contract: {
+    current_version: number;
+    frames: Record<string, { frames: number; first: string | null; last: string | null }> | null;
+    datasets: Record<string, { count: number; names: string[] }>;
+    meaning: Record<string, string>;
+  };
+  readiness:
+    | { available: false; reason: string; registrations: [] }
+    | { available: true; reported_at: string | null; registrations: RegistrationReadiness[] };
+  warnings: string[];
+  limitations: string[];
+}
+
+const PHASE_LABEL: Record<string, string> = {
+  awaiting_window: "Awaiting its window",
+  accumulating: "Accumulating data",
+  awaiting_eligibility: "Window ended — awaiting eligibility",
+  eligible: "Eligible for evaluation",
+  evaluated: "Evaluated",
+  failed: "Attempt failed",
+  exposure_uncertain: "Exposure uncertain",
+  authorized_only: "Authorized only",
+};
+
+export function phaseLabel(phase: string): string {
+  return PHASE_LABEL[phase] ?? phase;
+}
+
+export function formatPercent(fraction: number): string {
+  return `${(fraction * 100).toFixed(1)}%`;
+}

@@ -16,10 +16,11 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, status
 
 from app.core.config import get_settings
-from app.core.deps import CurrentUserDep
+from app.core.deps import CurrentUserDep, DbSessionDep
 from app.schemas.research_explorer import (
     CampaignDetail,
     CampaignSummary,
+    DataHealth,
     ExperimentDetail,
     HypothesisSummary,
     KnowledgeCounts,
@@ -39,6 +40,7 @@ from app.services.research_artifacts import (
     latest_per_segment,
     verdict_of,
 )
+from app.services.research_data_health import data_health
 
 router = APIRouter(prefix="/api/research", tags=["research"])
 
@@ -378,6 +380,16 @@ async def research_ranking(current_user: CurrentUserDep) -> RankingResearch:
         ],
         issues=artifacts.issues,
     )
+
+
+@router.get("/data-health", response_model=DataHealth)
+async def research_data_health(db: DbSessionDep, current_user: CurrentUserDep) -> DataHealth:
+    """How much history exists, how complete it is, which research shards
+    exist and whether they are continuous, which temporal-contract versions
+    they carry, and how far each prospective registration is from being
+    evaluable. Read-only: frame headers, shard manifests (never Parquet) and
+    the research worker's own report; cached for a minute."""
+    return DataHealth.model_validate(await data_health(db, Path(get_settings().research_data_dir)))
 
 
 _LIFECYCLE = {

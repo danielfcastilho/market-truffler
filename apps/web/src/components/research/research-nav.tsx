@@ -9,6 +9,7 @@ const SECTIONS = [
   { href: "/oink-corp", label: "Feature research" },
   { href: "/oink-corp/ranking", label: "Ranking research" },
   { href: "/oink-corp/models", label: "Model knowledge" },
+  { href: "/oink-corp/data-health", label: "Data health" },
   { href: "/oink-corp/history", label: "History" },
 ];
 

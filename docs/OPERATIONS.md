@@ -99,6 +99,12 @@ still missing.
 app from another machine on purpose. Interactive API docs (`/docs`) are
 served only with `APP_ENV=development`.
 
+**Research data health.** OINK CORP → Data health shows the frame history,
+research shards, temporal-contract versions and each prospective
+registration's readiness (read-only; see
+[RESEARCH_DATA_HEALTH.md](RESEARCH_DATA_HEALTH.md)). The `research` worker
+mounts campaigns, experiments and ranking specs read-only for that report.
+
 **Live/replay parity.** `docker compose exec api python -m
 app.scripts.parity_diagnostic --frames 12` compares the latest live
 Sniffer results with a replay of the same frames (read-only, features

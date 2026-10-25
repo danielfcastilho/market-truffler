@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import type {
   CampaignDetail as CampaignDetailData,
+  DataHealth as DataHealthData,
   ExperimentDetail as ExperimentDetailData,
   ModelKnowledge as ModelKnowledgeData,
   RankingResearch as RankingResearchData,
@@ -300,6 +301,10 @@ export function getResearchHistory(): Promise<ResearchResult<ResearchHistoryData
 
 export function getRankingResearch(): Promise<ResearchResult<RankingResearchData>> {
   return researchFetch("/api/research/ranking");
+}
+
+export function getDataHealth(): Promise<ResearchResult<DataHealthData>> {
+  return researchFetch("/api/research/data-health");
 }
 
 export function getModelKnowledge(): Promise<ResearchResult<ModelKnowledgeData>> {

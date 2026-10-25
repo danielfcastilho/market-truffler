@@ -767,10 +767,13 @@ async def build_status(
     verify: bool = False,
     worker: dict[str, Any] | None = None,
     backup: dict[str, Any] | None = None,
+    registrations: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The persisted report Vitals reads. `backup` is the backup step's
     own last verified report (`app.research.backup.backup_report`), or
-    None when no destination is configured — never inferred here."""
+    None when no destination is configured — never inferred here.
+    `registrations` is the prospective readiness the caller computed with
+    the protocol's own functions (`app.research.readiness`)."""
     state = load_state(config)
     async with session_factory() as session:
         decisions = [
@@ -833,6 +836,7 @@ async def build_status(
         "expiry_warnings": expiry_warnings,
         "days": days,
         "datasets": datasets,
+        **({"registrations": registrations} if registrations is not None else {}),
     }
 
 

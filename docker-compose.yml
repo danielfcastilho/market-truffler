@@ -96,6 +96,12 @@ services:
       RESEARCH_BACKUP_DIR: ${RESEARCH_BACKUP_DIR:-}
     volumes:
       - ./research/oink_corp/data:/app/research_data
+      # Read-only, for the registration readiness the worker reports
+      # (app.research.readiness verifies each registration against its
+      # campaign/experiment specs or ranking/qualification specs).
+      - ./research/oink_corp/campaigns:/app/research_campaigns:ro
+      - ./research/oink_corp/experiments:/app/research_experiments:ro
+      - ./research/oink_corp/ranking:/app/research_ranking:ro
     cpus: 1.0
     # Healthy only while the worker's own minute heartbeat is fresh — "Up"
     # alone says nothing about a hung loop. Visibility only: Docker does not

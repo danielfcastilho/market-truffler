@@ -57,6 +57,7 @@ from app.research.continuity import (
     write_status,
 )
 from app.research.dataset import DatasetIntegrityError, generate_dataset
+from app.research.readiness import registration_readiness
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger(__name__)
@@ -106,16 +107,42 @@ def _backup_now(config: ContinuityConfig, *, reverify_all: bool = False) -> dict
     return run_backup(config.data_dir, destination, reverify_all=reverify_all)
 
 
+def _registrations(config: ContinuityConfig, now: datetime) -> list[dict[str, Any]]:
+    """Prospective readiness for the report (`app.research.readiness`); a
+    failure is reported, never allowed to stop the pass."""
+    settings = get_settings()
+    try:
+        return registration_readiness(
+            config.data_dir,
+            campaigns_dir=Path(settings.research_campaigns_dir),
+            experiments_dir=Path(settings.research_experiments_dir),
+            ranking_dir=Path(settings.research_ranking_dir),
+            now=now,
+        )
+    except Exception as exc:  # noqa: BLE001 - visibility only
+        logger.exception("registration_readiness_failed")
+        return [
+            {
+                "registration_id": None,
+                "verification": "error",
+                "problems": [str(exc)],
+                "partitions": [],
+            }
+        ]
+
+
 async def _status(
     config: ContinuityConfig, worker: dict[str, Any], *, verify: bool = False
 ) -> dict[str, Any]:
+    now = datetime.now(UTC)
     return await build_status(
         get_session_factory(),
         config,
-        now=datetime.now(UTC),
+        now=now,
         verify=verify,
         worker=worker,
         backup=backup_report(config.data_dir, configured=_backup_dir() is not None),
+        registrations=_registrations(config, now),
     )
 
 

@@ -112,6 +112,39 @@ class SnifferRepository:
         stmt = select(func.count()).select_from(self._unanalyzed(since, until).subquery())
         return int((await self._session.execute(stmt)).scalar_one())
 
+    async def frame_health_rows(self) -> list[tuple[datetime, str, int, int, str | None]]:
+        """Every frame header as (frame_time, status, expected, available,
+        analysis), where analysis is "v2" (results carrying provenance),
+        "v1" (results from before it was recorded) or None (no result).
+        One read over the small headers table with an index probe per frame
+        (`LIMIT 1` on the results' primary-key prefix), never a scan of the
+        results."""
+        provenance = (
+            select(SnifferResult.analysis.is_not(None))
+            .where(SnifferResult.frame_time == MarketFrame.frame_time)
+            .limit(1)
+            .scalar_subquery()
+        )
+        stmt = select(
+            MarketFrame.frame_time,
+            MarketFrame.status,
+            MarketFrame.expected_instruments,
+            MarketFrame.available_instruments,
+            provenance,
+        ).order_by(MarketFrame.frame_time)
+        return [
+            (t, status, expected, available, None if v is None else ("v2" if v else "v1"))
+            for t, status, expected, available, v in (await self._session.execute(stmt)).all()
+        ]
+
+    async def earliest_result_frame(self) -> datetime | None:
+        """The oldest frame with stored results — results older than this
+        were pruned by partition retention (their analysis is unknown now,
+        not missing)."""
+        return (
+            await self._session.execute(select(func.min(SnifferResult.frame_time)))
+        ).scalar_one_or_none()
+
     async def latest_marker(self) -> tuple[datetime, datetime, str | None] | None:
         """(frame_time, calculated_at, analysis) of the latest analyzed frame
         — enough to tell whether a cached computation over it is current,

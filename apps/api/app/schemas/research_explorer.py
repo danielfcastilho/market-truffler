@@ -3,6 +3,7 @@ ledger revisions are passed through as recorded (`dict`) — re-modelling
 them here would be a second, drifting definition of artifacts owned by
 `app.research`."""
 
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel
@@ -87,6 +88,21 @@ class RankingResearch(BaseModel):
     #: {study, candidate, reference, runs} per registered study
     studies: list[dict[str, Any]]
     issues: list[dict[str, str]]
+
+
+class DataHealth(BaseModel):
+    """Research data health (`app.services.research_data_health`):
+    descriptive coverage, shard and readiness facts — no verdicts."""
+
+    computed_at: datetime
+    cache_seconds: float
+    frames: dict[str, Any]
+    shards: dict[str, Any]
+    shard_continuity: dict[str, Any]
+    temporal_contract: dict[str, Any]
+    readiness: dict[str, Any]
+    warnings: list[str]
+    limitations: list[str]
 
 
 class ModelKnowledge(BaseModel):
