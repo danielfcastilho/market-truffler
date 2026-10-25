@@ -1394,6 +1394,67 @@ ranking runtime, which must never depend on it. The boundary is enforced:
 live Sniffs. Sniffs stay in their native factual units throughout
 (fractions, 0-100, ratios) — no 0-1 transform exists.
 
+### OINK CORP: reconstructed historical observations (exploratory only)
+
+Live frames exist only for times the app was running, but the reconcilers
+backfill raw candles, Open Interest and funding afterwards. For exploratory
+research only, `generate_research_dataset --reconstruct` builds datasets for
+such times without persisted frames (`app.research.reconstruction`):
+
+- **In memory, never persisted.** Each grid point gets an in-memory
+  `MarketFrame`, measured by the unchanged `FeatureEngine`. Labels come from
+  the unchanged `forward_returns`. Nothing is written to `market_frames`,
+  `market_frame_members`, `sniffer_results` or `ranking_snapshots`.
+- **Universe (`candle_presence_v1`).** An instrument is a member at T when its
+  5m candle closing exactly at T exists. There is no historical listing
+  calendar: `instruments` starts on 2026-09-19 and only records when this app
+  saw an instrument. An instrument delisted during an outage therefore leaves
+  the universe when the app last saw it. On 2026-10-25 that was 4 of about
+  780 coins: STG and BLAST after 2026-09-30, PROMPT and SPORTFUN after
+  2026-10-13. Coins listed and delisted entirely inside an outage are
+  unknowable. Potentially survivorship-biased, and disclosed as such.
+- **Anchors.** The live rule: the latest candle closed by T per timeframe,
+  with 5m/15m/1h gating. Selection is bounded to the last 2 days, whereas
+  live is unbounded.
+- **Temporal contract.** Unchanged. OI and funding backfilled *under* the
+  contract after an outage carry a later `ingested_at` and are excluded, so
+  they show as missing. Pre-contract rows (`ingested_at` NULL) are accepted
+  as unverified, as in replay. Candles have no availability record.
+- **Marked and fenced off.**
+  - Names are `recon_*`. The manifest records `observation_source:
+    "reconstructed"`, a `reconstruction` block (version, universe rule,
+    universe sizes, limitations) and a specific `universe_note`.
+  - `load_columns` never pools reconstructed with live-observed datasets.
+  - It refuses reconstructed datasets to any prospective evaluation (an
+    access grant).
+  - Reservations still apply: the CLI refuses windows whose labels touch
+    reserved data, and so does the loader.
+  - Run records and ranking-study reports carry `observation_source` and a
+    disclosure.
+- **Measured parity (2026-10-25).** At live frame times, the reconstructed
+  universe equals the live one: 777 of 777, 795 of 795, 808 of 808 members.
+  Every feature and raw label is identical wherever the live frame's 5m
+  anchor was the candle closing at T.
+  - Differences come only from live frames finalized with stale anchors.
+    These occur after restarts, and since 2026-10-24 23:00 for 30-45% of
+    coins.
+  - In those rows live labels are null and reconstruction has them, so
+    `forward_relative_return_*` (median-based) also differ.
+
+Run one UTC day at a time, oldest first, while its sources exist. OI keeps 30
+days, so a day's `oi_change_24h` needs its data for about 29 days.
+Partitions drop monthly. For example:
+
+```bash
+docker compose run --rm --no-deps research python -m app.scripts.generate_research_dataset \
+  --reconstruct --start 2026-09-28T00:00:00Z --end 2026-09-29T00:00:00Z \
+  --sample-interval-minutes 15 --horizons 15m,1h,4h --output recon_s15m_20260928
+```
+
+It takes the research generation lock and yields to live frame work like
+the continuity worker: about 40 s per frame, so a 15-minute day takes about
+2.7 h.
+
 ### OINK CORP: experiments and the Evaluator
 
 Implemented: one manually written hypothesis is evaluated against

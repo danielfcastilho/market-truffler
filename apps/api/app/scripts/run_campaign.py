@@ -27,6 +27,7 @@ from app.research.comparison import (
 from app.research.dataset import code_fingerprint, get_git_commit
 from app.research.evaluation import EVALUATOR_VERSION, Segment, plan_split
 from app.research.experiment import (
+    RECONSTRUCTED_DISCLOSURE,
     ExperimentSpec,
     ExperimentSpecError,
     _canonical_hash,
@@ -113,6 +114,7 @@ def run_comparison(
             {"name": ref.name, "data_sha256": manifest["data_sha256"]}
             for ref, manifest in zip(candidate.datasets, loaded.manifests, strict=True)
         ]
+        record["observation_source"] = loaded.observation_source
         candidate_obs = select(candidate, loaded.table)
         reference_obs = select(reference, loaded.table)
         split = plan_split(candidate_obs.frame_time)
@@ -130,6 +132,8 @@ def run_comparison(
             hypothesis_hash=record["hypothesis_hash"],
             label=candidate.label,
         )
+        if loaded.observation_source == "reconstructed":
+            record["report"].setdefault("disclosures", []).append(RECONSTRUCTED_DISCLOSURE)
         record["status"] = "completed"
         record["error"] = None
     except (ExperimentSpecError, OSError, ValueError, KeyError) as exc:

@@ -79,7 +79,12 @@ class CandleRepository:
         return list(result.scalars().all())
 
     async def fetch_latest_closed_per_instrument(
-        self, timeframe: str, instrument_ids: Sequence[int], max_open_time: datetime
+        self,
+        timeframe: str,
+        instrument_ids: Sequence[int],
+        max_open_time: datetime,
+        *,
+        min_open_time: datetime | None = None,
     ) -> dict[int, Candle]:
         """The single latest legally-closed candle per instrument, for one
         timeframe, as of `max_open_time` (inclusive) — one set-oriented
@@ -97,6 +102,10 @@ class CandleRepository:
         instrument_id ORDER BY open_time DESC)` window function (standard
         SQL, not PostgreSQL-specific `DISTINCT ON`) so it runs identically
         against SQLite in tests and PostgreSQL in production.
+
+        `min_open_time` (inclusive) ignores older candles — research
+        reconstruction only (`app.research.reconstruction`); live frames
+        pass none.
         """
         if not instrument_ids:
             return {}
@@ -112,6 +121,7 @@ class CandleRepository:
                 Candle.timeframe == timeframe,
                 Candle.instrument_id.in_(instrument_ids),
                 Candle.open_time <= max_open_time,
+                *([Candle.open_time >= min_open_time] if min_open_time is not None else []),
             )
             .subquery()
         )

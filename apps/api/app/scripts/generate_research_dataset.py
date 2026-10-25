@@ -29,6 +29,14 @@ with:
 
     python -m app.scripts.generate_research_dataset --verify research_v1
 
+Research-only reconstruction for times without persisted live frames
+(`app.research.reconstruction` — exploratory only, never pooled with
+live-observed datasets, never read by a prospective evaluation):
+
+    python -m app.scripts.generate_research_dataset --reconstruct \
+        --start 2026-09-28T00:00:00Z --end 2026-09-29T00:00:00Z \
+        --sample-interval-minutes 15 --horizons 15m,1h,4h --output recon_s15m_20260928
+
 Writes to `<Settings.research_data_dir>/<output>/` inside the container —
 durable only because `docker-compose.yml` bind-mounts that path to
 `research/oink_corp/data` on the host.
@@ -44,7 +52,7 @@ from pathlib import Path
 
 from app.core.config import get_settings
 from app.db.session import get_engine, get_session_factory
-from app.research.continuity import GenerationLock, GenerationLockLost
+from app.research.continuity import GenerationLock, GenerationLockLost, wait_for_live_window
 from app.research.dataset import generate_dataset, read_dataset, validate_sample_interval
 from app.research.forward_returns import validate_horizons
 from app.research.reservations import ReservedDataError, check_generation_window
@@ -56,6 +64,11 @@ _DEFAULT_HORIZONS = "15m,1h,4h,24h"
 
 _UNIT_MINUTES = {"m": 1, "h": 60, "d": 60 * 24}
 _LABEL_RE = re.compile(r"^(\d+)([mhd])$")
+
+
+#: Every reconstructed dataset's name starts with this, so it can never be
+#: mistaken for a live-observed one (`app.research.reconstruction`).
+RECONSTRUCTED_PREFIX = "recon_"
 
 
 def _parse_horizon(label: str) -> timedelta:
@@ -106,6 +119,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--output", help="dataset directory name, e.g. research_v1")
     parser.add_argument(
+        "--reconstruct",
+        action="store_true",
+        help="research-only: reconstruct every grid point from raw candles/OI/funding instead "
+        "of persisted live frames (app.research.reconstruction); --output must start with "
+        f"{RECONSTRUCTED_PREFIX!r}",
+    )
+    parser.add_argument(
         "--verify",
         metavar="NAME",
         help="verify an existing dataset's sha256 and versions instead of generating one",
@@ -115,6 +135,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
 async def _run(args: argparse.Namespace) -> None:
     settings = get_settings()
+    if args.reconstruct != args.output.startswith(RECONSTRUCTED_PREFIX):
+        raise RuntimeError(
+            f"reconstructed datasets, and only they, are named {RECONSTRUCTED_PREFIX}*"
+        )
     output_dir = Path(settings.research_data_dir) / args.output
     # Before touching any data: generating labels over reserved days would
     # read protected outcomes.
@@ -151,6 +175,10 @@ async def _run(args: argparse.Namespace) -> None:
             output_dir=output_dir,
             on_progress=_on_progress,
             before_publish=lock.ensure_held,
+            reconstruct=args.reconstruct,
+            # Reconstruction runs for hours: yield to live frame work, like
+            # the continuity worker.
+            before_frame=wait_for_live_window if args.reconstruct else None,
         )
     finally:
         await lock.release()

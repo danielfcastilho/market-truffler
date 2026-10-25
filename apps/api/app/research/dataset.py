@@ -67,6 +67,14 @@ from app.research.forward_returns import (
     compute_forward_returns,
     validate_horizons,
 )
+from app.research.reconstruction import (
+    ANCHOR_LOOKBACK,
+    LIMITATIONS,
+    RECONSTRUCTION_VERSION,
+    UNIVERSE_NOTE,
+    UNIVERSE_RULE,
+    reconstruct_frame,
+)
 from app.research.replay import replay_frame
 
 SessionFactory = Callable[[], AsyncSession]
@@ -276,6 +284,7 @@ async def generate_dataset(
     before_frame: Callable[[], Awaitable[float]] | None = None,
     extra_manifest: dict[str, Any] | None = None,
     before_publish: Callable[[], Awaitable[None]] | None = None,
+    reconstruct: bool = False,
 ) -> dict[str, Any]:
     """Generate one research dataset covering `[start, end)` and write it to
     `output_dir` (Parquet + `manifest.json`). Returns the manifest dict.
@@ -305,6 +314,12 @@ async def generate_dataset(
     rename; if it raises (e.g. the caller's generation lock was lost), the
     temporary directory is removed and nothing is published.
 
+    `reconstruct` samples every grid point from a research-only frame
+    reconstructed from raw data (`app.research.reconstruction`) instead of
+    persisted live frames; the manifest then records
+    `observation_source: "reconstructed"` and the reconstruction's
+    provenance, and loaders never pool it with live-observed datasets.
+
     Raises `ValueError` for a sample interval or horizon that isn't a
     multiple of 5 minutes, before touching anything on disk.
     """
@@ -316,11 +331,15 @@ async def generate_dataset(
     horizon_labels = list(horizons)
     candidates = aligned_candidate_times(start, end, interval_minutes)
 
-    async with session_factory() as session:
-        existing = set(await FrameRepository(session).list_frame_times_in_range(start, end))
+    if reconstruct:
+        existing = set(candidates)
+    else:
+        async with session_factory() as session:
+            existing = set(await FrameRepository(session).list_frame_times_in_range(start, end))
 
     sampled = [t for t in candidates if t in existing]
     missing = [t for t in candidates if t not in existing]
+    universe_sizes: list[int] = []
 
     columns = _empty_columns(horizon_labels)
     processed = 0
@@ -330,7 +349,12 @@ async def generate_dataset(
         if before_frame is not None:
             yield_seconds += await before_frame()
         async with session_factory() as session:
-            replay = await replay_frame(session, frame_time)
+            if reconstruct:
+                rebuilt = await reconstruct_frame(session, frame_time)
+                replay = rebuilt.result if rebuilt.trading else None
+                universe_sizes.append(rebuilt.trading)
+            else:
+                replay = await replay_frame(session, frame_time)
             if replay is None:
                 # Genuinely rare: existed a moment ago (`existing`), but
                 # e.g. its partition was concurrently pruned mid-run.
@@ -414,6 +438,22 @@ async def generate_dataset(
     }
     if before_frame is not None:
         manifest["yield_seconds"] = round(yield_seconds, 1)
+    if reconstruct:
+        manifest["observation_source"] = "reconstructed"
+        manifest["universe_note"] = UNIVERSE_NOTE
+        manifest["reconstruction"] = {
+            "version": RECONSTRUCTION_VERSION,
+            "universe_rule": UNIVERSE_RULE,
+            "anchor_lookback_minutes": int(ANCHOR_LOOKBACK.total_seconds() // 60),
+            "universe_size": {
+                "min": min(universe_sizes, default=0),
+                "max": max(universe_sizes, default=0),
+                "mean": round(sum(universe_sizes) / len(universe_sizes), 1)
+                if universe_sizes
+                else None,
+            },
+            "limitations": list(LIMITATIONS),
+        }
     if extra_manifest:
         manifest.update(extra_manifest)
 

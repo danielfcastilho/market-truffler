@@ -42,6 +42,13 @@ record: hash-verified, never overwritten, and backed up — once a
 destination is configured — to independent storage with verified copies;
 see `docs/ARCHITECTURE.md`'s runbook).
 
+Datasets named `recon_*` are **reconstructed**, not live-observed: built
+from raw candles/OI/funding for times without live frames, with a universe
+derived from candle presence (potentially survivorship-biased). They are
+exploratory only, never pooled with live-observed datasets and never read by
+a prospective evaluation — see `docs/ARCHITECTURE.md`, "reconstructed
+historical observations".
+
 Experiments (`experiments/<experiment_id>.json`, committed) are run with
 `python -m app.scripts.run_experiment`; their immutable results land in
 `data/runs/`. The actual code lives in

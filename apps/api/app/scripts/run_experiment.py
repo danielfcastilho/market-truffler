@@ -30,6 +30,7 @@ from app.research.evaluation import (
     plan_split,
 )
 from app.research.experiment import (
+    RECONSTRUCTED_DISCLOSURE,
     SPEC_VERSION,
     ExperimentSpecError,
     hypothesis_hash,
@@ -100,6 +101,7 @@ def run(spec_path: Path, segment: Segment, data_dir: Path) -> tuple[Path, dict[s
             }
             for ref, manifest in zip(spec.datasets, loaded.manifests, strict=True)
         ]
+        record["observation_source"] = loaded.observation_source
         observations = select(spec, loaded.table)
         split = plan_split(observations.frame_time)
         reuse = validation_reuse(
@@ -120,6 +122,8 @@ def run(spec_path: Path, segment: Segment, data_dir: Path) -> tuple[Path, dict[s
         record["report"]["timestamps_percentile_universe_too_small"] = (
             observations.timestamps_percentile_universe_too_small
         )
+        if loaded.observation_source == "reconstructed":
+            record["report"].setdefault("disclosures", []).append(RECONSTRUCTED_DISCLOSURE)
         record["status"] = "completed"
         record["error"] = None
     except (ExperimentSpecError, OSError, ValueError, KeyError) as exc:

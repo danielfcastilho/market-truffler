@@ -69,6 +69,7 @@ from app.ranking.scoring import (
 from app.research import evaluation
 from app.research.evaluation import _day_block_interval, _mean, plan_split
 from app.research.experiment import (
+    RECONSTRUCTED_DISCLOSURE,
     DatasetRef,
     ExperimentSpecError,
     _canonical_hash,
@@ -444,9 +445,13 @@ def evaluate_study(
     universe_sizes = [len(s) for _, s, _, _ in universes]
 
     cand_series, too_small = _evaluate_model(candidate, universes, utility, study.top_k)
+    disclosures = [*RANKING_DISCLOSURES, universe_disclosure(candidate, reference)]
+    if loaded.observation_source == "reconstructed":
+        disclosures.append(RECONSTRUCTED_DISCLOSURE)
     report: dict[str, Any] = {
         "segment": "development",
         "exploratory": True,
+        "observation_source": loaded.observation_source,
         "ranking_evaluator_version": RANKING_EVALUATOR_VERSION,
         "primary_metric": PRIMARY_METRIC,
         "direction": candidate.direction,
@@ -464,7 +469,7 @@ def evaluate_study(
             "distinct_days": len(days),
         },
         "candidate": _model_summary(cand_series),
-        "disclosures": [*RANKING_DISCLOSURES, universe_disclosure(candidate, reference)],
+        "disclosures": disclosures,
     }
     if reference is None:
         primary_values = cand_series.q

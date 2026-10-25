@@ -166,6 +166,21 @@ class LoadedDatasets:
     table: pa.Table  # frame_time, instrument_id, symbol, <features>, <label>; time-ordered
     sample_interval_minutes: int
     horizon_minutes: int
+    #: "live_frames" or "reconstructed" (`app.research.reconstruction`);
+    #: datasets of different sources are never loaded together.
+    observation_source: str = "live_frames"
+
+
+#: Disclosure every report on reconstructed datasets carries.
+RECONSTRUCTED_DISCLOSURE = (
+    "Reconstructed research observations (app.research.reconstruction), not live frames: the "
+    "universe is derived from candle presence (potentially survivorship-biased) and nothing was "
+    "available to the system at frame_time as a frame. Exploratory only."
+)
+
+
+def observation_source(manifest: dict[str, Any]) -> str:
+    return str(manifest.get("observation_source", "live_frames"))
 
 
 def load_datasets(
@@ -213,6 +228,15 @@ def load_columns(
         check_access(data_dir, list(manifests_by_name.items()), access)
     except ReservedDataError as exc:
         raise ExperimentSpecError(str(exc)) from exc
+    sources = {observation_source(m) for m in manifests_by_name.values()}
+    if len(sources) > 1:
+        raise ExperimentSpecError(
+            "datasets mix live-observed and reconstructed observations; evaluate them separately"
+        )
+    if access is not None and "reconstructed" in sources:
+        raise ExperimentSpecError(
+            "reconstructed datasets are exploratory only: a prospective evaluation never reads them"
+        )
     loaded: list[tuple[dict[str, Any], pa.Table]] = []
     for ref in datasets:
         manifest = manifests_by_name[ref.name]
@@ -256,6 +280,7 @@ def load_columns(
         table=table,
         sample_interval_minutes=cadences.pop(),
         horizon_minutes=horizons.pop(),
+        observation_source=sources.pop(),
     )
 
 
