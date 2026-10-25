@@ -27,51 +27,74 @@ same data directory.
 
 This Mac's power settings sleep the system **1 minute** after the display
 sleeps (`pmset -g`: `sleep 1`, `displaysleep 10`). Sleep freezes Docker, so
-collection stops.
+collection stops, and frames missed while asleep are lost for good.
 
 ```bash
-infra/keep-awake.sh start    # prevent idle sleep (no-op if already active)
-infra/keep-awake.sh status   # real state; exit 0 only when active
-infra/keep-awake.sh stop     # back to normal sleep behaviour
+infra/keep-awake.sh start             # start protection (no-op if already active)
+infra/keep-awake.sh status            # exit 0 active, 1 inactive, 2 unknown
+infra/keep-awake.sh stop              # back to normal sleep behaviour
+infra/keep-awake.sh enable-at-login   # opt in: start it at every login (and after reboots)
+infra/keep-awake.sh disable-at-login  # undo that
 ```
 
-It runs macOS's own `caffeinate -i -s` detached (survives closing the
-terminal), keeps at most one such process (pidfile in `$TMPDIR` plus a
-check of the actual process, so it never kills anything else), and changes
-no system setting. `status` shows the power assertions macOS actually
-holds for it.
+**How it works.** `start` loads a per-user launchd agent,
+`com.market-truffler.keep-awake`. The agent runs `keep-awake.sh run`, which
+holds macOS's own `caffeinate -i -s`, tied to the agent with `-w` so it
+never outlives it. `start` returns only after macOS shows both
+assertions, `PreventUserIdleSystemSleep` and `PreventSystemSleep`; if they
+don't appear it fails with exit 1. No root, no system daemon, and no
+`pmset` setting is changed.
+
+| | Survives? |
+|---|---|
+| Closing the terminal / Claude session | **yes** — launchd owns it (parent pid 1), not the shell |
+| Recreating `api`/`web`/any container | **yes** — it is a host process, independent of Docker |
+| The agent or its caffeinate being killed | **yes** — launchd restarts it (measured ~2 s); the old caffeinate exits with the agent |
+| Logout | no |
+| Reboot (including a macOS update) | only with `enable-at-login`, after you log in |
+
+**Identity.** `start`, `stop` and `status` find caffeinate only as the
+agent's child process. Other `caffeinate` processes are never adopted or
+stopped (tested with one running alongside). `start` also replaces the
+detached `nohup caffeinate` started by the previous version of the script,
+recognised by its pidfile and exact command line.
+
+**What Vitals can and cannot verify.** Every minute the agent checks
+`pmset -g assertions` (~18 ms) and writes its result atomically to
+`var/host-status/keep-awake.json`. The api reads that file through a
+read-only mount; there is no host access, Docker socket or command
+execution. SYSTEM → **Host sleep protection** shows:
+
+- **Active**: macOS held the agent's assertions at the last check, at
+  most 3 minutes ago.
+- **Inactive**: the latest report says stopped, or no assertion was held.
+- **Unknown**: no report newer than 3 minutes (agent not running, host
+  asleep, file missing) or the report is malformed.
+
+Unknown is never shown as active. It proves only that the assertion was
+held at the last check. It does not prove that the host never slept, and
+it does not say whether collection is healthy: **Missed frames (24h)**
+covers that. On battery only idle sleep is prevented (`-s` needs AC
+power), and the row says so.
+
+**Diagnosing.**
+- **Inactive or Unknown:** run `infra/keep-awake.sh status`. It prints the
+  launchd state, the assertions and the last report.
+- **Agent loaded but failing:** check
+  `launchctl print gui/$(id -u)/com.market-truffler.keep-awake` and
+  `~/Library/Application Support/market-truffler/keep-awake.log`.
+- **Past sleeps:** `pmset -g log | grep -E "Entering Sleep|caffeinate"`
+  shows sleep and assertion history.
 
 It does **not** prevent: closing a MacBook's lid (sleeps anyway unless in
 clamshell mode with an external display and power), shutdown, restart,
-logout, power loss, or Docker Desktop quitting. On battery only idle sleep
-is prevented (`-s` needs AC power). It does not survive a reboot or logout.
-Vitals cannot see the host's power state, so it shows no keep-awake
-indicator; Vitals' **Missed frames (24h)** row shows the consequence of any
-interruption instead.
+logout, power loss, or Docker Desktop quitting.
 
-**Optional, not installed — persistent across logins.** Only if you want
-it: a user LaunchAgent that holds the same assertion from login on.
-
-```bash
-cat > ~/Library/LaunchAgents/com.market-truffler.keep-awake.plist <<'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key><string>com.market-truffler.keep-awake</string>
-  <key>ProgramArguments</key><array>
-    <string>/usr/bin/caffeinate</string><string>-i</string><string>-s</string>
-  </array>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-</dict></plist>
-EOF
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.market-truffler.keep-awake.plist   # enable
-launchctl bootout gui/$(id -u)/com.market-truffler.keep-awake                                  # disable
-rm ~/Library/LaunchAgents/com.market-truffler.keep-awake.plist                                 # remove
-```
-
-It holds the assertion whether or not the stack runs; don't combine it
-with `keep-awake.sh` (both would just hold the same assertion).
+**2026-10-25 incident.** macOS 27.0.1 installed itself at 00:21 local time
+and rebooted the Mac at 00:25. The old detached caffeinate ended with the
+reboot, and nothing restarted it. The power log for that boot shows no
+caffeinate assertion until 13:04. Meanwhile the Mac idle-slept and frames
+14:55–15:45 UTC were lost. `enable-at-login` covers that case.
 
 ## Restart behaviour
 
@@ -82,7 +105,7 @@ All four services use `restart: unless-stopped`.
 | A container crashes | Docker restarts it. `api` re-runs migrations (no-op) and resumes; the reconcilers backfill candles/OI/funding for the gap; frames for the gap are lost. |
 | Bybit unreachable | No restart needed: the WebSocket reconnects with backoff (1s → 30s), reconcilers and the frame loop catch per-iteration errors. Frames keep being built; their completeness drops; reconcilers backfill candles/OI afterwards. |
 | Docker Desktop restarts | Running services come back (`unless-stopped`). `depends_on` ordering is **not** applied on daemon restarts: if `api` starts before PostgreSQL is ready its migration fails and Docker restarts it until it succeeds; `research` waits for the schema to match before doing anything. |
-| Mac restarts | **Nothing runs until Docker Desktop is opened** — its "Start Docker Desktop when you sign in" is off (`AutoStart: false`), and a login is required first. Enable it in Docker Desktop → Settings → General if you want the stack back after a reboot (your call; it's a host setting). `keep-awake.sh` must be started again. |
+| Mac restarts | **Nothing runs until Docker Desktop is opened** — its "Start Docker Desktop when you sign in" is off (`AutoStart: false`), and a login is required first. Enable it in Docker Desktop → Settings → General if you want the stack back after a reboot (your call; it's a host setting). Sleep protection comes back only if `keep-awake.sh enable-at-login` was run; otherwise run `keep-awake.sh start` (Vitals shows Unknown until then). |
 | Research worker stopped mid-shard | The child is terminated, nothing is published, no failure is counted; the next pass regenerates the day (see `ARCHITECTURE.md`). |
 
 **Restarting `api` deliberately.** Wait until about 2.5 minutes after a
@@ -207,6 +230,64 @@ only); see [TEMPORAL_CONTRACT.md](TEMPORAL_CONTRACT.md).
 heartbeat is fresh (a healthcheck — visibility only; Docker does not
 restart unhealthy containers). `api` is healthy when `/health` answers;
 `web` and `research` start only after `api` is healthy on `compose up`.
+
+## Research generation lock
+
+The research worker, the manual dataset command and `--backup`/`--restore`
+all share one Postgres **session-level** advisory lock
+(`app.research.continuity.GenerationLock`, key `0x0A1C0C0F`), so only one
+generation runs at a time.
+
+- **Ownership.** The lock is taken on a dedicated pooled connection that
+  stays checked out until release and runs nothing else. Acquisition
+  commits immediately, so through a shard's hours the session is `idle`,
+  never `idle in transaction`. Before 2026-10-25 the lock statement's
+  implicit transaction was never committed and stayed open for the whole
+  pass.
+
+  Under the default READ COMMITTED that open transaction held no
+  `backend_xmin` (measured), so it did not hold back vacuum. It did leave
+  an open transaction for hours, and if `idle_in_transaction_session_timeout`
+  had ever been set, Postgres would have ended the session and silently
+  dropped the lock.
+- **Release.** `release` unlocks explicitly. If the unlock fails, is
+  cancelled, or reports nothing held, the connection is *invalidated*
+  rather than returned to the pool, so a still-locked session can never
+  be reused by unrelated work. Postgres releases the lock when a session
+  ends.
+- **Session loss** (database restart, network loss, a terminated backend).
+  The lock disappears with the session, and another generator may take it.
+  Three checks stop the original generator from publishing:
+  1. The worker checks ownership every 30 s while a child generates. If it
+     is lost, the worker terminates the child, publishes nothing and ends
+     the pass.
+  2. The child checks that the worker's lock session (`--lock-holder-pid`)
+     still holds the lock right before its rename.
+  3. Shard directories are never overwritten: a second rename onto an
+     existing shard fails.
+
+  The day is not counted as failed, and the next pass retries it. The pass
+  also re-checks ownership before each day and before the backup. A lost
+  lock raises the `research_worker/-/generation_lock_lost` warning in
+  Vitals' OINK CORP alerts until a clean pass.
+- **Shutdown and failure.** The pass releases the lock in `finally` after
+  success, a failed day, an exception or a stop. A killed worker process
+  loses its session, and with it the lock.
+
+Inspect it live (read-only):
+
+```bash
+docker compose exec -T postgres psql -U truffler -d market_truffler -c \
+  "SELECT a.pid, a.state, a.xact_start, a.backend_xmin FROM pg_locks l
+   JOIN pg_stat_activity a USING (pid)
+   WHERE l.locktype = 'advisory' AND l.objid = 169610255;"
+```
+
+`state` should be `idle` with an empty `xact_start`.
+
+**Tests.** `tests/test_generation_lock_postgres.py` needs a throwaway
+PostgreSQL (`TEST_POSTGRES_URL`, see the README). Advisory locks are
+per database, so never run it against the stack's own database.
 
 ## Backups
 

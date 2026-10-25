@@ -44,7 +44,7 @@ from pathlib import Path
 
 from app.core.config import get_settings
 from app.db.session import get_engine, get_session_factory
-from app.research.continuity import GenerationLock
+from app.research.continuity import GenerationLock, GenerationLockLost
 from app.research.dataset import generate_dataset, read_dataset, validate_sample_interval
 from app.research.forward_returns import validate_horizons
 from app.research.reservations import ReservedDataError, check_generation_window
@@ -150,6 +150,7 @@ async def _run(args: argparse.Namespace) -> None:
             horizons=args.horizons,
             output_dir=output_dir,
             on_progress=_on_progress,
+            before_publish=lock.ensure_held,
         )
     finally:
         await lock.release()
@@ -191,7 +192,7 @@ def main() -> None:
         sys.exit(1)
     try:
         asyncio.run(_run(args))
-    except (FileExistsError, RuntimeError, ReservedDataError) as exc:
+    except (FileExistsError, RuntimeError, ReservedDataError, GenerationLockLost) as exc:
         print(str(exc), file=sys.stderr)
         sys.exit(1)
 

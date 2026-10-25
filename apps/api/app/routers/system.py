@@ -1,12 +1,15 @@
 import logging
 import time
+from dataclasses import asdict
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, status
 from sqlalchemy import text
 
 from app.core import PROCESS_STARTED_AT, __version__
 from app.core.deps import CurrentUserDep, DbSessionDep, SettingsDep
-from app.schemas.system import HealthResponse, ReadyResponse, SystemInfo
+from app.schemas.system import HealthResponse, ReadyResponse, SleepProtectionState, SystemInfo
+from app.services.host_status import read_sleep_protection
 
 router = APIRouter(tags=["system"])
 logger = logging.getLogger(__name__)
@@ -57,4 +60,8 @@ async def system_info(
         database=database_status,
         authenticated_user=current_user.email,
         uptime_seconds=time.monotonic() - PROCESS_STARTED_AT,
+        # One small file read, no subprocess: what the host last reported.
+        host_sleep_protection=SleepProtectionState(
+            **asdict(read_sleep_protection(Path(settings.host_status_dir)))
+        ),
     )

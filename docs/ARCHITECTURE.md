@@ -1245,7 +1245,9 @@ right after the first, manually generated 5-minute dataset ends) into one
 immutable shard, `shard_s15m_YYYYMMDD`, sampled on a fixed 15-minute grid
 with 15m/1h/4h labels. Every 30 minutes, under a Postgres advisory lock
 (shared with the manual dataset command, so two generations never run at
-once), a pass (`app.research.continuity.run_pass`):
+once; session-level, held with no open transaction, and re-checked before
+publishing — see OPERATIONS.md "Research generation lock"), a pass
+(`app.research.continuity.run_pass`):
 
 - **skips preserved days** — a shard under its real name always passed
   verification, which now happens inside the temp directory before the

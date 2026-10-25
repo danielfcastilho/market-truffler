@@ -49,14 +49,17 @@ from app.research.backup import (
 from app.research.continuity import (
     EXIT_ALREADY_PRESERVED,
     EXIT_INTEGRITY,
+    EXIT_LOCK_LOST,
     RESTART_GRACE,
     SHARD_HORIZONS,
     SHARD_INTERVAL_MINUTES,
     STATEMENT_TIMEOUT,
     ContinuityConfig,
     GenerationLock,
+    GenerationLockLost,
     build_status,
     day_window,
+    require_lock_owner,
     run_generation_subprocess,
     run_pass,
     shard_name,
@@ -67,7 +70,12 @@ from app.research.continuity import (
 from app.research.dataset import DatasetIntegrityError, generate_dataset
 from app.research.integrity import run_verification, verification_report
 from app.research.readiness import registration_readiness
-from app.research.research_alerts import derive_alerts, derive_backup_alerts, update_alerts
+from app.research.research_alerts import (
+    derive_alerts,
+    derive_backup_alerts,
+    derive_worker_alerts,
+    update_alerts,
+)
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger(__name__)
@@ -187,7 +195,9 @@ async def _status(
     )
     conditions = derive_alerts(
         report.get("registrations", []), report["days"], report["verification"]["datasets"]
-    ) + derive_backup_alerts(report.get("backup"), now, _recovery_interval())
+    )
+    conditions += derive_backup_alerts(report.get("backup"), now, _recovery_interval())
+    conditions += derive_worker_alerts(worker)
     report["alerts"] = (
         update_alerts(config.continuity_dir, conditions, now)
         if track_alerts
@@ -226,8 +236,10 @@ async def _one_pass(
         worker["generating"] = {k: str(v) for k, v in info.items()}
         _update_worker_field(config, worker)
 
+    lock = GenerationLock(get_engine())
+
     async def generate(day: date, detail: dict[str, Any]) -> None:
-        await run_generation_subprocess(day, detail, config, stop=stop)
+        await run_generation_subprocess(day, detail, config, stop=stop, lock=lock)
 
     async def backup() -> None:
         # Hashing and copying are blocking file I/O: keep the loop (and its
@@ -237,7 +249,7 @@ async def _one_pass(
     worker["last_pass_started_at"] = datetime.now(UTC).isoformat()
     summary = await run_pass(
         session_factory,
-        GenerationLock(get_engine()),
+        lock,
         config,
         generate,
         on_status=on_status,
@@ -320,7 +332,12 @@ async def _loop(config: ContinuityConfig) -> None:
 
 
 async def _generate_day(
-    day: date, config: ContinuityConfig, detail: dict[str, Any], *, allow_immature: bool
+    day: date,
+    config: ContinuityConfig,
+    detail: dict[str, Any],
+    *,
+    allow_immature: bool,
+    lock_holder_pid: int | None = None,
 ) -> None:
     window = day_window(day, config.shards_start)
     if window is None:
@@ -336,6 +353,13 @@ async def _generate_day(
         },
     )
     session_factory = async_sessionmaker(bind=engine, expire_on_commit=False, class_=AsyncSession)
+
+    async def worker_still_owns_lock() -> None:
+        # The worker's lock session may have ended mid-generation (and another
+        # generator may hold the lock now): never publish without it.
+        if lock_holder_pid is not None:
+            await require_lock_owner(session_factory, lock_holder_pid)
+
     try:
         manifest = await generate_dataset(
             session_factory,
@@ -345,6 +369,7 @@ async def _generate_day(
             horizons=SHARD_HORIZONS,
             output_dir=config.data_dir / shard_name(day),
             before_frame=wait_for_live_window,
+            before_publish=worker_still_owns_lock,
             extra_manifest={
                 "generation_mode": "continuity",
                 "shard_day": day.isoformat(),
@@ -442,6 +467,7 @@ def main() -> None:
     parser.add_argument("--verify-all", action="store_true")
     parser.add_argument("--data-dir", type=Path)
     parser.add_argument("--detail-json", default="{}")
+    parser.add_argument("--lock-holder-pid", type=int, help=argparse.SUPPRESS)
     parser.add_argument(
         "--allow-immature",
         action="store_true",
@@ -497,6 +523,7 @@ def main() -> None:
                     config,
                     json.loads(args.detail_json),
                     allow_immature=args.allow_immature,
+                    lock_holder_pid=args.lock_holder_pid,
                 )
             )
         except FileExistsError as exc:
@@ -505,6 +532,9 @@ def main() -> None:
         except DatasetIntegrityError as exc:
             print(str(exc), file=sys.stderr)
             sys.exit(EXIT_INTEGRITY)
+        except GenerationLockLost as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(EXIT_LOCK_LOST)
 
 
 if __name__ == "__main__":

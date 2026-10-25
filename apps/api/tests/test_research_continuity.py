@@ -22,12 +22,14 @@ from app.research.continuity import (
     CANDLE_LOOKBACK,
     EXIT_ALREADY_PRESERVED,
     EXIT_INTEGRITY,
+    EXIT_LOCK_LOST,
     FUNDING_LOOKBACK,
     OI_LOOKBACK,
     RESTART_GRACE,
     ContinuityConfig,
     GenerationFailed,
     GenerationInterrupted,
+    GenerationLockLost,
     build_status,
     completed_days,
     day_window,
@@ -62,14 +64,18 @@ def _config(tmp_path, start=DAY_START) -> ContinuityConfig:
 class _Lock:
     def __init__(self, available: bool = True) -> None:
         self.available = available
-        self.held = False
+        self.owned = False
+        self.backend_pid = None
 
     async def acquire(self) -> bool:
-        self.held = self.available
+        self.owned = self.available
         return self.available
 
+    async def held(self) -> bool:
+        return self.owned
+
     async def release(self) -> None:
-        self.held = False
+        self.owned = False
 
 
 class _Generator:
@@ -714,3 +720,131 @@ def test_continuity_module_never_backs_up_anywhere():
     source = (continuity.__file__ and open(continuity.__file__).read()) or ""
     for forbidden in ("copytree", "shutil.copy", "rsync", "upload"):
         assert forbidden not in source
+
+
+# -- generation lock loss ------------------------------------------------------------------
+
+
+class _LosingLock(_Lock):
+    """Owned at acquisition; `lose()` simulates its Postgres session ending."""
+
+    async def held(self) -> bool:
+        return self.owned
+
+    def lose(self) -> None:
+        self.owned = False
+
+
+async def test_a_lock_lost_before_a_day_ends_the_pass_without_generating_or_backing_up(
+    session_factory, tmp_path
+):
+    await _ready_day(session_factory)
+    config = _config(tmp_path)
+    gen = _Generator(config)
+    lock = _LosingLock()
+    backed_up: list[bool] = []
+
+    async def backup():
+        backed_up.append(True)
+
+    async def acquire_then_lose():
+        lock.owned = True
+        lock.lose()
+        return True
+
+    lock.acquire = acquire_then_lose  # type: ignore[method-assign]
+    summary = await run_pass(
+        session_factory, lock, config, gen, now=lambda: MATURED, after_generation=backup
+    )
+    assert summary["lock_lost"] is True
+    assert gen.calls == [] and backed_up == []
+    assert not (tmp_path / shard_name(DAY)).exists()
+
+
+async def test_a_lock_lost_during_generation_is_retried_not_counted(session_factory, tmp_path):
+    await _ready_day(session_factory)
+    config = _config(tmp_path)
+    lock = _LosingLock()
+    backed_up: list[bool] = []
+
+    async def backup():
+        backed_up.append(True)
+
+    async def lose_while_generating(day, detail):
+        lock.lose()
+        raise GenerationLockLost("generation lock lost; child terminated, nothing published")
+
+    summary = await run_pass(
+        session_factory,
+        lock,
+        config,
+        lose_while_generating,
+        now=lambda: MATURED,
+        after_generation=backup,
+    )
+    assert summary["lock_lost"] is True and summary["interrupted"] == DAY.isoformat()
+    assert summary["failed"] == [] and backed_up == []
+    status = await build_status(session_factory, config, now=MATURED)
+    assert status["summary"]["failing_days"] == 0  # no attempt counted
+
+    # The next pass (lock reacquired) generates the day normally.
+    gen = _Generator(config)
+    again = await run_pass(
+        session_factory, _Lock(), config, gen, now=lambda: MATURED, after_generation=backup
+    )
+    assert again["generated"] == [DAY.isoformat()] and again["lock_lost"] is False
+    assert backed_up == [True]
+
+
+async def test_losing_the_lock_terminates_the_child_before_it_can_publish(tmp_path):
+    marker = tmp_path / "still-running"
+    script = (
+        "import time, pathlib\n"
+        f"p = pathlib.Path({str(marker)!r})\n"
+        "while True:\n"
+        "    p.write_text(str(time.time())); time.sleep(0.05)\n"
+    )
+    lock = _LosingLock()
+    lock.owned = True
+    asyncio.get_running_loop().call_later(0.4, lock.lose)
+    started = wallclock.monotonic()
+    with pytest.raises(GenerationLockLost, match="nothing published"):
+        await run_generation_subprocess(
+            DAY,
+            {},
+            _config(tmp_path),
+            lock=lock,  # type: ignore[arg-type]
+            lock_check_interval=timedelta(seconds=0.1),
+            command=[sys.executable, "-c", script],
+        )
+    assert wallclock.monotonic() - started < 10
+    last_write = marker.read_text()
+    await asyncio.sleep(0.3)
+    assert marker.read_text() == last_write  # the child is really gone
+
+
+async def test_a_child_refusing_to_publish_without_the_lock_is_a_lock_loss(tmp_path):
+    with pytest.raises(GenerationLockLost, match="before publishing"):
+        await run_generation_subprocess(
+            DAY,
+            {},
+            _config(tmp_path),
+            command=[sys.executable, "-c", f"import sys; sys.exit({EXIT_LOCK_LOST})"],
+        )
+
+
+async def test_the_worker_passes_its_lock_session_to_the_child(tmp_path, monkeypatch):
+    seen: list[list[str]] = []
+    real_exec = asyncio.create_subprocess_exec
+
+    async def fake_exec(*argv, **kwargs):
+        seen.append(list(argv))
+        return await real_exec(sys.executable, "-c", "pass", **kwargs)
+
+    monkeypatch.setattr(continuity.asyncio, "create_subprocess_exec", fake_exec)
+    lock = _LosingLock()
+    lock.owned = True
+    lock.backend_pid = 4242
+    await run_generation_subprocess(DAY, {}, _config(tmp_path), lock=lock)  # type: ignore[arg-type]
+    argv = seen[0]
+    assert argv[argv.index("--lock-holder-pid") + 1] == "4242"

@@ -112,6 +112,9 @@ SHARD_TIMEOUT = timedelta(hours=6)
 #: Server-side cap on any single statement the generator issues, so a
 #: killed generator can't leave a runaway query behind for long.
 STATEMENT_TIMEOUT = timedelta(minutes=10)
+#: How often the worker confirms it still owns the generation lock while a
+#: child generates (one pg_locks read on the idle lock connection).
+LOCK_CHECK_INTERVAL = timedelta(seconds=30)
 
 # Best-effort yield to live Sniffer work: only start replaying a frame
 # when the last 5-minute boundary is at least this far behind and the
@@ -280,39 +283,131 @@ def _in_backoff(state: dict[str, Any], day: date, now: datetime) -> bool:
 # -- locking -----------------------------------------------------------------------------------
 
 
+#: Whether backend `pid` holds the generation lock. A bigint advisory key
+#: shows in pg_locks as classid = high 32 bits, objid = low 32 bits, objsubid 1.
+_LOCK_OWNED = text(
+    "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND granted "
+    "AND pid = :pid AND classid::bigint = :hi AND objid::bigint = :lo AND objsubid = 1)"
+)
+
+
+async def lock_owned_by(conn: AsyncConnection | AsyncSession, backend_pid: int) -> bool:
+    """Whether the Postgres backend `backend_pid` still holds the generation
+    lock — false once that session has ended (its locks end with it)."""
+    owned = await conn.execute(
+        _LOCK_OWNED,
+        {"pid": backend_pid, "hi": _ADVISORY_LOCK_KEY >> 32, "lo": _ADVISORY_LOCK_KEY & 0xFFFFFFFF},
+    )
+    return bool(owned.scalar())
+
+
+async def require_lock_owner(session_factory: Callable[[], AsyncSession], backend_pid: int) -> None:
+    """A generation subprocess's last check before publishing: raise
+    `GenerationLockLost` unless the worker's lock session (`backend_pid`)
+    still holds the lock."""
+    async with session_factory() as session:
+        if not await lock_owned_by(session, backend_pid):
+            raise GenerationLockLost(
+                f"lock session {backend_pid} no longer holds the generation lock"
+            )
+
+
 class GenerationLock:
     """Exclusive research-generation lock: a Postgres session-level advisory
     lock held on a dedicated connection — works across containers, and is
     released by Postgres itself if the holding process dies. On a non-
-    Postgres database (tests) it's a no-op that always succeeds."""
+    Postgres database (tests) it's a no-op that always succeeds.
+
+    The lock belongs to the backend session, not to a transaction: every
+    statement on the lock connection commits at once, so for the hours a
+    shard takes it sits `idle` — never `idle in transaction`, holding no
+    snapshot that would keep vacuum from cleaning up. The connection is used
+    for nothing but the lock. `release` unlocks explicitly; when that cannot
+    be confirmed (error, cancellation, unlock reporting nothing held) the
+    connection is invalidated — closed, never returned to the pool — so a
+    lock can't leak into unrelated pooled work.
+
+    Ownership ends if that session ends (database restart, network loss),
+    and another generator may then acquire it: `held` detects it, and
+    `backend_pid` lets a generation subprocess check ownership itself right
+    before publishing (`lock_owned_by`)."""
 
     def __init__(self, engine: AsyncEngine) -> None:
         self._engine = engine
         self._conn: AsyncConnection | None = None
+        self.backend_pid: int | None = None
 
     async def acquire(self) -> bool:
         if self._engine.dialect.name != "postgresql":
             return True
         conn = await self._engine.connect()
-        acquired = (
-            await conn.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": _ADVISORY_LOCK_KEY})
-        ).scalar()
+        try:
+            acquired = (
+                await conn.execute(
+                    text("SELECT pg_try_advisory_lock(:k)"), {"k": _ADVISORY_LOCK_KEY}
+                )
+            ).scalar()
+            backend_pid = (await conn.execute(text("SELECT pg_backend_pid()"))).scalar()
+            await conn.commit()
+        except BaseException:
+            await _discard(conn)
+            raise
         if not acquired:
             await conn.close()
             return False
         self._conn = conn
+        self.backend_pid = backend_pid
         return True
 
+    async def held(self) -> bool:
+        """Whether this session still owns the lock (always true off Postgres)."""
+        if self._engine.dialect.name != "postgresql":
+            return True
+        if self._conn is None or self.backend_pid is None:
+            return False
+        try:
+            owned = await lock_owned_by(self._conn, self.backend_pid)
+            await self._conn.commit()
+        except Exception:  # noqa: BLE001 - a lost connection is exactly "not held"
+            logger.warning("generation_lock_check_failed", exc_info=True)
+            return False
+        return owned
+
+    async def ensure_held(self) -> None:
+        if not await self.held():
+            raise GenerationLockLost("the research generation lock is no longer held")
+
     async def release(self) -> None:
-        if self._conn is None:
+        conn, self._conn = self._conn, None
+        self.backend_pid = None
+        if conn is None:
             return
         try:
-            await self._conn.execute(
-                text("SELECT pg_advisory_unlock(:k)"), {"k": _ADVISORY_LOCK_KEY}
-            )
-        finally:
-            await self._conn.close()
-            self._conn = None
+            released = (
+                await conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": _ADVISORY_LOCK_KEY})
+            ).scalar()
+            await conn.commit()
+        except Exception:  # noqa: BLE001 - the session's end releases it instead
+            logger.warning("generation_lock_release_failed", exc_info=True)
+            await _discard(conn)
+            return
+        except BaseException:
+            await _discard(conn)
+            raise
+        if not released:
+            logger.warning("generation_lock_not_held_at_release")
+            await _discard(conn)
+            return
+        await conn.close()
+
+
+async def _discard(conn: AsyncConnection) -> None:
+    """Close the connection for good: its Postgres session ends, with any
+    advisory lock it may hold, instead of returning to the pool."""
+    with contextlib.suppress(Exception):
+        await conn.invalidate()
+    with contextlib.suppress(Exception):
+        await conn.close()
 
 
 # -- readiness -------------------------------------------------------------------------------
@@ -437,6 +532,9 @@ async def day_facts(session: AsyncSession, start: datetime, end: datetime) -> Da
 #: Exit codes of `--generate-day` (the child), besides 0 and Python's own 1.
 EXIT_ALREADY_PRESERVED = 3
 EXIT_INTEGRITY = 4
+#: The generation subprocess found, right before publishing, that the
+#: worker's lock session no longer holds the lock: nothing was published.
+EXIT_LOCK_LOST = 5
 
 
 class GenerationFailed(RuntimeError):
@@ -454,6 +552,12 @@ class GenerationFailed(RuntimeError):
 class GenerationInterrupted(Exception):
     """The worker was asked to stop while (or before) generating: not a
     failure of the day — nothing is counted against it."""
+
+
+class GenerationLockLost(GenerationInterrupted):
+    """The generation lock's Postgres session ended mid-pass (another
+    generator may hold it now): generation stops before publishing, nothing
+    is counted against the day, and the next pass retries it."""
 
 
 GenerateDay = Callable[[date, dict[str, Any]], Awaitable[None]]
@@ -538,7 +642,9 @@ async def run_pass(
 ) -> dict[str, Any] | None:
     """One idempotent pass. Returns a summary, or None if another generator
     holds the lock. `after_generation` (the backup step) runs last, still
-    under the lock, unless the pass was interrupted."""
+    under the lock, unless the pass was interrupted. Lock ownership is
+    re-checked before each day and before the backup: once lost, the pass
+    ends there (`lock_lost` in the summary)."""
     if not await lock.acquire():
         logger.info("continuity_pass_skipped_lock_held")
         return None
@@ -565,7 +671,11 @@ async def run_pass(
         generated: list[str] = []
         failed: list[str] = []
         interrupted: str | None = None
+        lock_lost = False
         for decision in due:
+            if not await lock.held():
+                lock_lost = True
+                break
             if on_status is not None:
                 on_status({"generating": decision.day.isoformat(), "started_at": now()})
             try:
@@ -574,7 +684,12 @@ async def run_pass(
                 state["last_success"] = {"day": decision.day.isoformat(), "at": now().isoformat()}
                 generated.append(decision.day.isoformat())
             except GenerationInterrupted as exc:
-                logger.info("continuity_shard_interrupted", extra={"day": decision.day.isoformat()})
+                lock_lost = isinstance(exc, GenerationLockLost)
+                logger.log(
+                    logging.WARNING if lock_lost else logging.INFO,
+                    "continuity_shard_interrupted",
+                    extra={"day": decision.day.isoformat(), "lock_lost": lock_lost},
+                )
                 interrupted = decision.day.isoformat()
                 state["last_interruption"] = {
                     "day": interrupted,
@@ -600,12 +715,18 @@ async def run_pass(
             if interrupted is not None:
                 break  # stopping: later days are not attempted, not failed
         save_state(config, state)
-        if interrupted is None and after_generation is not None:
-            await after_generation()
+        if interrupted is None and not lock_lost and after_generation is not None:
+            if await lock.held():
+                await after_generation()
+            else:
+                lock_lost = True
+        if lock_lost:
+            logger.warning("continuity_generation_lock_lost")
         return {
             "generated": generated,
             "failed": failed,
             "interrupted": interrupted,
+            "lock_lost": lock_lost,
             "stale_tmp_dirs_removed": removed,
             "decisions": {d.day.isoformat(): d.status for d in decisions},
         }
@@ -658,6 +779,8 @@ async def run_generation_subprocess(
     timeout: timedelta = SHARD_TIMEOUT,
     stop: asyncio.Event | None = None,
     command: list[str] | None = None,
+    lock: GenerationLock | None = None,
+    lock_check_interval: timedelta = LOCK_CHECK_INTERVAL,
 ) -> None:
     """Generate one shard in a child process with a hard timeout. On
     timeout or stop, the child is terminated (then killed) and *waited
@@ -665,7 +788,13 @@ async def run_generation_subprocess(
     generation still runs. Raises `GenerationInterrupted` on a stop (also
     when one was already requested — no child is started then) and
     `GenerationFailed` on a failure, classified by what was observed. A
-    child reporting that the shard already exists is not a failure."""
+    child reporting that the shard already exists is not a failure.
+
+    With `lock`, ownership is checked every `lock_check_interval` while the
+    child runs; if it is lost the child is terminated the same way and
+    `GenerationLockLost` raised. The child also checks it itself right
+    before publishing (`--lock-holder-pid`) — that closes the gap between
+    two checks."""
     if stop is not None and stop.is_set():
         raise GenerationInterrupted("worker stopping; generation not started")
     argv = command or [
@@ -679,17 +808,27 @@ async def run_generation_subprocess(
         "--detail-json",
         json.dumps(detail, default=str),
     ]
+    if command is None and lock is not None and lock.backend_pid is not None:
+        argv += ["--lock-holder-pid", str(lock.backend_pid)]
     proc = await asyncio.create_subprocess_exec(*argv, stderr=asyncio.subprocess.PIPE)
     communicate = asyncio.ensure_future(proc.communicate())
     waiters: set[asyncio.Future[Any]] = {communicate}
     stop_waiter = asyncio.ensure_future(stop.wait()) if stop is not None else None
     if stop_waiter is not None:
         waiters.add(stop_waiter)
+    lock_waiter = (
+        asyncio.ensure_future(_until_lock_lost(lock, lock_check_interval))
+        if lock is not None
+        else None
+    )
+    if lock_waiter is not None:
+        waiters.add(lock_waiter)
     done, _ = await asyncio.wait(
         waiters, timeout=timeout.total_seconds(), return_when=asyncio.FIRST_COMPLETED
     )
-    if stop_waiter is not None and stop_waiter not in done:
-        stop_waiter.cancel()
+    for waiter in (stop_waiter, lock_waiter):
+        if waiter is not None and waiter not in done:
+            waiter.cancel()
 
     if communicate in done:
         _, stderr = communicate.result()
@@ -705,6 +844,8 @@ async def run_generation_subprocess(
             )
         if code == EXIT_INTEGRITY:
             raise GenerationFailed("integrity", f"dataset failed verification, discarded: {tail}")
+        if code == EXIT_LOCK_LOST:
+            raise GenerationLockLost(f"generation lock lost before publishing: {tail}")
         raise GenerationFailed("generation", f"exit code {code}: {tail}")
 
     stopped = stop_waiter is not None and stop_waiter in done
@@ -718,7 +859,14 @@ async def run_generation_subprocess(
         await communicate
     if stopped:
         raise GenerationInterrupted("worker stopping; child terminated, nothing published")
+    if lock_waiter is not None and lock_waiter in done:
+        raise GenerationLockLost("generation lock lost; child terminated, nothing published")
     raise GenerationFailed("timeout", f"generation exceeded the {timeout} limit; child terminated")
+
+
+async def _until_lock_lost(lock: GenerationLock, interval: timedelta) -> None:
+    while await lock.held():
+        await asyncio.sleep(interval.total_seconds())
 
 
 def _signal_name(number: int) -> str:
@@ -866,7 +1014,10 @@ __all__ = [
     "GenerationFailed",
     "GenerationInterrupted",
     "GenerationLock",
+    "GenerationLockLost",
     "build_status",
+    "lock_owned_by",
+    "require_lock_owner",
     "file_sha256",
     "run_generation_subprocess",
     "run_pass",

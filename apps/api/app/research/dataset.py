@@ -275,6 +275,7 @@ async def generate_dataset(
     on_progress: Callable[[int, int], None] | None = None,
     before_frame: Callable[[], Awaitable[float]] | None = None,
     extra_manifest: dict[str, Any] | None = None,
+    before_publish: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     """Generate one research dataset covering `[start, end)` and write it to
     `output_dir` (Parquet + `manifest.json`). Returns the manifest dict.
@@ -300,6 +301,9 @@ async def generate_dataset(
     returning seconds spent waiting) lets a caller yield to live work; its
     total is recorded as `yield_seconds`. `extra_manifest` adds caller
     provenance (e.g. continuity readiness) to the manifest.
+    `before_publish` is awaited after verification, immediately before the
+    rename; if it raises (e.g. the caller's generation lock was lost), the
+    temporary directory is removed and nothing is published.
 
     Raises `ValueError` for a sample interval or horizon that isn't a
     multiple of 5 minutes, before touching anything on disk.
@@ -420,6 +424,8 @@ async def generate_dataset(
         manifest["data_sha256"] = file_sha256(tmp_dir / "data.parquet")
         (tmp_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
         _verify_written(tmp_dir, manifest)
+        if before_publish is not None:
+            await before_publish()
         if output_dir.exists():  # appeared while this run was generating
             raise FileExistsError(f"{output_dir} already exists — datasets are never overwritten")
         tmp_dir.rename(output_dir)

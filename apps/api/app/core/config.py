@@ -76,6 +76,10 @@ class Settings(BaseSettings):
     # this path to the host (research/oink_corp/data) — nothing else
     # written inside the api container survives a rebuild.
     research_data_dir: str = "/app/research_data"
+    # Read-only mount of the host's var/host-status (docker-compose.yml),
+    # where infra/keep-awake.sh reports macOS sleep protection
+    # (app.services.host_status). Only its fixed file name is ever read.
+    host_status_dir: str = "/app/host_status"
     # OINK CORP research data continuity (app.research.continuity): daily
     # shards are generated for every completed UTC day from this instant on
     # (the first preserved dataset ends at 2026-10-12 14:50), with one pass

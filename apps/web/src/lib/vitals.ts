@@ -194,6 +194,46 @@ function partitionRow(market: MarketStatus | null): VitalRow {
 }
 
 /**
+ * macOS sleep protection, as reported every minute by the host's
+ * infra/keep-awake.sh launchd agent. Proves only that macOS held the
+ * agent's sleep-prevention assertion at the last report — not that the
+ * host never slept, nor that collection is healthy (the frame rows say
+ * that). A report older than the API's threshold is unknown, never active.
+ */
+function sleepProtectionRow(system: SystemInfo | null): VitalRow {
+  const label = "Host sleep protection";
+  const protection = system?.host_sleep_protection;
+  if (!protection) return unavailableRow(label);
+  const checked = protection.observed_at
+    ? `checked ${formatTimestampUtc(protection.observed_at)}`
+    : "never reported";
+  switch (protection.state) {
+    case "active":
+      return {
+        label,
+        value:
+          `Active — macOS assertion held by the keep-awake agent, ${checked}` +
+          (protection.power_source && protection.power_source !== "AC Power"
+            ? ` (on ${protection.power_source}: only idle sleep prevented)`
+            : ""),
+        status: "ok",
+      };
+    case "inactive":
+      return {
+        label,
+        value: `Inactive — idle sleep will interrupt collection (${protection.detail}; ${checked}); run infra/keep-awake.sh start`,
+        status: "down",
+      };
+    case "unknown":
+      return {
+        label,
+        value: `Unknown — ${protection.detail}; check infra/keep-awake.sh status`,
+        status: "unavailable",
+      };
+  }
+}
+
+/**
  * Published ranking snapshots: the newest captured one, and whether this
  * API process failed to capture any (never reported as captured).
  */
@@ -318,6 +358,7 @@ export function buildVitalsSections({
           value: system?.version ?? NOT_AVAILABLE,
           status: system ? "ok" : "unavailable",
         },
+        sleepProtectionRow(system),
       ],
     },
     {

@@ -68,6 +68,20 @@ export interface SystemInfo {
   database: "ok" | "unreachable";
   authenticated_user: string | null;
   uptime_seconds: number;
+  /** macOS sleep protection as the host last reported it (see the backend's
+   * app.services.host_status). Absent from older API versions. */
+  host_sleep_protection?: SleepProtection | null;
+}
+
+export interface SleepProtection {
+  /** "unknown" when no report newer than stale_after_seconds exists. */
+  state: "active" | "inactive" | "unknown";
+  reported_state: string | null;
+  observed_at: string | null;
+  checked_at: string;
+  stale_after_seconds: number;
+  detail: string;
+  power_source: string | null;
 }
 
 export async function getSystemInfo(): Promise<SystemInfo | null> {

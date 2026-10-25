@@ -24,6 +24,10 @@ listing its days — never one per day):
 - `awaiting_data` (info): the partition is ahead (awaiting its window or
   accumulating).
 
+Worker conditions (registration `research_worker`): `generation_lock_lost`
+(warning) — the last pass lost its generation lock (its database session
+ended) and stopped before publishing.
+
 Lifecycle (`continuity/alerts.json`, operational state): an alert's id is
 `<registration>/<role>/<condition>`; while its condition holds it stays
 active with its first-observed time; when it no longer holds it is
@@ -271,6 +275,22 @@ def derive_backup_alerts(
             )
         )
     return out
+
+
+def derive_worker_alerts(worker: dict[str, Any]) -> list[dict[str, Any]]:
+    """Conditions of the worker's last completed pass."""
+    if (worker.get("last_pass_summary") or {}).get("lock_lost"):
+        return [
+            _alert(
+                "research_worker",
+                None,
+                "generation_lock_lost",
+                "warning",
+                "the last pass lost its generation lock (its database session ended): "
+                "generation stopped before publishing and is retried next pass",
+            )
+        ]
+    return []
 
 
 def _load(continuity_dir: Path) -> dict[str, Any]:

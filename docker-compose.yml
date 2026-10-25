@@ -58,6 +58,9 @@ services:
       - ./research/oink_corp/knowledge:/app/research_knowledge:ro
       # OINK CORP ranking candidates and studies (committed, read-only).
       - ./research/oink_corp/ranking:/app/research_ranking:ro
+      # macOS sleep protection as reported by infra/keep-awake.sh on the
+      # host (read-only; the api reads one fixed file name from it).
+      - ./var/host-status:/app/host_status:ro
     networks:
       - market-truffler
     healthcheck:

@@ -305,15 +305,18 @@ npm test
 Both suites also run without Docker running — the backend tests use an
 in-memory SQLite database, not the real Postgres container.
 
-The partition lock tests need a real PostgreSQL (SQLite has no table
-locks) and are skipped unless `TEST_POSTGRES_URL` is set. Use a throwaway
-server, never the stack's database (each test creates and drops its own
-schema):
+The partition and research generation lock tests need a real PostgreSQL
+(SQLite has no table or advisory locks) and are skipped unless
+`TEST_POSTGRES_URL` is set. Use a throwaway server, never the stack's
+database (the partition tests create and drop their own schema; advisory
+locks are per database, so the generation lock tests would contend with
+the real worker):
 
 ```bash
 docker run -d --rm --name mt-pgtest -e POSTGRES_USER=t -e POSTGRES_PASSWORD=t \
   -e POSTGRES_DB=t -p 127.0.0.1:55432:5432 postgres:17-alpine
-TEST_POSTGRES_URL=postgresql+psycopg://t:t@127.0.0.1:55432/t pytest tests/test_partition_locks_postgres.py
+TEST_POSTGRES_URL=postgresql+psycopg://t:t@127.0.0.1:55432/t \
+  pytest tests/test_partition_locks_postgres.py tests/test_generation_lock_postgres.py
 docker stop mt-pgtest
 ```
 

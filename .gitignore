@@ -25,3 +25,6 @@ research/oink_corp/data/
 
 # Local Compose overrides (e.g. the research backup mount — host-specific paths).
 docker-compose.override.yml
+
+# Host-side runtime state (infra/keep-awake.sh's status report, read by the api).
+var/

@@ -159,6 +159,51 @@ describe("buildVitalsSections", () => {
     expect(system?.rows.find((r) => r.label === "Backend version")?.value).toBe("0.1.0");
   });
 
+  it("reports host sleep protection only as fresh as the host's last report", () => {
+    const row = (host_sleep_protection: SystemInfo["host_sleep_protection"]) =>
+      buildVitalsSections({
+        health: "ok",
+        ready: "ok",
+        system: { ...healthySystem, host_sleep_protection },
+        market: healthyMarket,
+        sniffer: healthySniffer,
+      })
+        .find((s) => s.title === "SYSTEM")
+        ?.rows.find((r) => r.label === "Host sleep protection");
+    const base = {
+      reported_state: "active",
+      observed_at: "2026-10-25T17:40:44.000Z",
+      checked_at: "2026-10-25T17:41:00.000Z",
+      stale_after_seconds: 180,
+      detail: "sleep-prevention assertions registered",
+      power_source: "AC Power",
+    };
+    expect(row({ ...base, state: "active" })).toEqual({
+      label: "Host sleep protection",
+      value: "Active — macOS assertion held by the keep-awake agent, checked 2026-10-25 17:40:44 UTC",
+      status: "ok",
+    });
+    expect(row({ ...base, state: "active", power_source: "Battery Power" })?.value).toContain(
+      "on Battery Power: only idle sleep prevented",
+    );
+    expect(
+      row({ ...base, state: "inactive", reported_state: "stopped", detail: "stopped by the operator" }),
+    ).toEqual({
+      label: "Host sleep protection",
+      value:
+        "Inactive — idle sleep will interrupt collection (stopped by the operator; checked 2026-10-25 17:40:44 UTC); run infra/keep-awake.sh start",
+      status: "down",
+    });
+    expect(
+      row({ ...base, state: "unknown", detail: "no host report since 2026-10-25T17:00:00+00:00" }),
+    ).toEqual({
+      label: "Host sleep protection",
+      value: "Unknown — no host report since 2026-10-25T17:00:00+00:00; check infra/keep-awake.sh status",
+      status: "unavailable",
+    });
+    expect(row(undefined)).toEqual({ label: "Host sleep protection", value: "N/A", status: "unavailable" });
+  });
+
   it("marks database connectivity down when reported unreachable", () => {
     const sections = buildVitalsSections({
       health: "ok",

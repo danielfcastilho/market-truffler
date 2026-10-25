@@ -269,6 +269,29 @@ async def test_never_overwrites_an_existing_dataset(session_factory, tmp_path):
     assert sorted(p.name for p in tmp_path.iterdir()) == ["research_v1"]  # no stray tmp dir
 
 
+async def test_a_failing_publish_check_publishes_nothing(session_factory, tmp_path):
+    """`before_publish` (the generation lock check) runs after verification,
+    right before the rename: if it raises, no dataset and no tmp dir remain."""
+    btc = await _add_instrument(session_factory, "BTCUSDT")
+    await _seed_5m_range(session_factory, btc, FIRST_FRAME - timedelta(minutes=75), 90, 100)
+    await _finalize_frame(session_factory, btc, FIRST_FRAME)
+
+    async def lock_lost() -> None:
+        raise RuntimeError("generation lock lost")
+
+    with pytest.raises(RuntimeError, match="lock lost"):
+        await generate_dataset(
+            session_factory,
+            start=FIRST_FRAME,
+            end=FIRST_FRAME + timedelta(minutes=15),
+            interval_minutes=15,
+            horizons=HORIZONS,
+            output_dir=tmp_path / "research_v1",
+            before_publish=lock_lost,
+        )
+    assert list(tmp_path.iterdir()) == []
+
+
 async def test_manifest_records_hash_provenance_and_actual_coverage(session_factory, tmp_path):
     btc = await _add_instrument(session_factory, "BTCUSDT")
     await _seed_5m_range(session_factory, btc, FIRST_FRAME - timedelta(minutes=75), 90, 100)
