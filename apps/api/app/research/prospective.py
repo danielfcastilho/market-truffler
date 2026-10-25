@@ -67,7 +67,7 @@ import os
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 from uuid import uuid4
 
 import pyarrow as pa
@@ -159,6 +159,27 @@ class EvaluationPlan(_Frozen):
     sample_rule: str
 
 
+class RegistrationLike(Protocol):
+    """What the generic parts of the protocol (partition rules, writing,
+    exposure state) need from any registration kind — this one's campaign
+    claims, or `app.research.truffle_evaluation`'s Truffle claims."""
+
+    @property
+    def registration_id(self) -> str: ...
+    @property
+    def registered_at(self) -> datetime: ...
+    @property
+    def supersedes(self) -> str | None: ...
+    @property
+    def partitions(self) -> list[Partition]: ...
+    def model_dump(self, *, mode: str = ...) -> dict[str, Any]: ...
+
+
+#: A registration file's `kind`; campaign-claim registrations predate the
+#: field and have none (so their hashes are unchanged).
+CAMPAIGN_KIND = None
+
+
 class Registration(_Frozen):
     protocol_version: Literal[1]
     registration_id: str = Field(pattern=_SLUG)
@@ -187,7 +208,7 @@ def minimum_evidence() -> dict[str, float]:
     }
 
 
-def registration_hash(registration: Registration) -> str:
+def registration_hash(registration: RegistrationLike) -> str:
     return _canonical_hash(registration.model_dump(mode="json"))
 
 
@@ -202,7 +223,7 @@ def earliest_start(registered_at: datetime) -> date:
     return day if moment == day_start(day) else day + timedelta(days=1)
 
 
-def partition_problems(registration: Registration) -> list[str]:
+def partition_problems(registration: RegistrationLike) -> list[str]:
     problems = []
     roles = [p.role for p in registration.partitions]
     if roles not in (["validation"], ["validation", "holdout"]):
@@ -295,7 +316,7 @@ def _dataset_manifests(data_dir: Path) -> list[tuple[str, dict[str, Any]]]:
     return found
 
 
-def register(data_dir: Path, registration: Registration) -> Path:
+def register(data_dir: Path, registration: RegistrationLike) -> Path:
     """Write the registration once. Refuses invalid partitions, an existing
     id, an unknown predecessor, and partitions that existing data already
     reaches into (their outcomes would not be unseen)."""
@@ -337,11 +358,20 @@ class Loaded:
     events: list[dict[str, Any]]
 
 
+def registration_kind(directory: Path) -> str | None:
+    return read_registration_file(directory)["registration"].get("kind")
+
+
 def load(data_dir: Path, registration_id: str) -> Loaded:
     directory = evaluations_root(data_dir) / registration_id
     if not directory.is_dir():
         raise ProspectiveError(f"no registration {registration_id}")
     stored = read_registration_file(directory)
+    if stored["registration"].get("kind") is not CAMPAIGN_KIND:
+        raise ProspectiveError(
+            f"registration {registration_id} is a {stored['registration']['kind']} registration, "
+            "not a campaign-claim registration"
+        )
     try:
         registration = Registration.model_validate(stored["registration"])
     except ValidationError as exc:
@@ -350,7 +380,38 @@ def load(data_dir: Path, registration_id: str) -> Loaded:
 
 
 def load_all(data_dir: Path) -> list[Loaded]:
-    return [load(data_dir, d.name) for d in registration_dirs(data_dir)]
+    """Every campaign-claim registration (other kinds have their own
+    module; their reserved periods are still enforced by
+    `app.research.reservations`, and their exposures by
+    `other_kind_exposures`)."""
+    return [
+        load(data_dir, d.name)
+        for d in registration_dirs(data_dir)
+        if registration_kind(d) is CAMPAIGN_KIND
+    ]
+
+
+def other_kind_exposures(data_dir: Path) -> list[tuple[str, str, date, date]]:
+    """(registration_id, role, start, end) of every exposed partition of a
+    registration that is not a campaign-claim registration — so a holdout
+    check here also sees periods exposed by other protocols."""
+    found = []
+    for directory in registration_dirs(data_dir):
+        stored = read_registration_file(directory)["registration"]
+        if stored.get("kind") is CAMPAIGN_KIND:
+            continue
+        events = read_events(directory)
+        for p in stored.get("partitions", []):
+            if exposed(events, p["role"]):
+                found.append(
+                    (
+                        stored["registration_id"],
+                        p["role"],
+                        date.fromisoformat(p["start"]),
+                        date.fromisoformat(p["end"]),
+                    )
+                )
+    return found
 
 
 def verify_registration(
@@ -416,7 +477,7 @@ def append_event(data_dir: Path, registration_id: str, event: dict[str, Any]) ->
     return record
 
 
-def _partition(reg: Registration, role: str) -> Partition:
+def _partition(reg: RegistrationLike, role: str) -> Partition:
     partition = next((p for p in reg.partitions if p.role == role), None)
     if partition is None:
         raise ProspectiveError(f"registration {reg.registration_id} has no {role} partition")
@@ -464,14 +525,25 @@ def exposed(events: list[dict[str, Any]], role: str) -> bool:
 
 
 def partition_state(loaded: Loaded, role: str, data_dir: Path, now: datetime) -> dict[str, Any]:
-    partition = _partition(loaded.registration, role)
+    return registration_partition_state(loaded.registration, loaded.events, role, data_dir, now)
+
+
+def registration_partition_state(
+    registration: RegistrationLike,
+    events: list[dict[str, Any]],
+    role: str,
+    data_dir: Path,
+    now: datetime,
+) -> dict[str, Any]:
+    """`partition_state` for any registration kind."""
+    partition = _partition(registration, role)
     shards = partition_shards(data_dir, partition)
     present = [d for d, m in shards if m is not None]
     # Eligible once the partition has ended and every day has a shard, or
     # READY_AFTER later regardless (missing days are then recorded).
     complete = len(present) == len(shards)
     eligible_from = day_start(partition.end) + (timedelta(0) if complete else READY_AFTER)
-    history = attempts(loaded.events, role)
+    history = attempts(events, role)
     if history:
         state = history[-1]["outcome"]
     elif now >= eligible_from:
@@ -486,7 +558,7 @@ def partition_state(loaded: Loaded, role: str, data_dir: Path, now: datetime) ->
         "eligible_from": eligible_from.isoformat(),
         "days": len(shards),
         "days_with_shard": len(present),
-        "exposed": exposed(loaded.events, role),
+        "exposed": exposed(events, role),
         "attempts": len(history),
     }
 
@@ -626,6 +698,11 @@ def evaluate(
                         "the holdout period was already exposed by "
                         f"{other.registration.registration_id}"
                     )
+        for other_id, other_role, start, end in other_kind_exposures(data_dir):
+            if start < partition.end and partition.start < end:
+                raise ProspectiveError(
+                    f"the holdout period was already exposed by {other_id}/{other_role}"
+                )
     elif exposed(loaded.events, role) and not acknowledge_prior_exposure:
         raise ProspectiveError(
             f"{role} was already exposed for this registration; re-running it yields "

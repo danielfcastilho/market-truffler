@@ -1,0 +1,102 @@
+{
+  "content_hash": "404d32a2547330334a590a7a7fc15c3a1b784ad1f92540f39e21069ef4d5426c",
+  "derived_at": "2026-10-25T01:49:09.590739+00:00",
+  "evidence": [
+    {
+      "class": "human_hypothesis",
+      "ref": "ranking/qualifications/long-reversal-oi-truffle-v1.json",
+      "text": "Highlights a coin only when it is an extreme case of the Long model's own thesis in this frame: among the weakest 1h returns of the ranked universe, it actually fell, and its Open Interest is among the most-declining and actually fell. Relative to the frame by construction: it says nothing about absolute opportunity quality. Thresholds are round numbers written down before any evaluation, not optimized."
+    },
+    {
+      "class": "prospective_registration",
+      "exposure_events": 0,
+      "hypothesis_id": "T-LONG",
+      "partitions": [
+        {
+          "end": "2027-01-26",
+          "role": "validation",
+          "start": "2026-12-27"
+        },
+        {
+          "end": "2027-02-26",
+          "role": "holdout",
+          "start": "2027-01-27"
+        }
+      ],
+      "ref": "truffle-reversal-oi-prospective-v1",
+      "registration_hash": "8d781bb8428c532c6ae2db55f7ce830b2e0d430d406b20b70488b5e23bb3df5d"
+    }
+  ],
+  "evidence_counts": {
+    "human_hypothesis": 1,
+    "prospective_registration": 1
+  },
+  "identity": {
+    "applies_to": {
+      "direction": "long",
+      "ranking_model": "long-price-reversal-oi-v1"
+    },
+    "direction": "long",
+    "features": [
+      "return_1h",
+      "oi_change_1h"
+    ],
+    "id": "long-reversal-oi-truffle-v1",
+    "kind": "qualification_policy",
+    "parameters": {
+      "conditions": [
+        {
+          "at_least": null,
+          "at_most": 0.05,
+          "feature": "return_1h",
+          "id": "return_tail",
+          "measure": "percentile"
+        },
+        {
+          "at_least": null,
+          "at_most": 0.0,
+          "feature": "return_1h",
+          "id": "return_fell",
+          "measure": "value"
+        },
+        {
+          "at_least": null,
+          "at_most": 0.2,
+          "feature": "oi_change_1h",
+          "id": "oi_tail",
+          "measure": "percentile"
+        },
+        {
+          "at_least": null,
+          "at_most": 0.0,
+          "feature": "oi_change_1h",
+          "id": "oi_fell",
+          "measure": "value"
+        }
+      ],
+      "min_frame_completeness": 0.95,
+      "qualification_evaluator_version": 1
+    },
+    "policy": "relative",
+    "source": "ranking/qualifications/long-reversal-oi-truffle-v1.json",
+    "spec_hash": "eb39d85d6f9e4e4963e076a638e03e2cb3651db5e08e9a983ca17fd1524968d0",
+    "spec_version": 1
+  },
+  "ledger": "model",
+  "ledger_schema_version": 1,
+  "limitations": [
+    "No independent prospective evidence exists for this specification.",
+    "No operational observations are recorded yet."
+  ],
+  "links": {
+    "ranking_model": "long-price-reversal-oi-v1"
+  },
+  "model_knowledge_rules_version": 1,
+  "previous_revision_hash": null,
+  "revision": 1,
+  "scope_note": "Model-level knowledge: what was registered and observed about this exact specification hash. A status describes evidence, not a recommendation; nothing here is a trading signal or a Champion.",
+  "status": "registered_for_prospective_evaluation",
+  "status_basis": [
+    "truffle-reversal-oi-prospective-v1"
+  ]
+}

@@ -122,10 +122,14 @@ def _median(values: list[float]) -> float | None:
     return statistics.median(values) if values else None
 
 
-def _day_block_interval(day_spreads: dict[date, list[float]], seed: int) -> tuple[float, float]:
+def _day_block_interval(
+    day_spreads: dict[date, list[float]], seed: int, confidence: float = CONFIDENCE_LEVEL
+) -> tuple[float, float]:
     """Percentile interval for the timestamp-weighted mean spread,
     resampling whole days (blocks) with replacement — keeps each day's
-    correlated, overlapping-horizon timestamps together."""
+    correlated, overlapping-horizon timestamps together. `confidence`
+    defaults to Evaluator v1's level; a registered protocol may ask for a
+    stricter one (multiplicity adjustment), never a looser one by default."""
     blocks = [(math.fsum(v), len(v)) for _, v in sorted(day_spreads.items())]
     rng = random.Random(seed)
     means = []
@@ -133,7 +137,7 @@ def _day_block_interval(day_spreads: dict[date, list[float]], seed: int) -> tupl
         sample = [blocks[rng.randrange(len(blocks))] for _ in blocks]
         means.append(sum(s for s, _ in sample) / sum(n for _, n in sample))
     means.sort()
-    tail = (1 - CONFIDENCE_LEVEL) / 2
+    tail = (1 - confidence) / 2
     low = means[int(math.floor(tail * (BOOTSTRAP_RESAMPLES - 1)))]
     high = means[int(math.ceil((1 - tail) * (BOOTSTRAP_RESAMPLES - 1)))]
     return low, high

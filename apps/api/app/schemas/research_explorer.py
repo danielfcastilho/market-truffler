@@ -89,6 +89,19 @@ class RankingResearch(BaseModel):
     issues: list[dict[str, str]]
 
 
+class ModelKnowledge(BaseModel):
+    """Model knowledge ledgers (latest revision of each ranking model and
+    qualification policy) and the Truffle registrations that bind them."""
+
+    #: {kind, id, revision, derived_at, status, status_basis, identity,
+    #: evidence_counts, evidence, links, limitations, chain_problems}
+    models: list[dict[str, Any]]
+    #: Truffle registrations with each partition's lifecycle state and any
+    #: completed decisions.
+    truffle_registrations: list[dict[str, Any]]
+    issues: list[dict[str, str]]
+
+
 class ResearchHistory(BaseModel):
     #: campaign_registered | evaluation_registered | evaluation |
     #: knowledge_revision, newest first.

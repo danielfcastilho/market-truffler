@@ -1629,6 +1629,13 @@ The Research Explorer (`/oink-corp`) is hypothesis-first:
 
 ### OINK CORP: prospective evaluation (protocol v1)
 
+A second registration kind shares this infrastructure: the prospective
+**Truffle** evaluation (`kind: "truffle_qualification"`), which freezes
+ranking-model and qualification-spec hashes instead of campaign claims.
+Campaign-claim commands ignore it, while its reserved periods are enforced
+for every loader. It may not come within the embargo of another
+registration's partitions. See [TRUFFLE_EVALUATION.md](TRUFFLE_EVALUATION.md).
+
 Three evaluation roles, enforced rather than labelled:
 
 - **Development:** all data outside a registration's partitions, including
@@ -1982,6 +1989,11 @@ Settled concepts from earlier design work, now owned by OINK CORP Ranking:
   restate a percentile. Zero Truffles stays a valid outcome. See
   [TRUFFLE_QUALIFICATION.md](TRUFFLE_QUALIFICATION.md), which also
   documents the ranking diagnostics.
+  Both specs, and the ranking models they apply to, are frozen by hash in
+  a prospective Truffle evaluation (`truffle-reversal-oi-prospective-v1`,
+  validation 2026-12-27 to 2027-01-26), and each has a model knowledge
+  ledger. All four are registered for evaluation; none is validated. See
+  [TRUFFLE_EVALUATION.md](TRUFFLE_EVALUATION.md).
 - **A Truffle** is a qualified symbol/direction — a classification, not
   another metric.
 - **Explainability is mandatory; weights are optional.** A model must

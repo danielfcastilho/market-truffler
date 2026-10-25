@@ -36,6 +36,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from app.ranking.scoring import canonical_hash, is_finite, transform
 
 _SLUG = r"^[a-z0-9][a-z0-9-]{0,79}$"
+#: Version of the evaluation semantics below (percentile universe,
+#: inclusive bounds, missing-fails). A prospective registration freezes it,
+#: so a change here cannot silently alter what a registered spec means.
+QUALIFICATION_EVALUATOR_VERSION = 1
 EXPERIMENTAL_STATUS = (
     "experimental — manually specified thresholds, not optimized, not validated; "
     "a Truffle is not a trading signal"

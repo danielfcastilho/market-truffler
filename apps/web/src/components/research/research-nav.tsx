@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 const SECTIONS = [
   { href: "/oink-corp", label: "Feature research" },
   { href: "/oink-corp/ranking", label: "Ranking research" },
+  { href: "/oink-corp/models", label: "Model knowledge" },
   { href: "/oink-corp/history", label: "History" },
 ];
 

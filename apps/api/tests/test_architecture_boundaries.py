@@ -26,6 +26,8 @@ _RESEARCH_SIDE = {
     APP_DIR / "scripts" / "run_ranking_study.py",
     APP_DIR / "scripts" / "research_continuity.py",
     APP_DIR / "scripts" / "parity_diagnostic.py",
+    APP_DIR / "scripts" / "truffle_evaluation.py",
+    APP_DIR / "scripts" / "model_knowledge.py",
 }
 
 # Experiments run on materialized Parquet only — never the database, never
@@ -40,11 +42,15 @@ _PARQUET_ONLY = [
     APP_DIR / "research" / "reservations.py",
     APP_DIR / "research" / "prospective.py",
     APP_DIR / "research" / "ranking.py",
+    APP_DIR / "research" / "truffle_evaluation.py",
+    APP_DIR / "research" / "model_knowledge.py",
     APP_DIR / "scripts" / "run_experiment.py",
     APP_DIR / "scripts" / "run_campaign.py",
     APP_DIR / "scripts" / "knowledge_ledger.py",
     APP_DIR / "scripts" / "prospective_evaluation.py",
     APP_DIR / "scripts" / "run_ranking_study.py",
+    APP_DIR / "scripts" / "truffle_evaluation.py",
+    APP_DIR / "scripts" / "model_knowledge.py",
 ]
 _FORBIDDEN_FOR_EXPERIMENTS = (
     "sqlalchemy",

@@ -852,3 +852,115 @@ export function evidenceFigures(record: RunRecord): EvidenceFigures {
     spread: num(report.spread?.mean),
   };
 }
+
+
+// -- model knowledge (`GET /api/research/models`) ---------------------------------------------
+
+export type ModelStatus =
+  | "experimental"
+  | "registered_for_prospective_evaluation"
+  | "insufficient_prospective_evidence"
+  | "inconclusive_prospective_evidence"
+  | "supported_by_prospective_evidence"
+  | "contradicted_by_prospective_evidence"
+  | "conflicting_prospective_evidence";
+
+export interface ModelEvidence {
+  class: string;
+  ref: string;
+  verdict?: string | null;
+  decision?: string | null;
+  hypothesis_id?: string;
+  via_qualification_policy?: string;
+  temporal_contract_versions?: number[];
+  text?: string;
+}
+
+export interface ModelKnowledgeEntry {
+  kind: "ranking_model" | "qualification_policy";
+  id: string;
+  revision: number;
+  revisions: number;
+  derived_at: string;
+  content_hash: string;
+  status: ModelStatus;
+  status_basis: string[];
+  identity: {
+    kind: string;
+    id: string;
+    spec_hash: string;
+    spec_version: number;
+    direction: "long" | "short";
+    features: string[];
+    model_family?: string;
+    applies_to?: { ranking_model: string; direction: string };
+    parameters: Record<string, unknown>;
+  };
+  evidence_counts: Record<string, number>;
+  evidence: ModelEvidence[];
+  links: Record<string, unknown>;
+  limitations: string[];
+  chain_problems: string[];
+}
+
+export interface TruffleRegistrationView {
+  registration_id: string;
+  registration_hash: string;
+  registered_at: string;
+  question: string;
+  claims: {
+    hypothesis_id: string;
+    direction: "long" | "short";
+    statement: string;
+    ranking_candidate: string;
+    ranking_spec_hash: string;
+    qualification_id: string;
+    qualification_spec_hash: string;
+    primary_label: string;
+    secondary_labels: string[];
+  }[];
+  plan: { primary_reference: string; multiplicity: { method: string; family_size: number; adjusted_confidence: number } } & Record<string, unknown>;
+  limitations: string[];
+  partitions: {
+    role: string;
+    start: string;
+    end: string;
+    lifecycle: string;
+    eligible_from: string;
+    days: number;
+    days_with_shard: number;
+    decisions: Record<string, string>;
+  }[];
+}
+
+export interface ModelKnowledge {
+  models: ModelKnowledgeEntry[];
+  truffle_registrations: TruffleRegistrationView[];
+  issues: { artifact: string; problem: string }[];
+}
+
+const MODEL_STATUS_LABEL: Record<ModelStatus, string> = {
+  experimental: "Experimental",
+  registered_for_prospective_evaluation: "Registered — awaiting prospective evidence",
+  insufficient_prospective_evidence: "Insufficient prospective evidence",
+  inconclusive_prospective_evidence: "Inconclusive prospective evidence",
+  supported_by_prospective_evidence: "Supported by prospective evidence",
+  contradicted_by_prospective_evidence: "Contradicted by prospective evidence",
+  conflicting_prospective_evidence: "Conflicting prospective evidence",
+};
+
+export function modelStatusLabel(status: string): string {
+  return MODEL_STATUS_LABEL[status as ModelStatus] ?? status;
+}
+
+const LIFECYCLE_LABEL: Record<string, string> = {
+  registered_awaiting_data: "Registered — awaiting data",
+  eligible_for_evaluation: "Eligible for evaluation",
+  evaluated: "Evaluated",
+  exposure_uncertain: "Exposure uncertain",
+  failed: "Failed",
+};
+
+export function lifecycleLabel(lifecycle: string): string {
+  return LIFECYCLE_LABEL[lifecycle] ?? lifecycle;
+}

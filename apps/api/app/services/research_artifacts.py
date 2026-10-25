@@ -16,6 +16,7 @@ the campaign report's own text. Artifacts that can't be read are reported
 as `issues`, never silently skipped.
 """
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -252,6 +253,38 @@ class ResearchArtifacts:
             specs[path.stem] = spec
         return specs
 
+    def model_ledgers(self) -> list[dict[str, Any]]:
+        """Model knowledge ledgers (`<knowledge>/models/<kind>/<id>/`), each
+        `{kind, id, revisions}` oldest first. Written and fully verified by
+        `app.scripts.model_knowledge`; here only read, with the hash chain
+        re-checked (`chain_problems`)."""
+        if self.knowledge_dir is None or not (self.knowledge_dir / "models").is_dir():
+            return []
+        found = []
+        for kind_dir in sorted((self.knowledge_dir / "models").iterdir()):
+            if kind_dir.name not in ("ranking", "qualification") or not kind_dir.is_dir():
+                continue
+            for directory in sorted(
+                p for p in kind_dir.iterdir() if p.is_dir() and SLUG.match(p.name)
+            ):
+                revisions = [
+                    r
+                    for r in (
+                        self._read_json(path)
+                        for path in sorted(directory.glob("[0-9][0-9][0-9][0-9].json"))
+                    )
+                    if r is not None
+                ]
+                found.append(
+                    {
+                        "kind": kind_dir.name,
+                        "id": directory.name,
+                        "revisions": revisions,
+                        "chain_problems": chain_problems(revisions),
+                    }
+                )
+        return found
+
     def run(self, experiment_id: str, run_id: str) -> dict[str, Any] | None:
         if not SLUG.match(experiment_id) or not RUN_ID.match(run_id):
             raise InvalidIdentifier(f"{experiment_id}/{run_id}")
@@ -367,3 +400,27 @@ def evaluation_states(
             }
         )
     return states
+
+
+def _content_hash(revision: dict[str, Any]) -> str:
+    """Mirrors `app.research.knowledge.content_hash` (read-only check)."""
+    body = {k: v for k, v in revision.items() if k != "content_hash"}
+    encoded = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def chain_problems(revisions: list[dict[str, Any]]) -> list[str]:
+    """Content hashes and the previous-revision chain of one ledger — the
+    integrity part of verification; evidence and status are re-derived only
+    by `app.scripts.model_knowledge --verify`."""
+    problems = []
+    previous = None
+    for number, revision in enumerate(revisions, start=1):
+        if revision.get("revision") != number:
+            problems.append(f"revision {revision.get('revision')} out of sequence")
+        if revision.get("content_hash") != _content_hash(revision):
+            problems.append(f"revision {number}: content hash does not match")
+        if revision.get("previous_revision_hash") != previous:
+            problems.append(f"revision {number}: breaks the revision chain")
+        previous = revision.get("content_hash")
+    return problems

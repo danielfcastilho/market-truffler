@@ -1,0 +1,114 @@
+{
+  "content_hash": "ca6e79ba7ec6e2fab8c7389754ad54233d181f4f7b98ec2e6ec72d3554f147a4",
+  "derived_at": "2026-10-25T01:49:09.591422+00:00",
+  "evidence": [
+    {
+      "class": "exploratory_development",
+      "datasets": [
+        "shard_s15m_20261012",
+        "shard_s15m_20261013"
+      ],
+      "ref": "long-oi-vs-price-v1/20261024T203608443251Z-fc261a",
+      "role": "candidate",
+      "segment": "development",
+      "temporal_contract_versions": [
+        1
+      ],
+      "verdict": "insufficient_data"
+    },
+    {
+      "class": "human_hypothesis",
+      "ref": "ranking/candidates/long-price-reversal-oi-v1.json",
+      "text": "Long \u2014 price reversal + falling Open Interest: Rank coins by how attractive a Long is over the next hour, relative to the market."
+    },
+    {
+      "class": "prospective_registration",
+      "exposure_events": 0,
+      "hypothesis_id": "T-LONG",
+      "partitions": [
+        {
+          "end": "2027-01-26",
+          "role": "validation",
+          "start": "2026-12-27"
+        },
+        {
+          "end": "2027-02-26",
+          "role": "holdout",
+          "start": "2027-01-27"
+        }
+      ],
+      "ref": "truffle-reversal-oi-prospective-v1",
+      "registration_hash": "8d781bb8428c532c6ae2db55f7ce830b2e0d430d406b20b70488b5e23bb3df5d"
+    },
+    {
+      "class": "prospective_registration",
+      "exposure_events": 0,
+      "hypothesis_id": "T-LONG",
+      "partitions": [
+        {
+          "end": "2027-01-26",
+          "role": "validation",
+          "start": "2026-12-27"
+        },
+        {
+          "end": "2027-02-26",
+          "role": "holdout",
+          "start": "2027-01-27"
+        }
+      ],
+      "ref": "truffle-reversal-oi-prospective-v1",
+      "registration_hash": "8d781bb8428c532c6ae2db55f7ce830b2e0d430d406b20b70488b5e23bb3df5d",
+      "via_qualification_policy": "long-reversal-oi-truffle-v1"
+    }
+  ],
+  "evidence_counts": {
+    "exploratory_development": 1,
+    "human_hypothesis": 1,
+    "prospective_registration": 2
+  },
+  "identity": {
+    "direction": "long",
+    "features": [
+      "return_1h",
+      "oi_change_1h"
+    ],
+    "id": "long-price-reversal-oi-v1",
+    "kind": "ranking_model",
+    "model_family": "linear_weighted_v1",
+    "parameters": {
+      "missing_policy": "exclude",
+      "weights": {
+        "oi_change_1h": -0.5,
+        "return_1h": -1.0
+      }
+    },
+    "source": "ranking/candidates/long-price-reversal-oi-v1.json",
+    "spec_hash": "2841de36f361722bb3980ed1aa636522d4bfd6847f4fa2df0bd95bfae8c79050",
+    "spec_version": 1,
+    "transforms": {
+      "oi_change_1h": "cs_percentile",
+      "return_1h": "cs_percentile"
+    }
+  },
+  "ledger": "model",
+  "ledger_schema_version": 1,
+  "limitations": [
+    "Exploratory runs on datasets produced under temporal contract v1 (Open Interest availability unverified) are not directly comparable with v2 data: long-oi-vs-price-v1/20261024T203608443251Z-fc261a",
+    "No independent prospective evidence exists for this specification.",
+    "Truffle evaluations evaluate qualification policies applied to this model; they do not evaluate the ranking itself and never change its status.",
+    "No operational observations are recorded yet."
+  ],
+  "links": {
+    "qualification_policies": [
+      "long-reversal-oi-truffle-v1"
+    ]
+  },
+  "model_knowledge_rules_version": 1,
+  "previous_revision_hash": null,
+  "revision": 1,
+  "scope_note": "Model-level knowledge: what was registered and observed about this exact specification hash. A status describes evidence, not a recommendation; nothing here is a trading signal or a Champion.",
+  "status": "registered_for_prospective_evaluation",
+  "status_basis": [
+    "truffle-reversal-oi-prospective-v1"
+  ]
+}

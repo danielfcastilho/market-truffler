@@ -463,7 +463,11 @@ def ledger_dir(knowledge_root: Path, campaign_id: str) -> Path:
 
 
 def load_revisions(knowledge_root: Path, campaign_id: str) -> list[dict[str, Any]]:
-    directory = ledger_dir(knowledge_root, campaign_id)
+    return load_revisions_in(ledger_dir(knowledge_root, campaign_id))
+
+
+def load_revisions_in(directory: Path) -> list[dict[str, Any]]:
+    """Every revision of one ledger directory, in order."""
     if not directory.is_dir():
         return []
     return [json.loads(p.read_text()) for p in sorted(directory.glob("[0-9][0-9][0-9][0-9].json"))]
@@ -474,7 +478,16 @@ def write_revision(
 ) -> tuple[Path | None, dict[str, Any]]:
     """Append `derived` as a new revision unless it equals the latest
     revision's knowledge. Returns (path or None if unchanged, revision)."""
-    revisions = load_revisions(knowledge_root, derived["campaign_id"])
+    return append_revision(ledger_dir(knowledge_root, derived["campaign_id"]), derived, now=now)
+
+
+def append_revision(
+    directory: Path, derived: dict[str, Any], *, now: datetime | None = None
+) -> tuple[Path | None, dict[str, Any]]:
+    """The revision mechanism itself, for any ledger directory (campaign
+    knowledge here; model knowledge in `app.research.model_knowledge`):
+    hash-chained, numbered, never overwritten, written only on change."""
+    revisions = load_revisions_in(directory)
     latest = revisions[-1] if revisions else None
     if latest is not None and _knowledge_part(latest) == derived:
         return None, latest
@@ -485,7 +498,6 @@ def write_revision(
         "derived_at": (now or datetime.now(UTC)).isoformat(),
     }
     revision["content_hash"] = content_hash(revision)
-    directory = ledger_dir(knowledge_root, derived["campaign_id"])
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{revision['revision']:04d}.json"
     if path.exists():

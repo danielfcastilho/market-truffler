@@ -23,6 +23,7 @@ from app.schemas.research_explorer import (
     ExperimentDetail,
     HypothesisSummary,
     KnowledgeCounts,
+    ModelKnowledge,
     RankingResearch,
     ResearchCounts,
     ResearchHistory,
@@ -376,6 +377,88 @@ async def research_ranking(current_user: CurrentUserDep) -> RankingResearch:
             for study_id, study in studies.items()
         ],
         issues=artifacts.issues,
+    )
+
+
+_LIFECYCLE = {
+    "awaiting_data": "registered_awaiting_data",
+    "eligible": "eligible_for_evaluation",
+    "completed": "evaluated",
+}
+
+
+@router.get("/models", response_model=ModelKnowledge)
+async def research_models(current_user: CurrentUserDep) -> ModelKnowledge:
+    """What is known about each ranking model and qualification policy (the
+    latest model-knowledge revision, hash chain re-checked) and the
+    prospective Truffle registrations binding them. Read-only: knowledge is
+    derived and verified by `app.scripts.model_knowledge`, evaluations run
+    only through `app.scripts.truffle_evaluation`."""
+    artifacts = _artifacts()
+    models = []
+    for ledger in artifacts.model_ledgers():
+        if not ledger["revisions"]:
+            continue
+        latest = ledger["revisions"][-1]
+        models.append(
+            {
+                "kind": latest.get("identity", {}).get("kind"),
+                "id": ledger["id"],
+                "revision": latest.get("revision"),
+                "revisions": len(ledger["revisions"]),
+                "derived_at": latest.get("derived_at"),
+                "content_hash": latest.get("content_hash"),
+                "status": latest.get("status"),
+                "status_basis": latest.get("status_basis"),
+                "identity": latest.get("identity"),
+                "evidence_counts": latest.get("evidence_counts"),
+                "evidence": latest.get("evidence"),
+                "links": latest.get("links"),
+                "limitations": latest.get("limitations"),
+                "chain_problems": ledger["chain_problems"],
+            }
+        )
+    now = datetime.now(UTC)
+    decisions: dict[tuple[str, str], dict[str, str]] = {}
+    for record in artifacts.runs():
+        if (
+            record.get("kind") == "prospective_truffle_evaluation"
+            and record.get("status") == "completed"
+        ):
+            key = (str(record.get("registration_id")), str(record.get("role")))
+            decisions.setdefault(key, {})[str(record.get("hypothesis_id"))] = str(
+                record.get("decision")
+            )
+    registrations = []
+    for e in artifacts.evaluations():
+        registration = e["registration"]
+        if registration.get("kind") != "truffle_qualification":
+            continue
+        partitions = []
+        for state in evaluation_states(registration, e["events"], artifacts.data_dir, now):
+            partitions.append(
+                {
+                    **state,
+                    "lifecycle": _LIFECYCLE.get(state["state"], state["state"]),
+                    "decisions": decisions.get(
+                        (registration["registration_id"], state["role"]), {}
+                    ),
+                }
+            )
+        registrations.append(
+            {
+                "registration_id": registration.get("registration_id"),
+                "registration_hash": e["registration_hash"],
+                "registered_at": registration.get("registered_at"),
+                "question": registration.get("question"),
+                "claims": registration.get("claims"),
+                "plan": registration.get("plan"),
+                "limitations": registration.get("limitations"),
+                "partitions": partitions,
+            }
+        )
+    return ModelKnowledge(
+        models=models, truffle_registrations=registrations, issues=artifacts.issues
     )
 
 
