@@ -133,7 +133,7 @@ class RsiFeature(Feature):
 
         closes_by_instrument: dict[int, list[Decimal]] = {}
         for anchor_time, instrument_ids in instruments_by_anchor.items():
-            candles_by_instrument = await candle_repo.fetch_latest_n_closed_per_instrument(
+            candles_by_instrument = await candle_repo.fetch_window_per_instrument(
                 self._timeframe, instrument_ids, anchor_time, REQUIRED_CLOSES
             )
             expected = _expected_window(anchor_time, self._duration)

@@ -15,7 +15,6 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased
 
 from app.domain.frame import FrameCandleContext, FrameStatus, MarketFrame, MarketFrameMember
 from app.models.candle import Candle
@@ -255,55 +254,57 @@ class FrameRepository:
         )
 
     async def _fetch_members(self, frame_time: datetime) -> list[MarketFrameMember]:
-        # Re-derive proper mapped Candle entities from each timeframe-scoped
-        # subquery (see CandleRepository.fetch_latest_closed_per_instrument
-        # for why `aliased` rather than raw Row tuples), then join all five
-        # to the member row plus the instrument, in one query — the
-        # "give me frame T" read is always this one statement, never a
-        # per-instrument loop. 4h/24h are OUTER joins (unlike the three
-        # gating timeframes): `open_time_4h`/`open_time_24h` can be NULL
-        # (see `MarketFrameMember.h4`/`h24`), and even when set, an INNER
-        # join would be just as correct — OUTER costs nothing extra and
-        # stays correct either way.
-        m5, m15, h1, h4, h24 = (
-            aliased(Candle, select(Candle).where(Candle.timeframe == tf).subquery())
-            for tf in ("5m", "15m", "1h", "4h", "24h")
-        )
+        # The member rows first, then exactly the candles they reference,
+        # looked up by key: (timeframe, open_time, instrument ids) — members
+        # sharing an anchor (nearly all of them) share one indexed lookup.
+        # Equivalent to joining each member to its five candles (the three
+        # gating ones required, 4h/24h optional) without ever reading a
+        # timeframe's whole history, which grows with every day stored.
+        rows = (
+            await self._session.execute(
+                select(MarketFrameMemberRow, Instrument.symbol)
+                .join(Instrument, Instrument.id == MarketFrameMemberRow.instrument_id)
+                .where(MarketFrameMemberRow.frame_time == frame_time)
+                .order_by(MarketFrameMemberRow.instrument_id)
+            )
+        ).all()
+        references = {
+            "5m": "open_time_5m",
+            "15m": "open_time_15m",
+            "1h": "open_time_1h",
+            "4h": "open_time_4h",
+            "24h": "open_time_24h",
+        }
+        candles: dict[tuple[str, int, datetime], Candle] = {}
+        for timeframe, column in references.items():
+            by_open_time: dict[datetime, list[int]] = {}
+            for member_row, _ in rows:
+                open_time = getattr(member_row, column)
+                if open_time is not None:
+                    by_open_time.setdefault(open_time, []).append(member_row.instrument_id)
+            for open_time, ids in by_open_time.items():
+                result = await self._session.execute(
+                    select(Candle).where(
+                        Candle.timeframe == timeframe,
+                        Candle.open_time == open_time,
+                        Candle.instrument_id.in_(ids),
+                    )
+                )
+                for candle in result.scalars():
+                    candles[(timeframe, candle.instrument_id, candle.open_time)] = candle
 
-        stmt = (
-            select(MarketFrameMemberRow, Instrument.symbol, m5, m15, h1, h4, h24)
-            .join(Instrument, Instrument.id == MarketFrameMemberRow.instrument_id)
-            .join(
-                m5,
-                (m5.instrument_id == MarketFrameMemberRow.instrument_id)
-                & (m5.open_time == MarketFrameMemberRow.open_time_5m),
-            )
-            .join(
-                m15,
-                (m15.instrument_id == MarketFrameMemberRow.instrument_id)
-                & (m15.open_time == MarketFrameMemberRow.open_time_15m),
-            )
-            .join(
-                h1,
-                (h1.instrument_id == MarketFrameMemberRow.instrument_id)
-                & (h1.open_time == MarketFrameMemberRow.open_time_1h),
-            )
-            .outerjoin(
-                h4,
-                (h4.instrument_id == MarketFrameMemberRow.instrument_id)
-                & (h4.open_time == MarketFrameMemberRow.open_time_4h),
-            )
-            .outerjoin(
-                h24,
-                (h24.instrument_id == MarketFrameMemberRow.instrument_id)
-                & (h24.open_time == MarketFrameMemberRow.open_time_24h),
-            )
-            .where(MarketFrameMemberRow.frame_time == frame_time)
-        )
-        result = await self._session.execute(stmt)
+        def referenced(timeframe: str, member_row: MarketFrameMemberRow) -> Candle | None:
+            open_time = getattr(member_row, references[timeframe])
+            if open_time is None:
+                return None
+            return candles.get((timeframe, member_row.instrument_id, open_time))
 
         members: list[MarketFrameMember] = []
-        for member_row, symbol, c5, c15, ch1, ch4, ch24 in result.all():
+        for member_row, symbol in rows:
+            c5, c15, ch1 = (referenced(tf, member_row) for tf in ("5m", "15m", "1h"))
+            if c5 is None or c15 is None or ch1 is None:
+                continue  # a gating candle no longer exists (e.g. pruned): no member, as before
+            ch4, ch24 = referenced("4h", member_row), referenced("24h", member_row)
             members.append(
                 MarketFrameMember(
                     instrument_id=member_row.instrument_id,

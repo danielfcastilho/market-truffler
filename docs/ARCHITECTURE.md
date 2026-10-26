@@ -856,10 +856,10 @@ the frame's already-selected anchor candle for that timeframe
 (`h4` not yet available for that instrument/frame — see "4h: a fifth
 timeframe, deliberately non-gating" above) all yield `None` — never a
 shortened period, an interpolated value, or the nearest available candle
-substituted in. `CandleRepository.fetch_latest_n_closed_per_instrument`
-(the batched, set-oriented "N most recent legal candles per instrument"
-query RSI needs, generalizing `fetch_latest_closed_per_instrument`'s
-`rn == 1` to `rn <= n`) fetches the candidate window; `RsiFeature` then
+substituted in. `CandleRepository.fetch_window_per_instrument` (one
+batched range read of the 15 bars ending at the anchor — only those bars
+can form a valid window, so nothing older is read) fetches the candidate
+window; `RsiFeature` then
 verifies the fetched open_times are *exactly* the expected 15 consecutive
 timestamps before ever computing anything — a superficially-sufficient
 count with a gap in the middle is rejected just as surely as too few rows.

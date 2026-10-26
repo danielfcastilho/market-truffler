@@ -68,6 +68,10 @@ class FeatureEngine:
         *,
         analyzed_at: datetime,
     ) -> SnifferFrameResult:
+        # One point-in-time computation: features asking for the same
+        # candle window or "current OI" anchor share a single read.
+        candle_repo = candle_repo.cached()
+        oi_repo = oi_repo.cached()
         # {feature_name: {instrument_id: value | None}}
         per_feature = {
             feature.name: await feature.calculate(frame, candle_repo, oi_repo, funding_repo)

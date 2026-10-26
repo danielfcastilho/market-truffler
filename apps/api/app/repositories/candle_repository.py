@@ -9,6 +9,12 @@ it, consistent with Bybit's data being authoritative.
 Upsert syntax differs by dialect (PostgreSQL in production, SQLite in
 tests — see `app.db.session`), so this is the one place that branches on
 it; every caller gets one dialect-agnostic API.
+
+Reads are bounded in time wherever the answer allows it: candles are kept
+for months, and a query that ranks a coin's whole history to keep its
+latest few rows costs seconds per frame and grows with every day stored.
+`cached()` gives a per-computation view (one `FeatureEngine.run`) that
+answers a repeated window read from memory instead of the database.
 """
 
 from collections.abc import Sequence
@@ -21,15 +27,30 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from app.domain.timeframes import TIMEFRAMES
 from app.models.candle import Candle
 
 _CONFLICT_COLUMNS = ("instrument_id", "timeframe", "open_time")
 _UPDATE_COLUMNS = ("close_time", "open", "high", "low", "close", "volume", "turnover")
 
 
+#: How far back the first, bounded phase of a "latest closed candle" read
+#: looks, in candles of the timeframe; anything older is only searched for
+#: the instruments the bounded phase found nothing for.
+RECENT_CANDLES = 48
+
+
 class CandleRepository:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, *, _cache: dict[Any, Any] | None = None) -> None:
         self._session = session
+        self._cache = _cache
+
+    def cached(self) -> "CandleRepository":
+        """The same repository, but repeated `fetch_window_per_instrument`
+        calls with identical arguments are answered from memory. For one
+        point-in-time computation only (a `FeatureEngine.run`): never for a
+        repository that also writes or lives across frames."""
+        return CandleRepository(self._session, _cache={})
 
     async def upsert_many(self, rows: Sequence[dict[str, Any]]) -> None:
         """Batch-upsert candle rows in one statement.
@@ -105,11 +126,30 @@ class CandleRepository:
 
         `min_open_time` (inclusive) ignores older candles — research
         reconstruction only (`app.research.reconstruction`); live frames
-        pass none.
+        pass none. Without it the read runs in two phases with an
+        identical result: the last `RECENT_CANDLES` candles first, then the
+        full history only for instruments that had none in that range.
         """
         if not instrument_ids:
             return {}
+        duration = TIMEFRAMES.get(timeframe)
+        if min_open_time is None and duration is not None:
+            recent = await self._latest_closed(
+                timeframe, instrument_ids, max_open_time, max_open_time - duration * RECENT_CANDLES
+            )
+            rest = [i for i in instrument_ids if i not in recent]
+            if rest:
+                recent.update(await self._latest_closed(timeframe, rest, max_open_time, None))
+            return recent
+        return await self._latest_closed(timeframe, instrument_ids, max_open_time, min_open_time)
 
+    async def _latest_closed(
+        self,
+        timeframe: str,
+        instrument_ids: Sequence[int],
+        max_open_time: datetime,
+        min_open_time: datetime | None,
+    ) -> dict[int, Candle]:
         row_number = (
             func.row_number()
             .over(partition_by=Candle.instrument_id, order_by=Candle.open_time.desc())
@@ -135,49 +175,41 @@ class CandleRepository:
         result = await self._session.execute(latest)
         return {candle.instrument_id: candle for candle in result.scalars()}
 
-    async def fetch_latest_n_closed_per_instrument(
-        self, timeframe: str, instrument_ids: Sequence[int], max_open_time: datetime, n: int
+    async def fetch_window_per_instrument(
+        self, timeframe: str, instrument_ids: Sequence[int], anchor_time: datetime, n: int
     ) -> dict[int, list[Candle]]:
-        """The `n` most recent legally-closed candles per instrument, for one
-        timeframe, as of `max_open_time` (inclusive) — one set-oriented query
-        for the whole given instrument set, never a per-instrument loop (used
-        by `app.features.rsi` for RSI's fixed-length lookback window).
+        """Each instrument's candles of one timeframe opened within the `n`
+        bars ending at `anchor_time` (`anchor_time - (n-1) × duration` to
+        `anchor_time`, inclusive), oldest first — one set-oriented range
+        read, never a per-instrument loop. Used for the fixed-length
+        lookbacks of `app.features.rsi` and `app.features.candle_window`.
 
-        Returns each instrument's candles ordered oldest-to-newest. An
-        instrument with fewer than `n` legally-closed candles as of
-        `max_open_time` simply gets a shorter (or empty) list — callers must
-        treat that as insufficient history, never pad or substitute.
-
-        Same `ROW_NUMBER() OVER (PARTITION BY instrument_id ORDER BY
-        open_time DESC)` technique as `fetch_latest_closed_per_instrument`,
-        generalized from `rn == 1` to `rn <= n`.
+        No gap-filling: an instrument with missing bars gets fewer (or no)
+        candles, and callers accept a window only when it is exactly the
+        `n` consecutive bars ending at the anchor — so reading only that
+        range returns everything a valid window can contain.
         """
         if not instrument_ids or n <= 0:
             return {}
-
-        row_number = (
-            func.row_number()
-            .over(partition_by=Candle.instrument_id, order_by=Candle.open_time.desc())
-            .label("rn")
-        )
-        ranked = (
-            select(Candle, row_number)
+        key = (timeframe, frozenset(instrument_ids), anchor_time, n)
+        if self._cache is not None and key in self._cache:
+            return self._cache[key]  # type: ignore[no-any-return]
+        duration = TIMEFRAMES[timeframe]
+        result = await self._session.execute(
+            select(Candle)
             .where(
                 Candle.timeframe == timeframe,
                 Candle.instrument_id.in_(instrument_ids),
-                Candle.open_time <= max_open_time,
+                Candle.open_time <= anchor_time,
+                Candle.open_time >= anchor_time - duration * (n - 1),
             )
-            .subquery()
+            .order_by(Candle.instrument_id, Candle.open_time)
         )
-        ranked_candle = aliased(Candle, ranked)
-        latest_n = select(ranked_candle).where(ranked.c.rn <= n)
-
-        result = await self._session.execute(latest_n)
         grouped: dict[int, list[Candle]] = {}
         for candle in result.scalars():
             grouped.setdefault(candle.instrument_id, []).append(candle)
-        for candles in grouped.values():
-            candles.sort(key=lambda c: c.open_time)
+        if self._cache is not None:
+            self._cache[key] = grouped
         return grouped
 
     async def fetch_exact_open_time(

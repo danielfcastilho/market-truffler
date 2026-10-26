@@ -58,7 +58,7 @@ async def fetch_verified_windows(
 
     windows: dict[int, list[Candle]] = {}
     for anchor_time, instrument_ids in instruments_by_anchor.items():
-        candles_by_instrument = await candle_repo.fetch_latest_n_closed_per_instrument(
+        candles_by_instrument = await candle_repo.fetch_window_per_instrument(
             timeframe, instrument_ids, anchor_time, REQUIRED_CLOSES
         )
         expected = expected_window(anchor_time, duration)

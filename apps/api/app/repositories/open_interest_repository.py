@@ -30,9 +30,24 @@ def _available_by(available_by: datetime | None) -> list[Any]:
     return [or_(column.is_(None), column <= available_by)]
 
 
+#: The first, bounded phase of a "latest observation" read looks back this
+#: far; older observations are only searched for instruments it found
+#: nothing for (identical result, without ranking months of history).
+RECENT_OBSERVATIONS = timedelta(days=1)
+
+
 class OpenInterestRepository:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, *, _cache: dict[Any, Any] | None = None) -> None:
         self._session = session
+        self._cache = _cache
+
+    def cached(self) -> "OpenInterestRepository":
+        """The same repository, but repeated
+        `fetch_latest_at_or_before_per_instrument` calls with identical
+        arguments are answered from memory — for one point-in-time
+        computation (a `FeatureEngine.run`), whose five `oi_change_*`
+        features share one "current OI" anchor."""
+        return OpenInterestRepository(self._session, _cache={})
 
     async def upsert_many(self, rows: Sequence[dict[str, Any]]) -> None:
         """Batch-upsert OI observation rows in one statement. Does nothing
@@ -105,10 +120,32 @@ class OpenInterestRepository:
         pick a frame-legal "current OI" anchor (no-lookahead: never an
         observation from after `max_observed_at`). With `available_by`,
         only observations available by then count (an observation stored
-        later is skipped, never waited for)."""
+        later is skipped, never waited for). Runs in two phases with an
+        identical result: the last `RECENT_OBSERVATIONS` first, the full
+        history only for instruments with nothing in that range."""
         if not instrument_ids:
             return {}
+        key = (frozenset(instrument_ids), max_observed_at, available_by)
+        if self._cache is not None and key in self._cache:
+            return self._cache[key]  # type: ignore[no-any-return]
+        latest = await self._latest_at_or_before(
+            instrument_ids, max_observed_at, max_observed_at - RECENT_OBSERVATIONS, available_by
+        )
+        rest = [i for i in instrument_ids if i not in latest]
+        if rest:
+            older = await self._latest_at_or_before(rest, max_observed_at, None, available_by)
+            latest.update(older)
+        if self._cache is not None:
+            self._cache[key] = latest
+        return latest
 
+    async def _latest_at_or_before(
+        self,
+        instrument_ids: Sequence[int],
+        max_observed_at: datetime,
+        min_observed_at: datetime | None,
+        available_by: datetime | None,
+    ) -> dict[int, OpenInterestObservation]:
         row_number = (
             func.row_number()
             .over(
@@ -122,6 +159,11 @@ class OpenInterestRepository:
             .where(
                 OpenInterestObservation.instrument_id.in_(instrument_ids),
                 OpenInterestObservation.observed_at <= max_observed_at,
+                *(
+                    [OpenInterestObservation.observed_at >= min_observed_at]
+                    if min_observed_at is not None
+                    else []
+                ),
                 *_available_by(available_by),
             )
             .subquery()

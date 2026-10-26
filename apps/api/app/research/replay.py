@@ -28,11 +28,13 @@ has just closed, and the only ones MARKET builds frames at. Frames persisted
 at other minutes before 5m became the base timeframe are deliberately not
 replayable.
 
-PERFORMANCE NOTE: every `replay_frame` call pays `FrameRepository.
-get_frame`'s full cost (one multi-timeframe join over `market_candles`;
-see that method). This package intentionally reuses that read unchanged
-for parity rather than introducing a faster, parallel read path that could
-silently drift from what `get_frame` actually returns.
+PERFORMANCE NOTE: replay reuses `FrameRepository.get_frame` and the
+production `FeatureEngine` unchanged for parity — never a faster, parallel
+read path that could drift from what Sniffer measures. Their reads are
+bounded to the candles a frame can use (keyed lookups and fixed-length
+windows, see `CandleRepository`), so a replay costs about 2-3 s, not the
+~50-75 s it took while those reads ranked every stored candle (measured
+2026-10-26).
 """
 
 from dataclasses import dataclass
